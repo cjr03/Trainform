@@ -91,7 +91,12 @@ function Transcript({ scenario }) {
       </div>
 
       <div className="inspect-score">
-        <p className="score-ring" style={{ '--pct': scenario.score * 10 }} aria-label="Overall score">
+        <p
+          className="score-ring"
+          style={{ '--pct': scenario.score * 10 }}
+          role="img"
+          aria-label={`Overall score ${fmt(scenario.score)} out of 10`}
+        >
           <strong>{fmt(scenario.score)}</strong>
           <span>/10</span>
         </p>
@@ -147,7 +152,9 @@ export default function InspectPage() {
         >
           {trainings.data?.map((t) => (
             <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
-              <span className="option-main">{t.base_model}</span>
+              <span className="option-main">
+                #{t.id} · {t.base_model}
+              </span>
               <span className={`badge badge-${t.status}`}>{t.status}</span>
               <span className="option-meta">{new Date(t.created_at).toLocaleDateString()}</span>
               <span className="option-score" title="Best score">
