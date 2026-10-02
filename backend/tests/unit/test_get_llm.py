@@ -27,7 +27,7 @@ def test_no_key_is_400(monkeypatch):
 
 def test_unreadable_key_after_secret_rotation_is_400(monkeypatch):
     cipher = encrypt_api_key("sk-ant-old")
-    monkeypatch.setenv("TRAINFORM_SECRET", "rotated-secret")
+    monkeypatch.setenv("TRAINFORM_SECRET", "rotated-secret-0123456789abcdef0123")
     with pytest.raises(HTTPException) as e:
         llm.get_llm(User(anthropic_key_encrypted=cipher))
     assert (e.value.status_code, e.value.detail) == (

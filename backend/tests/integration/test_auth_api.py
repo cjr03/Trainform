@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app import auth
 from app.main import app
@@ -50,7 +51,11 @@ def test_full_account_flow(client):
 
     r = client.post("/api/me/password", headers=bearer(token), json={
         "current_password": "password1", "new_password": "password2", "new_password_confirm": "password2"})
-    assert r.status_code == 204
+    assert r.status_code == 200
+    # Changing the password revokes every existing session; the response carries a fresh token.
+    for old in (token, body["token"]):
+        assert client.get("/api/me", headers=bearer(old)).status_code == 401
+    assert client.get("/api/me", headers=bearer(r.json()["token"])).status_code == 200
     assert client.post("/api/auth/login", json={"username": "ada", "password": "password1"}).status_code == 401
     assert client.post("/api/auth/login", json={"username": "ada", "password": "password2"}).status_code == 200
 
@@ -188,3 +193,44 @@ def test_startup_fails_fast_without_secret(db, monkeypatch):
     with pytest.raises(RuntimeError, match="TRAINFORM_SECRET is not set"):
         with TestClient(app):
             pass
+
+
+def test_startup_fails_fast_with_weak_secret(db, monkeypatch):
+    monkeypatch.setenv("TRAINFORM_SECRET", "e2e-secret")
+    with pytest.raises(RuntimeError, match="at least 32"):
+        with TestClient(app):
+            pass
+
+
+def test_logout_revokes_every_session(client):
+    first = token(client)
+    second = client.post("/api/auth/login", json={"username": "ada", "password": "password1"}).json()["token"]
+    assert client.post("/api/auth/logout", headers=bearer(first)).status_code == 204
+    for t in (first, second):
+        assert client.get("/api/me", headers=bearer(t)).status_code == 401
+    assert client.post("/api/auth/logout").status_code == 401
+    fresh = client.post("/api/auth/login", json={"username": "ada", "password": "password1"}).json()["token"]
+    assert client.get("/api/me", headers=bearer(fresh)).status_code == 200
+
+
+def test_startup_adds_token_version_to_an_existing_users_table(db):
+    db.execute(text("ALTER TABLE users DROP COLUMN token_version"))
+    db.commit()
+    with TestClient(app) as c:
+        assert signup(c).status_code == 201
+
+
+def login(client, password):
+    return client.post("/api/auth/login", json={"username": "ada", "password": password})
+
+
+def test_login_is_throttled_after_repeated_failures(client):
+    signup(client)
+    for _ in range(4):
+        assert login(client, "wrongpass").status_code == 401
+    assert login(client, "password1").status_code == 200  # a success clears the count
+    for _ in range(auth.LOGIN_MAX_FAILURES):
+        assert login(client, "wrongpass").status_code == 401
+    r = login(client, "password1")  # locked out even with the right password
+    assert (r.status_code, r.json()["detail"]) == (429, "Too many failed sign-in attempts; try again later.")
+    assert client.post("/api/auth/login", json={"username": "bob", "password": "x"}).status_code == 401

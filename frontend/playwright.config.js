@@ -20,7 +20,7 @@ export default defineConfig({
       url: 'http://127.0.0.1:8000/api/health',
       env: {
         DATABASE_URL: process.env.E2E_DATABASE_URL || 'postgresql+psycopg://localhost/trainform_e2e',
-        TRAINFORM_SECRET: 'e2e-secret',
+        TRAINFORM_SECRET: 'e2e-secret-0123456789abcdef0123456789',
         TRAINFORM_FAKE_LLM: '1',
         MODELS_DIR: process.env.E2E_MODELS_DIR,
       },

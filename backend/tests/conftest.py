@@ -2,7 +2,7 @@ import os
 
 # Tests always run against the test database, never DATABASE_URL from the environment.
 os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", "postgresql+psycopg://localhost/trainform_test")
-os.environ.setdefault("TRAINFORM_SECRET", "test-secret")
+os.environ.setdefault("TRAINFORM_SECRET", "test-secret-0123456789abcdef0123456789")
 os.environ.pop("TRAINFORM_FAKE_LLM", None)  # fake mode only where a test sets it
 
 import pytest  # noqa: E402
@@ -11,7 +11,7 @@ from sqlalchemy import text  # noqa: E402
 from tokenizers import Tokenizer, models as tokenizer_models, pre_tokenizers  # noqa: E402
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast  # noqa: E402
 
-from app import models  # noqa: E402
+from app import auth, models  # noqa: E402
 from app.auth import current_user  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -41,6 +41,7 @@ def client(db):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+    auth._login_failures.clear()
 
 
 @pytest.fixture

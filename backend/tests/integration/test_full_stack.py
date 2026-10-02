@@ -88,7 +88,7 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
 def test_unreadable_claude_key_is_400_not_500(client, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "server-key")  # must not mask the broken user key
     signup(client, anthropic_api_key="sk-ant-old")
-    monkeypatch.setenv("TRAINFORM_SECRET", "rotated-secret")
+    monkeypatch.setenv("TRAINFORM_SECRET", "rotated-secret-0123456789abcdef0123")
     r = client.post("/api/auth/login", json={"username": "ada", "password": "password1"})
     auth = {"Authorization": f"Bearer {r.json()['token']}"}
     r = client.post("/api/agents/prompt", json={"description": "x"}, headers=auth)
