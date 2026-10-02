@@ -27,6 +27,7 @@ class FakeModel:
 @pytest.fixture
 def fakes(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "server-key")
+    monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", "ada")
     monkeypatch.setattr(training, "list_local_models", lambda: [{"name": "tiny", "source": "upload"}])
     monkeypatch.setattr(training, "LocalModel", FakeModel)
     scores = iter([6, 8, 9, 9])
