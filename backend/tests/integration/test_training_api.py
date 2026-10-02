@@ -2,6 +2,7 @@ import threading
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app import training
@@ -239,3 +240,11 @@ def test_restart_fails_orphaned_trainings(db, user):
         ("failed", "Interrupted by a server restart"), ("failed", "Interrupted by a server restart"),
         ("completed", None), ("failed", None),
     ]
+
+
+def test_startup_adds_the_one_active_training_index_to_an_existing_database(db):
+    db.execute(text("DROP INDEX IF EXISTS one_active_training_per_user"))
+    db.commit()
+    with TestClient(app):
+        pass
+    assert db.scalar(text("SELECT 1 FROM pg_indexes WHERE indexname = 'one_active_training_per_user'"))
