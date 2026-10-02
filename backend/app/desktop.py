@@ -103,6 +103,8 @@ def main(argv=None) -> None:
     args.data_dir.chmod(0o700)
     os.environ["TRAINFORM_SECRET"] = ensure_secret(args.data_dir)
     os.environ["MODELS_DIR"] = str(args.data_dir / "models")
+    # uvicorn re-raises the SIGTERM it shut down for; exit normally then so the finally block stops Postgres.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     sock = start_postgres(args.pg_bin, args.data_dir)
     try:
         os.environ["DATABASE_URL"] = database_url(sock)
