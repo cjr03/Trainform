@@ -113,6 +113,7 @@ all scores, prompts and adapters are canned.
 ```bash
 cd backend && .venv/bin/python -m pytest -q          # uses trainform_test; override with TEST_DATABASE_URL
 cd frontend && npx vitest --run && npm run lint && npm run build
+createdb trainform_e2e 2>/dev/null; cd frontend && npx playwright install chromium && npm run e2e
 ```
 
 - **Unit** (`backend/tests/unit`, `frontend/src/**/*.test.{js,jsx}`): auth, agents, Claude call handling, the local
@@ -120,13 +121,16 @@ cd frontend && npx vitest --run && npm run lint && npm run build
   Claude API or the Hugging Face Hub.
 - **Integration** (`backend/tests/integration`): the HTTP API against a real PostgreSQL test database. It is
   dropped and recreated each session.
-- **E2E** (planned): Playwright browser tests are being added in a separate PR and are not in the repo or CI yet.
+- **E2E** (`frontend/e2e`): Playwright drives Chromium through sign-up, account, a full training, Inspect and a
+  390px-wide phone layout. `playwright.config.js` starts the backend in fake mode on port 8000 (database
+  `trainform_e2e`, or `E2E_DATABASE_URL`; models in a fresh temp dir; Python from `E2E_PYTHON` or
+  `backend/.venv`) and serves the production build with `vite preview`. Ports 8000 and 4173 must be free.
 
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`. The backend job runs pytest on Python
 3.14 with CPU torch against a Postgres 17 service. The frontend job runs `npm ci`, lint, Vitest and the production
-build.
+build. The e2e job runs Playwright against its own Postgres 17 service and uploads the HTML report when it fails.
 
 ## Operations and security notes
 

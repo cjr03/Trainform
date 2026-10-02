@@ -209,6 +209,10 @@
   align-items: center;
 }
 
+.criteria li > span:first-child {
+  overflow-wrap: anywhere;
+}
+
 .criteria-value {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
