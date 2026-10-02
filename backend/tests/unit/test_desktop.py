@@ -1,3 +1,4 @@
+import fcntl
 import io
 import os
 import shutil
@@ -27,6 +28,8 @@ def test_socket_dir_rejects_paths_macos_cannot_bind():
     assert desktop.socket_dir(Path("/tmp/tf")) == Path("/tmp/tf/run")
     with pytest.raises(RuntimeError, match="too long"):
         desktop.socket_dir(Path("/tmp/" + "x" * 100))
+    with pytest.raises(RuntimeError, match="too long"):  # the limit is bytes: 30 characters, 90 bytes
+        desktop.socket_dir(Path("/tmp/" + "界" * 30))
 
 
 def test_database_url_survives_spaces_in_the_socket_path():
@@ -100,6 +103,34 @@ def test_main_wires_env_and_always_stops_postgres(tmp_path, monkeypatch, stubbed
     assert os.environ["TRAINFORM_SECRET"] == (data / "secret").read_text().strip()
     assert os.environ["MODELS_DIR"] == str(data / "models")
     assert stat.S_IMODE(data.stat().st_mode) == 0o700
+
+
+def test_only_local_host_names_are_served(tmp_path, monkeypatch, stubbed):
+    # Blocks DNS rebinding: a web page whose domain resolves to 127.0.0.1 sends its own Host header.
+    served = []
+    monkeypatch.setattr(desktop.uvicorn, "run", lambda app, **kw: served.append(app))
+    desktop.main(["--port", "1", "--pg-bin", "/pg", "--static-dir", "/fe", "--data-dir", str(tmp_path)])
+    for host, status in [("127.0.0.1:47821", 200), ("localhost:47821", 200), ("evil.example:47821", 400)]:
+        assert TestClient(served[0], base_url=f"http://{host}").get("/api/health").status_code == status
+
+
+def test_a_second_server_on_the_same_data_dir_refuses_to_start(tmp_path, stubbed):
+    with open(tmp_path / "lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(SystemExit, match="already running"):
+            desktop.main(["--port", "1", "--pg-bin", "/pg", "--static-dir", "/fe", "--data-dir", str(tmp_path)])
+    assert stubbed == []  # never touched the running instance's Postgres
+
+
+def test_postgres_is_stopped_if_startup_is_interrupted(tmp_path, monkeypatch, stubbed):
+    def interrupted(pg_bin, data_dir):  # Cmd-Q while pg_ctl start is still waiting
+        stubbed.append("start")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(desktop, "start_postgres", interrupted)
+    with pytest.raises(SystemExit):
+        desktop.main(["--port", "1", "--pg-bin", "/pg", "--static-dir", "/fe", "--data-dir", str(tmp_path)])
+    assert stubbed == ["start", "stop"]
 
 
 def test_postgres_is_stopped_when_uvicorn_re_raises_sigterm(tmp_path, monkeypatch, stubbed):

@@ -5,6 +5,7 @@ after DATABASE_URL and friends are set, because app.db builds its engine at impo
 """
 
 import argparse
+import fcntl
 import os
 import secrets
 import shlex
@@ -19,6 +20,7 @@ import psycopg
 import uvicorn
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 DEFAULT_DATA_DIR = Path.home() / "Library" / "Application Support" / "Trainform"
 SOCKET_PATH_LIMIT = 103  # macOS sockaddr_un.sun_path
@@ -36,7 +38,7 @@ def ensure_secret(data_dir: Path) -> str:
 
 def socket_dir(data_dir: Path) -> Path:
     path = data_dir / "run"
-    if len(str(path / ".s.PGSQL.5432")) > SOCKET_PATH_LIMIT:
+    if len(os.fsencode(path / ".s.PGSQL.5432")) > SOCKET_PATH_LIMIT:
         raise RuntimeError(f"Postgres socket path under {path} is too long for macOS; set TRAINFORM_DATA_DIR "
                            "to a shorter directory")
     return path
@@ -101,20 +103,26 @@ def main(argv=None) -> None:
 
     args.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     args.data_dir.chmod(0o700)
+    lock = open(args.data_dir / "lock", "w")  # held until exit: a second server would stop this one's Postgres
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"Trainform is already running with data directory {args.data_dir}")
     os.environ["TRAINFORM_SECRET"] = ensure_secret(args.data_dir)
     os.environ["MODELS_DIR"] = str(args.data_dir / "models")
     # uvicorn re-raises the SIGTERM it shut down for; exit normally then so the finally block stops Postgres.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    sock = start_postgres(args.pg_bin, args.data_dir)
     try:
-        os.environ["DATABASE_URL"] = database_url(sock)
+        os.environ["DATABASE_URL"] = database_url(start_postgres(args.pg_bin, args.data_dir))
         from app.main import app
 
         mount_frontend(app, args.static_dir)
         if args.exit_with_stdin:
             threading.Thread(target=exit_with_launcher, daemon=True).start()
         # Don't wait on running trainings when quitting; startup marks them failed next launch.
-        uvicorn.run(app, host="127.0.0.1", port=args.port, timeout_graceful_shutdown=5)
+        # The Host check blocks DNS rebinding: a web page whose domain resolves to 127.0.0.1 can't reach the API.
+        uvicorn.run(TrustedHostMiddleware(app, allowed_hosts=["127.0.0.1", "localhost"]), host="127.0.0.1",
+                    port=args.port, timeout_graceful_shutdown=5)
     finally:
         stop_postgres(args.pg_bin, args.data_dir)
 

@@ -4,8 +4,6 @@
 <dict>
 	<key>CFBundleName</key>
 	<string>Trainform</string>
-	<key>CFBundleDisplayName</key>
-	<string>Trainform</string>
 	<key>CFBundleExecutable</key>
 	<string>Trainform</string>
 	<key>CFBundleIdentifier</key>
@@ -22,8 +20,6 @@
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
