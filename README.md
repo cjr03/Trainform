@@ -83,7 +83,7 @@ cd frontend && npm install && npm run dev
 | `DATABASE_URL` | `postgresql+psycopg://localhost/trainform` | Application database |
 | `ANTHROPIC_API_KEY` | none | Claude key for users who have not linked their own |
 | `MODELS_DIR` | `backend/data/models` | Where downloaded and uploaded base models are stored |
-| `TRAINFORM_FAKE_LLM` | unset | `1` turns on demo mode (below) |
+| `TRAINFORM_FAKE_LLM` | unset | `1` turns on demo mode (below; added by PR #9). Never set it in production |
 | `TEST_DATABASE_URL` | `postgresql+psycopg://localhost/trainform_test` | Database the test suite uses (it never touches `DATABASE_URL`) |
 
 ### Claude linkage
@@ -101,8 +101,12 @@ safetensors weights. Gated repos need their license accepted on huggingface.co. 
 
 ### Demo / fake mode
 
-`TRAINFORM_FAKE_LLM=1` runs Trainform without Claude or a real model, for demos and end-to-end tests. No API key or
-downloaded model is needed.
+`TRAINFORM_FAKE_LLM=1` runs Trainform without Claude or a real model, for demos and end-to-end tests. It is added by
+PR #9 and does nothing until that PR is merged. No API key is needed, but a model must still be listed under
+`MODELS_DIR`. For a demo, a directory containing only a `config.json` of `{}` is enough.
+
+**Never set `TRAINFORM_FAKE_LLM` in production.** Any signed-in user can then run trainings without a Claude key, and
+all scores, prompts and adapters are canned.
 
 ## Tests
 
@@ -116,7 +120,7 @@ cd frontend && npx vitest --run && npm run lint && npm run build
   Claude API or the Hugging Face Hub.
 - **Integration** (`backend/tests/integration`): the HTTP API against a real PostgreSQL test database. It is
   dropped and recreated each session.
-- **E2E**: Playwright tests drive the app in a real browser.
+- **E2E** (planned): Playwright browser tests are being added in a separate PR and are not in the repo or CI yet.
 
 ## CI
 
@@ -133,12 +137,15 @@ build.
 - **Sessions** are stateless HMAC-signed bearer tokens that last 7 days. The frontend keeps them in `localStorage`.
   Changing a password does **not** revoke existing tokens. They stay valid until they expire.
 - **Rotating `TRAINFORM_SECRET`** invalidates every token, which logs everyone out. It also makes every linked Claude
-  key unreadable, because the encryption key comes from the secret, so users must link their keys again. Keep the
-  secret stable and back it up.
+  key unreadable, because the encryption key comes from the secret, so users must link their keys again. Until they do, their Claude actions fail (HTTP 500 today; a 400 with a
+  re-link message once PR #9 merges), and `ANTHROPIC_API_KEY` is not used as a fallback. Re-linking on the Account
+  page fixes it. Keep the secret stable and back it up.
 - **Weights:** only safetensors weights are accepted from the Hub and from uploads, and models load with
   `use_safetensors=True`, because pickle weights can execute code on load.
 - **One active training per user:** starting a second training while one is pending or running returns 409.
 - **Restarts:** trainings run inside the API process. On startup, any training still `pending` or `running` is marked
   `failed` with "Interrupted by a server restart". Shutdown waits for running trainings to finish.
+- **Fake mode:** never set `TRAINFORM_FAKE_LLM` in production. Any signed-in user can then run trainings without a
+  Claude key, and all scores, prompts and adapters are canned.
 - **Isolation:** every training, scenario and download endpoint checks ownership and returns 404 for other users'
   data. Hub and model endpoints require sign-in.
