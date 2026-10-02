@@ -1,7 +1,8 @@
 import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, expect, it } from 'vitest'
-import { clearToken, setToken } from './api'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { clearToken, getToken, setToken } from './api'
 import App from './App'
 
 const renderAt = (path) =>
@@ -12,6 +13,7 @@ const renderAt = (path) =>
   )
 
 beforeEach(() => clearToken())
+afterEach(() => vi.unstubAllGlobals())
 
 it('shows the auth card when signed out, whatever the URL', () => {
   renderAt('/inspect')
@@ -43,4 +45,23 @@ it('returns to the auth card on a logout event', () => {
   renderAt('/train')
   act(() => window.dispatchEvent(new Event('trainform:logout')))
   expect(screen.getByTestId('auth-page')).toBeInTheDocument()
+})
+
+it('stores the token and goes to Train after signing in', async () => {
+  const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
+  vi.stubGlobal('fetch', vi.fn(async (url) => json(url === '/api/auth/login' ? { token: 'new-tok' } : [])))
+  renderAt('/account')
+  await userEvent.type(screen.getByLabelText('Username'), 'ada')
+  await userEvent.type(screen.getByLabelText('Password'), 'secret-pw')
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(await screen.findByTestId('train-page')).toBeInTheDocument()
+  expect(getToken()).toBe('new-tok')
+})
+
+it('clears the token on Sign out', async () => {
+  setToken('tok')
+  renderAt('/train')
+  await userEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+  expect(screen.getByTestId('auth-page')).toBeInTheDocument()
+  expect(getToken()).toBeNull()
 })
