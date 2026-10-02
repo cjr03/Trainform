@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { createUser, signIn } from './helpers'
+import { createTraining, createUser, openScenario, signIn, uploadModel } from './helpers'
 
 test.use({ viewport: { width: 390, height: 844 } })
 
@@ -16,8 +16,10 @@ test('the auth card fits a phone', async ({ page }) => {
 })
 
 test('the signed-in pages fit a phone', async ({ page, request }) => {
-  await signIn(page, await createUser(request))
-  await expect(page.getByRole('group', { name: 'Local models' }).locator('.spinner')).toHaveCount(0)
+  const user = await createUser(request)
+  const model = await uploadModel(request, user.auth)
+  await signIn(page, user)
+  await expect(page.getByRole('radio', { name: model })).toBeVisible()
   expect(await fits(page)).toBe(true)
 
   await page.getByRole('link', { name: 'Inspect' }).click()
@@ -26,5 +28,15 @@ test('the signed-in pages fit a phone', async ({ page, request }) => {
 
   await page.getByRole('link', { name: 'Account' }).click()
   await expect(page.getByRole('heading', { name: 'Claude linkage' })).toBeVisible()
+  expect(await fits(page)).toBe(true)
+})
+
+test('a filled Inspect page fits a phone, even with an unbroken criterion', async ({ page, request }) => {
+  const user = await createUser(request)
+  const id = await createTraining(request, user.auth, [`Links https://example.com/${'a'.repeat(200)}`, 'Is polite.'])
+
+  await signIn(page, user)
+  const transcript = await openScenario(page, id)
+  await expect(transcript.getByRole('list', { name: 'Criterion scores' }).getByRole('listitem')).toHaveCount(2)
   expect(await fits(page)).toBe(true)
 })

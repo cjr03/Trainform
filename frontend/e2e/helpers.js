@@ -65,3 +65,27 @@ export async function uploadModel(request, auth) {
   expect(res.status()).toBe(201)
   return name
 }
+
+// A finished fake-mode training (2 scenarios x 1 round) on a freshly uploaded model.
+export async function createTraining(request, auth, rubric) {
+  const base_model = await uploadModel(request, auth)
+  const res = await request.post('/api/trainings', {
+    headers: auth,
+    data: { base_model, prompt: 'You help bike shop customers.', rubric, scenarios: 2, rounds: 1 },
+  })
+  expect(res.status()).toBe(201)
+  const { id } = await res.json()
+  await expect
+    .poll(async () => (await (await request.get(`/api/trainings/${id}`, { headers: auth })).json()).status)
+    .toBe('completed')
+  return id
+}
+
+// Opens Inspect on round 1, scenario 1 of training `id` and returns the transcript region.
+export async function openScenario(page, id) {
+  await page.getByRole('link', { name: 'Inspect' }).click()
+  await page.getByRole('region', { name: 'Trainings' }).getByRole('button', { name: new RegExp(`^#${id} `) }).click()
+  await page.getByRole('region', { name: 'Rounds' }).getByRole('button', { name: /^Round 1/ }).click()
+  await page.getByRole('region', { name: 'Scenarios' }).getByRole('button', { name: /^Scenario 1/ }).click()
+  return page.getByRole('region', { name: 'Scenario 1', exact: true })
+}
