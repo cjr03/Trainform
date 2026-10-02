@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/
+backend/data/
+.remember/
+.gitnexus/
+test-results/
+playwright-report/
+.DS_Store
+.env
