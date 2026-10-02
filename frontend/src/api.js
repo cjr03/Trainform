@@ -42,7 +42,8 @@ export const api = {
   login: (username, password) => post('/auth/login', { username, password }),
   me: () => request('/me'),
   changePassword: (current_password, new_password, new_password_confirm) =>
-    post('/me/password', { current_password, new_password, new_password_confirm }),
+    post('/me/password', { current_password, new_password, new_password_confirm }).then(({ token }) => setToken(token)),
+  logout: () => post('/auth/logout'),
   setClaudeKey: (api_key) => request('/me/claude-key', { method: 'PUT', body: { api_key } }),
   removeClaudeKey: () => request('/me/claude-key', { method: 'DELETE' }),
 

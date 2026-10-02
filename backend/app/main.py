@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from sqlalchemy import update
+from sqlalchemy import text, update
 
 from app import agents, auth, local_model, models, training  # noqa: F401  (models registers the tables)
 from app.db import Base, engine
@@ -14,6 +14,8 @@ async def lifespan(_app: FastAPI):
     Base.metadata.create_all(engine)
     # Training runs are background threads of this process, so any left pending/running died with the last one.
     with engine.begin() as conn:
+        # The one column added after the first release; create_all never alters existing tables.
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0"))
         conn.execute(update(models.Training).where(models.Training.status.in_(("pending", "running")))
                      .values(status="failed", error="Interrupted by a server restart"))
     yield

@@ -13,6 +13,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True)
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    token_version: Mapped[int] = mapped_column(server_default="0")  # bumped to revoke all of the user's tokens
     # Fernet ciphertext of the user's Anthropic API key ("Claude linkage"); never stored in plaintext.
     anthropic_key_encrypted: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

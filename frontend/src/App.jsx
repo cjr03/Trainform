@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { clearToken, getToken, setToken } from './api'
+import { api, clearToken, getToken, setToken } from './api'
 import AccountPage from './pages/AccountPage'
 import AuthPage from './pages/AuthPage'
 import InspectPage from './pages/InspectPage'
@@ -22,6 +22,7 @@ export default function App() {
     navigate('/train')
   }
   const logout = () => {
+    api.logout().catch(() => {}) // revokes the token server-side; it is read before clearToken runs
     clearToken()
     setAuthed(false)
   }
