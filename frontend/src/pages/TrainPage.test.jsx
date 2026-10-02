@@ -47,7 +47,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.useRealTimers())
 
-const stepper = () => within(screen.getByRole('navigation', { name: 'Training workflow' }))
+const stepper = () => within(screen.getByRole('list', { name: 'Training workflow' }))
 const step = (name) => stepper().getByRole('button', { name: new RegExp(name) })
 const nextButton = () => screen.getByRole('button', { name: 'Next' })
 
@@ -77,7 +77,13 @@ async function startTraining(user, polled) {
   return view
 }
 
-const completed = detail({ status: 'completed', current_round: 3, scenarios_done: 15, best_score: 8.4, latest_prompt: 'Be brief.' })
+const completed = detail({
+  status: 'completed',
+  current_round: 3,
+  scenarios_done: 15,
+  best_score: 8.4,
+  latest_prompt: 'Be brief.',
+})
 
 it('unlocks each step only once the previous ones are valid', async () => {
   const user = userEvent.setup()
@@ -194,7 +200,9 @@ it('generates a prompt from a description into the editable prompt', async () =>
 
 it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
   const user = userEvent.setup()
-  api.generateRubric.mockResolvedValueOnce({ criteria: ['Clarity', 'Empathy'] }).mockResolvedValueOnce({ criteria: ['Speed'] })
+  api.generateRubric
+    .mockResolvedValueOnce({ criteria: ['Clarity', 'Empathy'] })
+    .mockResolvedValueOnce({ criteria: ['Speed'] })
   render(<TrainPage />)
   await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
   await user.click(nextButton())
