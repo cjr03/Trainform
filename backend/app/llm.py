@@ -73,8 +73,10 @@ def get_llm(user: User = Depends(current_user)):
         except InvalidToken:
             raise HTTPException(400, "Your linked Claude key can't be read (the server secret changed). "
                                      "Re-link it on the Account page.") from None
-    else:
-        key = os.environ.get("ANTHROPIC_API_KEY")
+    else:  # the operator's key is opt-in per username, so open sign-up can't spend it
+        # ponytail: no per-user budget; add a daily call counter if allow-listed users need limits.
+        shared = {u.strip() for u in os.environ.get("TRAINFORM_SHARED_KEY_USERS", "").split(",")}
+        key = os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
     if not key:
         raise HTTPException(400, "Link your Claude API key on the Account page first.")
     return partial(call_claude, key)
