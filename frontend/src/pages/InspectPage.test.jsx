@@ -57,12 +57,14 @@ async function openScenario(user) {
   await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
 }
 
-it('lists trainings with status, best score and date', async () => {
+it('lists trainings with id, status, best score and date', async () => {
   renderPage()
   expect(screen.getByTestId('inspect-page')).toBeInTheDocument()
   expect(screen.getByText(/Loading trainings/)).toBeInTheDocument()
   const buttons = await screen.findAllByRole('button', { pressed: false })
   expect(buttons.map((b) => b.textContent)).toEqual([expect.stringContaining('qwen-0.5b'), expect.stringContaining('llama-1b')])
+  expect(buttons[0]).toHaveTextContent('#2')
+  expect(buttons[1]).toHaveTextContent('#1')
   expect(within(buttons[0]).getByText('completed')).toBeInTheDocument()
   expect(within(buttons[0]).getByText('8.3')).toBeInTheDocument()
   expect(within(buttons[1]).getByText('running')).toBeInTheDocument()
@@ -97,7 +99,7 @@ it('shows the selected scenario as a chat with its scores and details', async ()
   await openScenario(user)
   expect(within(screen.getByRole('article', { name: 'Persona' })).getByText(scenario.input)).toBeInTheDocument()
   expect(within(screen.getByRole('article', { name: 'Agent' })).getByText(scenario.output)).toBeInTheDocument()
-  expect(screen.getByLabelText('Overall score')).toHaveTextContent('7.5/10')
+  expect(screen.getByRole('img', { name: 'Overall score 7.5 out of 10' })).toBeInTheDocument()
   const criteria = within(screen.getByRole('list', { name: 'Criterion scores' }))
   expect(criteria.getByText('Empathy').closest('li')).toHaveTextContent('9/10')
   expect(criteria.getByText('Accuracy').closest('li')).toHaveTextContent('6/10')
@@ -146,4 +148,37 @@ it('shows round load errors', async () => {
   renderPage()
   await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
   expect(await screen.findByRole('alert')).toHaveTextContent('Training not found')
+})
+
+it('ignores a late reply for a training that is no longer selected', async () => {
+  let resolveQwen
+  api.listRounds.mockImplementation((id) => (id === 2 ? new Promise((r) => (resolveQwen = r)) : Promise.resolve(rounds[1])))
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  await user.click(screen.getByRole('button', { name: /llama-1b/ }))
+  expect(await screen.findByRole('button', { name: /Round 1/ })).toHaveTextContent('4')
+  resolveQwen([{ round: 7, mean_score: 9, scenarios: 3, model_id: 12 }])
+  await new Promise((r) => setTimeout(r))
+  expect(screen.queryByRole('button', { name: /Round 7/ })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Round 1/ })).toBeInTheDocument()
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+})
+
+it('shows the empty rounds state', async () => {
+  api.listRounds.mockResolvedValue([])
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  expect(await screen.findByText('No rounds finished yet.')).toBeInTheDocument()
+})
+
+it('shows scenario load errors', async () => {
+  api.listScenarios.mockRejectedValue(new Error('Round not found'))
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  await user.click(await screen.findByRole('button', { name: /Round 2/ }))
+  const col = screen.getByRole('region', { name: 'Scenarios' })
+  expect(await within(col).findByRole('alert')).toHaveTextContent('Round not found')
 })
