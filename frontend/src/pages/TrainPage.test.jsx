@@ -1,0 +1,351 @@
+import { act, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { api, saveBlob } from '../api'
+import TrainPage from './TrainPage'
+
+vi.mock('../api', () => ({
+  api: {
+    searchHubModels: vi.fn(),
+    downloadHubModel: vi.fn(),
+    uploadModel: vi.fn(),
+    listLocalModels: vi.fn(),
+    generatePrompt: vi.fn(),
+    generateRubric: vi.fn(),
+    startTraining: vi.fn(),
+    getTraining: vi.fn(),
+    downloadPrompt: vi.fn(),
+    downloadWeights: vi.fn(),
+  },
+  saveBlob: vi.fn(),
+}))
+
+const HUB_MODEL = { id: 'Qwen/Qwen2.5-0.5B', downloads: 512, likes: 34, last_modified: '2026-09-01T00:00:00Z' }
+const detail = (over = {}) => ({
+  id: 7,
+  status: 'running',
+  error: null,
+  base_model: 'qwen-0.5b',
+  initial_prompt: 'Be helpful.',
+  rubric: ['Clarity'],
+  rounds: 3,
+  scenarios_per_round: 5,
+  current_round: 0,
+  scenarios_done: 0,
+  total_scenarios: 15,
+  latest_prompt: 'Be helpful.',
+  score_windows: [],
+  best_model_id: null,
+  best_score: null,
+  created_at: '2026-10-02T10:00:00Z',
+  ...over,
+})
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
+})
+afterEach(() => vi.useRealTimers())
+
+const stepper = () => within(screen.getByRole('navigation', { name: 'Training workflow' }))
+const step = (name) => stepper().getByRole('button', { name: new RegExp(name) })
+const nextButton = () => screen.getByRole('button', { name: 'Next' })
+
+async function reachScenarios(user) {
+  const view = render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  return view
+}
+
+function polling() {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+}
+const tick = (ms = 2000) => act(() => vi.advanceTimersByTimeAsync(ms))
+
+async function startTraining(user, polled) {
+  const view = await reachScenarios(user)
+  api.startTraining.mockResolvedValue(detail({ status: 'pending' }))
+  api.getTraining.mockResolvedValue(polled)
+  await user.click(screen.getByRole('button', { name: 'Start training' }))
+  await tick()
+  return view
+}
+
+const completed = detail({ status: 'completed', current_round: 3, scenarios_done: 15, best_score: 8.4, latest_prompt: 'Be brief.' })
+
+it('unlocks each step only once the previous ones are valid', async () => {
+  const user = userEvent.setup()
+  render(<TrainPage />)
+  expect(screen.getByTestId('train-page')).toBeInTheDocument()
+  expect(step('Model')).toHaveAttribute('aria-current', 'step')
+  expect(nextButton()).toBeDisabled()
+  expect(step('Prompt')).toBeDisabled()
+
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  expect(step('Prompt')).toBeEnabled()
+  expect(step('Rubric')).toBeDisabled()
+  await user.click(nextButton())
+  expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
+
+  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
+  await user.type(prompt, '   ')
+  expect(nextButton()).toBeDisabled()
+  await user.type(prompt, 'Be helpful.')
+  await user.click(nextButton())
+
+  expect(nextButton()).toBeDisabled()
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  expect(nextButton()).toBeEnabled()
+  expect(step('Scenarios')).toBeEnabled()
+  expect(step('Training')).toBeDisabled()
+
+  await user.click(screen.getByRole('button', { name: 'Back' }))
+  expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
+  await user.click(step('Model'))
+  expect(step('Model')).toHaveAttribute('aria-current', 'step')
+})
+
+it('searches the hub with the chosen sort', async () => {
+  const user = userEvent.setup()
+  api.searchHubModels.mockResolvedValue([HUB_MODEL])
+  render(<TrainPage />)
+  await user.type(screen.getByRole('searchbox', { name: 'Search models' }), 'qwen')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Sort by' }), 'Latest')
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  expect(api.searchHubModels).toHaveBeenCalledWith('qwen', 'lastModified')
+
+  const card = (await screen.findByRole('heading', { name: HUB_MODEL.id })).closest('li')
+  expect(card).toHaveTextContent('512')
+  expect(card).toHaveTextContent('34')
+  expect(within(card).getByRole('button', { name: `Download ${HUB_MODEL.id}` })).toBeInTheDocument()
+
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Sort by' }), 'Most downloaded')
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  expect(api.searchHubModels).toHaveBeenLastCalledWith('qwen', 'downloads')
+})
+
+it('shows hub errors inline', async () => {
+  const user = userEvent.setup()
+  api.searchHubModels.mockRejectedValue(new Error('Hub unreachable'))
+  render(<TrainPage />)
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Hub unreachable')
+})
+
+it('downloads a hub model, refreshes local models and selects it', async () => {
+  const user = userEvent.setup()
+  let finish
+  api.searchHubModels.mockResolvedValue([HUB_MODEL])
+  api.downloadHubModel.mockReturnValue(new Promise((resolve) => (finish = resolve)))
+  api.listLocalModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'Qwen2.5-0.5B', source: 'hub' }])
+  render(<TrainPage />)
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  const download = await screen.findByRole('button', { name: `Download ${HUB_MODEL.id}` })
+  await user.click(download)
+
+  expect(api.downloadHubModel).toHaveBeenCalledWith(HUB_MODEL.id)
+  expect(download).toBeDisabled()
+  expect(download).toHaveTextContent('Downloading')
+
+  await act(async () => finish({ name: 'Qwen2.5-0.5B', source: 'hub' }))
+  expect(await screen.findByRole('radio', { name: /Qwen2.5-0.5B/ })).toBeChecked()
+  expect(api.listLocalModels).toHaveBeenCalledTimes(2)
+  expect(step('Prompt')).toBeEnabled()
+})
+
+it('uploads a zipped model and selects it', async () => {
+  const user = userEvent.setup()
+  api.uploadModel.mockResolvedValue({ name: 'mine', source: 'upload' })
+  api.listLocalModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'mine', source: 'upload' }])
+  render(<TrainPage />)
+  await user.click(screen.getByRole('tab', { name: 'Upload' }))
+  const file = new File(['zip'], 'model.zip', { type: 'application/zip' })
+  await user.upload(screen.getByLabelText('Model archive (.zip)'), file)
+  await user.type(screen.getByRole('textbox', { name: 'Model name' }), 'mine')
+  await user.click(screen.getByRole('button', { name: 'Upload model' }))
+
+  expect(api.uploadModel).toHaveBeenCalledWith(file, 'mine')
+  expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
+})
+
+it('generates a prompt from a description into the editable prompt', async () => {
+  const user = userEvent.setup()
+  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
+  render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
+  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
+  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
+
+  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot')
+  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
+  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
+  await user.type(prompt, ' Be kind.')
+  expect(prompt).toHaveValue('You are a support bot. Be kind.')
+  expect(nextButton()).toBeEnabled()
+})
+
+it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
+  const user = userEvent.setup()
+  api.generateRubric.mockResolvedValueOnce({ criteria: ['Clarity', 'Empathy'] }).mockResolvedValueOnce({ criteria: ['Speed'] })
+  render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(nextButton())
+  await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
+  expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.')
+
+  const first = await screen.findByRole('textbox', { name: 'Criterion 1' })
+  expect(first).toHaveValue('Clarity')
+  expect(screen.getByRole('textbox', { name: 'Criterion 2' })).toHaveValue('Empathy')
+  await user.clear(first)
+  await user.type(first, 'Clear answers')
+  await user.click(screen.getByRole('button', { name: 'Delete criterion 2' }))
+  expect(screen.queryByRole('textbox', { name: 'Criterion 2' })).not.toBeInTheDocument()
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Accuracy')
+  await user.click(screen.getByRole('button', { name: 'Add criterion' }))
+  expect(screen.getByRole('textbox', { name: 'Criterion 2' })).toHaveValue('Accuracy')
+  expect(screen.getByRole('textbox', { name: 'New criterion' })).toHaveValue('')
+
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+  expect(confirm).toHaveBeenCalledOnce()
+  expect(api.generateRubric).toHaveBeenCalledOnce()
+  expect(screen.getByRole('textbox', { name: 'Criterion 1' })).toHaveValue('Clear answers')
+
+  await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Criterion 1' })).toHaveValue('Speed'))
+  expect(screen.queryByRole('textbox', { name: 'Criterion 2' })).not.toBeInTheDocument()
+  confirm.mockRestore()
+})
+
+it('starts training with the exact config and locks the setup steps', async () => {
+  const user = userEvent.setup()
+  await reachScenarios(user)
+  const scenarios = screen.getByRole('spinbutton', { name: 'Simulated scenarios per round' })
+  const rounds = screen.getByRole('spinbutton', { name: 'Training rounds' })
+  expect(scenarios).toHaveValue(5)
+  expect(rounds).toHaveValue(3)
+  const start = screen.getByRole('button', { name: 'Start training' })
+
+  await user.clear(scenarios)
+  await user.type(scenarios, '0')
+  expect(start).toBeDisabled()
+  await user.clear(scenarios)
+  await user.type(scenarios, '8')
+  await user.clear(rounds)
+  await user.type(rounds, '51')
+  expect(start).toBeDisabled()
+  await user.clear(rounds)
+  await user.type(rounds, '4')
+  expect(screen.getByTestId('total-runs')).toHaveTextContent('32')
+
+  api.startTraining.mockResolvedValue(detail({ status: 'pending' }))
+  api.getTraining.mockResolvedValue(detail())
+  await user.click(start)
+  expect(api.startTraining).toHaveBeenCalledWith({
+    base_model: 'qwen-0.5b',
+    prompt: 'Be helpful.',
+    rubric: ['Clarity'],
+    scenarios: 8,
+    rounds: 4,
+  })
+  await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
+  for (const name of ['Model', 'Prompt', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
+})
+
+it('polls every 2 s, rendering both progress bars and the four score windows, until unmounted', async () => {
+  const user = polling()
+  const view = await startTraining(
+    user,
+    detail({
+      current_round: 2,
+      scenarios_done: 6,
+      score_windows: [
+        { label: 'n', runs: 6, score: 6.5 },
+        { label: 'n/2', runs: 3, score: 7 },
+        { label: 'n/4', runs: 1, score: 7.5 },
+        { label: 'last', runs: 1, score: 8 },
+      ],
+    }),
+  )
+  expect(api.getTraining).toHaveBeenCalledWith(7)
+
+  const scenarios = screen.getByRole('progressbar', { name: 'Scenarios tested' })
+  expect(scenarios).toHaveAttribute('aria-valuenow', '6')
+  expect(scenarios).toHaveAttribute('aria-valuemax', '15')
+  const rounds = screen.getByRole('progressbar', { name: 'Training rounds' })
+  expect(rounds).toHaveAttribute('aria-valuenow', '2')
+  expect(rounds).toHaveAttribute('aria-valuemax', '3')
+  expect(screen.getByRole('status')).toHaveTextContent(/running/i)
+
+  for (const [name, runs, score] of [
+    ['Last n runs', '6 runs', '6.5'],
+    ['Last n/2', '3 runs', '7.0'],
+    ['Last n/4', '1 run', '7.5'],
+    ['Last run', '1 run', '8.0'],
+  ]) {
+    const card = screen.getByRole('group', { name })
+    expect(card).toHaveTextContent(runs)
+    expect(card).toHaveTextContent(score)
+    expect(card).toHaveTextContent('/ 10')
+  }
+
+  view.unmount()
+  const calls = api.getTraining.mock.calls.length
+  await tick(6000)
+  expect(api.getTraining).toHaveBeenCalledTimes(calls)
+})
+
+it('shows the error and stops polling when training fails', async () => {
+  const user = polling()
+  await startTraining(user, detail({ status: 'failed', error: 'CUDA out of memory' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('CUDA out of memory')
+  const calls = api.getTraining.mock.calls.length
+  await tick(6000)
+  expect(api.getTraining).toHaveBeenCalledTimes(calls)
+})
+
+it('advances to the completion screen and downloads the prompt and weights', async () => {
+  const user = polling()
+  await startTraining(user, completed)
+  expect(step('Complete')).toHaveAttribute('aria-current', 'step')
+  expect(screen.getByTestId('best-score')).toHaveTextContent('8.4')
+  expect(screen.getByText('Be brief.')).toBeInTheDocument()
+
+  const promptBlob = new Blob(['Be brief.'])
+  const weightsBlob = new Blob(['zip'])
+  api.downloadPrompt.mockResolvedValue(promptBlob)
+  api.downloadWeights.mockResolvedValue(weightsBlob)
+  await user.click(screen.getByRole('button', { name: 'Download prompt' }))
+  expect(api.downloadPrompt).toHaveBeenCalledWith(7)
+  await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(promptBlob, 'training-7-prompt.txt'))
+  await user.click(screen.getByRole('button', { name: 'Download weights' }))
+  expect(api.downloadWeights).toHaveBeenCalledWith(7)
+  await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(weightsBlob, 'training-7-lora.zip'))
+})
+
+it('resets the dashboard for a new training', async () => {
+  const user = polling()
+  await startTraining(user, completed)
+  await user.click(screen.getByRole('button', { name: 'Start a new training' }))
+
+  expect(step('Model')).toHaveAttribute('aria-current', 'step')
+  expect(step('Prompt')).toBeDisabled()
+  const model = screen.getByRole('radio', { name: /qwen-0.5b/ })
+  expect(model).not.toBeChecked()
+  await user.click(model)
+  await user.click(nextButton())
+  expect(screen.getByRole('textbox', { name: 'Agent prompt' })).toHaveValue('')
+  const calls = api.getTraining.mock.calls.length
+  await tick(6000)
+  expect(api.getTraining).toHaveBeenCalledTimes(calls)
+})
