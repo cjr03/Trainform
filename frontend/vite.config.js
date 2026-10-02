@@ -9,5 +9,6 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/setupTests.js',
     include: ['src/**/*.test.{js,jsx}'],
+    coverage: { thresholds: { lines: 95 } },
   },
 })
