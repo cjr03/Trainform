@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, clearToken, getToken, request, setToken } from './api'
+import { api, ApiError, clearToken, getToken, request, saveBlob, setToken } from './api'
 
 function respond(status, body, contentType = 'application/json') {
   return vi.fn(
@@ -69,6 +69,33 @@ describe('request', () => {
 })
 
 describe('api', () => {
+  it.each([
+    ['signup', [{ username: 'ada' }], 'POST', '/auth/signup', { username: 'ada' }],
+    ['login', ['ada', 'pw'], 'POST', '/auth/login', { username: 'ada', password: 'pw' }],
+    ['me', [], 'GET', '/me'],
+    ['changePassword', ['a', 'b', 'b'], 'POST', '/me/password',
+      { current_password: 'a', new_password: 'b', new_password_confirm: 'b' }],
+    ['setClaudeKey', ['sk'], 'PUT', '/me/claude-key', { api_key: 'sk' }],
+    ['removeClaudeKey', [], 'DELETE', '/me/claude-key'],
+    ['generatePrompt', ['d'], 'POST', '/agents/prompt', { description: 'd' }],
+    ['generateRubric', ['p'], 'POST', '/agents/rubric', { agent_prompt: 'p' }],
+    ['downloadHubModel', ['org/m'], 'POST', '/hub/download', { repo_id: 'org/m' }],
+    ['listLocalModels', [], 'GET', '/models'],
+    ['startTraining', [{ rounds: 1 }], 'POST', '/trainings', { rounds: 1 }],
+    ['listTrainings', [], 'GET', '/trainings'],
+    ['getTraining', [3], 'GET', '/trainings/3'],
+    ['listRounds', [3], 'GET', '/trainings/3/rounds'],
+    ['downloadPrompt', [3], 'GET', '/trainings/3/download/prompt'],
+    ['downloadWeights', [3], 'GET', '/trainings/3/download/weights'],
+  ])('%s sends %s %s', async (name, args, method, path, body) => {
+    const fetch = respond(200, {})
+    vi.stubGlobal('fetch', fetch)
+    await api[name](...args)
+    const [url, init] = fetch.mock.calls[0]
+    expect([url, init.method]).toEqual([`/api${path}`, method])
+    expect(init.body).toBe(body === undefined ? undefined : JSON.stringify(body))
+  })
+
   it('uploads models as multipart form data', async () => {
     const fetch = respond(201, { name: 'mine', source: 'upload' })
     vi.stubGlobal('fetch', fetch)
@@ -106,4 +133,18 @@ describe('api', () => {
       '/api/trainings/7/rounds/2/scenarios',
     ])
   })
+})
+
+it('saveBlob downloads the blob under the filename and revokes its URL', () => {
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function () {
+    expect([this.href, this.download]).toEqual(['blob:fake', 'prompt.txt'])
+  })
+  URL.createObjectURL = vi.fn(() => 'blob:fake')
+  URL.revokeObjectURL = vi.fn()
+  const blob = new Blob(['hi'])
+  saveBlob(blob, 'prompt.txt')
+  expect(URL.createObjectURL).toHaveBeenCalledWith(blob)
+  expect(click).toHaveBeenCalledOnce()
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:fake')
+  click.mockRestore()
 })
