@@ -133,7 +133,7 @@ def detail(db: Session, t: Training) -> dict:
 @router.post("", status_code=201)
 def create_training(body: TrainingIn, background: BackgroundTasks, user: User = Depends(current_user),
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
-    if body.base_model not in {m["name"] for m in list_local_models()}:
+    if body.base_model not in {m["name"] for m in list_local_models(user.id)}:
         raise HTTPException(400, f"Unknown base model: {body.base_model}")
     if not _SLOTS.acquire(blocking=False):
         raise HTTPException(429, "The server is busy with other trainings; try again later.")

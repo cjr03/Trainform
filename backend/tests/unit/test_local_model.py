@@ -82,9 +82,9 @@ def test_upload_names_cannot_take_hub_names(models_dir):
 
 def test_model_quota_per_user(models_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MAX_MODELS_PER_USER", 2)
-    local_model.save_upload(make_zip(MODEL), "one", 1)
     fake_hub(monkeypatch, TINY_REPO)
     local_model.download_model("org/two", 1)
+    local_model.save_upload(make_zip(MODEL), "one", 1)
     local_model.save_upload(make_zip(MODEL), "bobs", 2)  # other users have their own quota
     with pytest.raises(ValueError, match="at most 2 models"):
         local_model.save_upload(make_zip(MODEL), "three", 1)
@@ -228,7 +228,8 @@ def fake_hub(monkeypatch, files, snapshot_error=None):
     class FakeApi:
         def model_info(self, repo_id, files_metadata=False):
             calls.update(info_repo_id=repo_id, files_metadata=files_metadata)
-            return SimpleNamespace(sha="abc123", siblings=[SimpleNamespace(rfilename=f, size=n) for f, n in files.items()])
+            siblings = [SimpleNamespace(rfilename=f, size=n) for f, n in files.items()]
+            return SimpleNamespace(sha="abc123", siblings=siblings)
 
     def snapshot_download(repo_id, revision, local_dir, allow_patterns):
         calls.update(repo_id=repo_id, revision=revision, local_dir=local_dir, allow_patterns=allow_patterns)

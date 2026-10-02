@@ -93,7 +93,8 @@ def test_hub_download_bad_id(authed_client):
 
 def test_hub_download_not_found(authed_client, monkeypatch):
     def missing(*a, **kw):
-        raise RepositoryNotFoundError("nope", response=httpx.Response(404, request=httpx.Request("GET", "https://hf.co")))
+        response = httpx.Response(404, request=httpx.Request("GET", "https://hf.co"))
+        raise RepositoryNotFoundError("nope", response=response)
     monkeypatch.setattr(local_model, "HfApi", lambda: SimpleNamespace(model_info=missing))
     r = authed_client.post("/api/hub/download", json={"repo_id": "org/missing"})
     assert (r.status_code, r.json()["detail"]) == (400, "org/missing not found on the Hugging Face Hub")

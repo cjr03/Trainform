@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import zipfile
 import zlib
 from contextlib import contextmanager
@@ -24,11 +25,16 @@ from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from app.auth import current_user
+from app.models import User
 
 router = APIRouter(tags=["models"], dependencies=[Depends(current_user)])
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", Path(__file__).resolve().parent.parent / "data" / "models"))
 MAX_UPLOAD_BYTES = 20 * 2**30  # per model, uncompressed: zip-bomb and disk-fill guard
+# Uploads plus Hub downloads a user added; with MAX_UPLOAD_BYTES this bounds the disk one account can fill.
+# ponytail: counted without a lock, so concurrent requests can overshoot by a model or two.
+MAX_MODELS_PER_USER = 5
+_DOWNLOADS = threading.BoundedSemaphore(2)  # each download holds a worker thread the sync routes share
 NAME_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")  # no leading dot: hidden dirs are staging areas
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 # Configs, safetensors weights and tokenizer files only: pickle weights (*.bin, *.pt, ...) can execute code on load.
@@ -43,11 +49,17 @@ def _model_dir(name: str) -> Path:
     return root / name
 
 
-def _source(path: Path) -> str | None:
+def _meta(path: Path) -> dict:
+    """trainform.json: {"source": "hub" | "upload", "owner": user id, ...}; {} for operator-provided models."""
     try:
-        return json.loads((path / "trainform.json").read_text()).get("source")
+        return json.loads((path / "trainform.json").read_text())
     except (OSError, ValueError):
-        return None
+        return {}
+
+
+def _check_quota(owner: int) -> None:
+    if MODELS_DIR.is_dir() and sum(_meta(d).get("owner") == owner for d in MODELS_DIR.iterdir()) >= MAX_MODELS_PER_USER:
+        raise ValueError(f"You can keep at most {MAX_MODELS_PER_USER} models; delete one first")
 
 
 @contextmanager
@@ -77,16 +89,17 @@ def list_hub_models(search: str | None = None, sort: str = "downloads", limit: i
              "last_modified": m.last_modified.isoformat() if m.last_modified else None} for m in models]
 
 
-def download_model(repo_id: str) -> str:
-    """Download a Hub model into MODELS_DIR; returns its local model name."""
+def download_model(repo_id: str, owner: int) -> str:
+    """Download a Hub model into MODELS_DIR for user `owner`; returns its local model name."""
     if not REPO_RE.fullmatch(repo_id):
         raise ValueError(f"Invalid Hugging Face repo id {repo_id!r}; expected 'owner/name'")
     name = repo_id.replace("/", "--")
     dest = _model_dir(name)
     if dest.exists():
-        if _source(dest) == "hub":
+        if _meta(dest).get("source") == "hub":
             return name
         raise FileExistsError(name)
+    _check_quota(owner)
     try:
         info = HfApi().model_info(repo_id, files_metadata=True)
         files = list(filter_repo_objects(info.siblings or [], allow_patterns=HUB_PATTERNS, key=lambda s: s.rfilename))
@@ -94,8 +107,9 @@ def download_model(repo_id: str) -> str:
             raise ValueError(f"{repo_id} has no safetensors weights")
         if sum(s.size or 0 for s in files) > MAX_UPLOAD_BYTES:
             raise ValueError(f"{repo_id} is too large (limit {MAX_UPLOAD_BYTES // 2**30} GiB)")
-        with _staged(dest, {"source": "hub", "repo_id": repo_id}) as tmp:
-            snapshot_download(repo_id, local_dir=tmp, allow_patterns=HUB_PATTERNS)
+        with _staged(dest, {"source": "hub", "repo_id": repo_id, "owner": owner}) as tmp:
+            # Pinned to the revision whose sizes were checked, so a push in between can't slip past the cap.
+            snapshot_download(repo_id, revision=info.sha, local_dir=tmp, allow_patterns=HUB_PATTERNS)
     except GatedRepoError as e:
         raise ValueError(f"{repo_id} is gated; accept its license on huggingface.co first") from e
     except RepositoryNotFoundError as e:
@@ -103,11 +117,14 @@ def download_model(repo_id: str) -> str:
     return name
 
 
-def save_upload(fileobj, name: str) -> str:
-    """Extract an uploaded zipped model directory into MODELS_DIR; returns its local model name."""
+def save_upload(fileobj, name: str, owner: int) -> str:
+    """Extract an uploaded zipped model directory into MODELS_DIR for user `owner`; returns its local model name."""
     dest = _model_dir(name)
+    if "--" in name:
+        raise ValueError("Model names can't contain '--'; it is reserved for Hugging Face models (owner--name)")
     if dest.exists():
         raise FileExistsError(name)
+    _check_quota(owner)
     try:
         zf = zipfile.ZipFile(fileobj)
     except zipfile.BadZipFile as e:
@@ -133,7 +150,7 @@ def save_upload(fileobj, name: str) -> str:
             raise ValueError("Zip must contain a model directory with config.json")
         if not any(p[-1].endswith(".safetensors") for _, p in entries):
             raise ValueError("Zip must contain *.safetensors weights")
-        with _staged(dest, {"source": "upload"}) as tmp:
+        with _staged(dest, {"source": "upload", "owner": owner}) as tmp:
             for info, parts in entries:
                 target = tmp.joinpath(*parts)
                 if not target.resolve().is_relative_to(tmp):
@@ -144,15 +161,28 @@ def save_upload(fileobj, name: str) -> str:
                         shutil.copyfileobj(src, out)
                 except (zipfile.BadZipFile, zlib.error, EOFError, FileExistsError, IsADirectoryError,
                         NotADirectoryError) as e:  # bad CRC/deflate data, or paths like "a" and "a/b" colliding
-                    raise ValueError(f"Corrupt or invalid zip member {info.filename}: {e}") from e
+                    raise ValueError(f"Corrupt or invalid zip member {info.filename}") from e  # e has server paths
     return name
 
 
-def list_local_models() -> list[dict]:
+def delete_model(name: str, owner: int) -> None:
+    path = _model_dir(name)
+    if _meta(path).get("owner") != owner:
+        raise FileNotFoundError(name)
+    shutil.rmtree(path)
+
+
+def list_local_models(user_id: int) -> list[dict]:
+    """Hub and operator-provided models, plus the user's own uploads."""
     if not MODELS_DIR.is_dir():
         return []
-    return [{"name": d.name, "source": _source(d)} for d in sorted(MODELS_DIR.iterdir())
-            if not d.name.startswith(".") and (d / "config.json").is_file()]
+    models = []
+    for d in sorted(MODELS_DIR.iterdir()):
+        meta = _meta(d)
+        if (not d.name.startswith(".") and (d / "config.json").is_file()
+                and (meta.get("source") != "upload" or meta.get("owner") == user_id)):
+            models.append({"name": d.name, "source": meta.get("source")})
+    return models
 
 
 class LocalModel:
@@ -235,23 +265,27 @@ def hub_models(search: str = "", sort: Literal["downloads", "lastModified"] = "d
 
 # ponytail: downloads block the request until done; move to a background job if multi-GB models time out proxies.
 @router.post("/hub/download", status_code=201)
-def hub_download(body: DownloadIn):
+def hub_download(body: DownloadIn, user: User = Depends(current_user)):
+    if not _DOWNLOADS.acquire(blocking=False):
+        raise HTTPException(429, "Too many model downloads in progress; try again shortly.")
     try:
-        name = download_model(body.repo_id)
+        name = download_model(body.repo_id, user.id)
     except FileExistsError as e:
         raise HTTPException(409, f"A model named {e} already exists") from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     except (httpx.HTTPError, LocalEntryNotFoundError) as e:  # snapshot_download reports an unreachable Hub as the latter
         raise HTTPException(502, "Hugging Face Hub request failed") from e
+    finally:
+        _DOWNLOADS.release()
     return {"name": name, "source": "hub"}
 
 
 @router.post("/hub/upload", status_code=201)
-def hub_upload(file: UploadFile = File(), name: str = Form()):
-    # UploadFile is already spooled to a temp file on disk, so the zip is never held in memory.
+def hub_upload(file: UploadFile = File(), name: str = Form(), user: User = Depends(current_user)):
+    # UploadFile is already spooled to a temp file on disk (main.py caps its size first), so it never sits in memory.
     try:
-        return {"name": save_upload(file.file, name), "source": "upload"}
+        return {"name": save_upload(file.file, name, user.id), "source": "upload"}
     except FileExistsError as e:
         raise HTTPException(409, f"A model named {name!r} already exists") from e
     except ValueError as e:
@@ -259,5 +293,13 @@ def hub_upload(file: UploadFile = File(), name: str = Form()):
 
 
 @router.get("/models")
-def models():
-    return list_local_models()
+def models(user: User = Depends(current_user)):
+    return list_local_models(user.id)
+
+
+@router.delete("/models/{name}", status_code=204)
+def delete(name: str, user: User = Depends(current_user)):
+    try:
+        delete_model(name, user.id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, "Model not found") from e
