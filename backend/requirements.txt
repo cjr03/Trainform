@@ -1,0 +1,10 @@
+fastapi[standard]==0.142.2
+SQLAlchemy==2.1.2
+psycopg[binary]==3.3.6
+anthropic==1.11.0
+cryptography==50.0.2
+huggingface_hub==1.33.0
+transformers==5.18.0
+peft==0.21.2
+torch==2.14.1
+pytest==9.1.1
