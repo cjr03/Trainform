@@ -151,7 +151,6 @@ def save_upload(fileobj, name: str) -> str:
 def list_local_models() -> list[dict]:
     if not MODELS_DIR.is_dir():
         return []
-    models = []
     return [{"name": d.name, "source": _source(d)} for d in sorted(MODELS_DIR.iterdir())
             if not d.name.startswith(".") and (d / "config.json").is_file()]
 
