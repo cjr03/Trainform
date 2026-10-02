@@ -145,7 +145,8 @@ def test_best_prompt_is_the_downloaded_prompt(authed_client, fakes, monkeypatch)
     created = authed_client.post("/api/trainings", json=BODY).json()
     assert created["best_prompt"] is None
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
-    assert (d["latest_prompt"], d["best_prompt"], d["best_score"]) == ("Be helpful.!!!!", "Be helpful.!!", 9.0)
+    # Round 1 wins; its best scenario ran with the initial prompt, and round 2 starts from "Be helpful.!!".
+    assert (d["latest_prompt"], d["best_prompt"], d["best_score"]) == ("Be helpful.!!", "Be helpful.", 9.0)
     assert authed_client.get(f"/api/trainings/{d['id']}/download/prompt").text == d["best_prompt"]
 
 
