@@ -192,7 +192,12 @@ def test_global_cap_on_concurrent_trainings(authed_client, fakes, monkeypatch, d
                     rounds=1))
     db.commit()
     assert authed_client.post("/api/trainings", json=BODY).status_code == 409
-    assert training._SLOTS.acquire(blocking=False)  # a rejected request gives its slot back
+    db.query(Training).update({"status": "failed"})
+    db.commit()
+    monkeypatch.setattr(training, "detail", lambda *a: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        authed_client.post("/api/trainings", json=BODY)
+    assert training._SLOTS.acquire(blocking=False)  # a rejected or failed request gives its slot back
 
 
 def test_unknown_base_model(authed_client, fakes, db):
