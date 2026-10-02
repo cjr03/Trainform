@@ -12,10 +12,12 @@ class FakeModel:
     def __init__(self, name):
         self.name = name
         self.generate_calls = []
+        self.conversations = []
         self.sft_calls = []
 
     def generate(self, system_prompt, conversation):
         self.generate_calls.append(system_prompt)
+        self.conversations.append(conversation)
         return f"reply to {conversation}"
 
     def sft(self, examples):
@@ -32,13 +34,15 @@ def fake_agents(monkeypatch):
     class State:
         scores = []
         persona_prompts = []
+        persona_rubrics = []
         progress = []
         rounds = []
 
     state = State()
 
-    def generate_personas(llm, agent_prompt, n):
+    def generate_personas(llm, agent_prompt, n, rubric=None):
         state.persona_prompts.append(agent_prompt)
+        state.persona_rubrics.append(rubric)
         return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"}
                 for k in range(1, n + 1)]
 
@@ -92,19 +96,23 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P+++", "P++++", "P+++++"]
     assert model.generate_calls == [s.prompt for s in scenarios]
     assert fake_agents.persona_prompts == ["P", "P+++"]
+    assert fake_agents.persona_rubrics == [["Clarity", "Tone"]] * 2  # personas pressure the training's own rubric
 
     s = scenarios[0]
     assert s.persona == {"attributes": [{"criterion": "Clarity", "rating": 1}], "prompt": "persona 1"}
-    assert (s.input, s.output) == ("msg from persona 1", "reply to User: msg from persona 1")
+    assert (s.input, s.output) == ("msg from persona 1", "reply to msg from persona 1")
     assert s.scores == [{"criterion": "Clarity", "score": 8}, {"criterion": "Tone", "score": 8}]
     assert s.score == 8.0
 
     # Only round 1 had scores >= HIGH_SCORE, and only those exchanges are trained on.
     high = (scenarios[0], scenarios[2])
     assert model.sft_calls == [[{"prompt": x.prompt, "input": x.input, "output": x.output} for x in high]]
+    # SFT sees the same user turn the model was generating from.
+    assert [x["input"] for x in model.sft_calls[0]] == [model.conversations[0], model.conversations[2]]
 
+    # Each round's model is what was evaluated: the round's starting weights and its best-scoring scenario's prompt.
     trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
-    assert [(m.round, m.prompt, m.weights) for m in trained] == [(1, "P+++", b"PK-1"), (2, "P++++++", b"PK-1")]
+    assert [(m.round, m.prompt, m.weights) for m in trained] == [(1, "P++", b"PK-0"), (2, "P+++", b"PK-1")]
     assert trained[0].mean_score == pytest.approx(22 / 3)
     assert trained[1].mean_score == 4.0
     assert t.best_model_id == trained[0].id
@@ -123,6 +131,15 @@ def test_best_model_is_the_highest_round_mean(db, user, fake_agents):
     best = db.get(TrainedModel, t.best_model_id)
     assert (best.round, best.mean_score) == (2, 9.0)
     assert len(model.sft_calls) == 1
+
+
+def test_best_model_is_what_earned_the_score(db, user, fake_agents):
+    fake_agents.scores = [9, 9, 3, 3]
+    t, [model] = run(db, make_training(db, user, rounds=2, scenarios=2))
+    best = db.get(TrainedModel, t.best_model_id)
+    round1 = [s.prompt for s in db.query(Scenario).filter_by(round=1)]
+    assert (best.round, best.mean_score, best.weights) == (1, 9.0, b"PK-0")  # weights round 1 ran with, before SFT
+    assert best.prompt in round1 and best.prompt == "P"
 
 
 def test_no_sft_without_high_scores(db, user, fake_agents):

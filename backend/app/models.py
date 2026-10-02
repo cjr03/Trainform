@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -13,6 +13,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True)
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    token_version: Mapped[int] = mapped_column(server_default="0")  # bumped to revoke all of the user's tokens
     # Fernet ciphertext of the user's Anthropic API key ("Claude linkage"); never stored in plaintext.
     anthropic_key_encrypted: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -44,11 +45,17 @@ class Training(Base):
     user: Mapped[User] = relationship(back_populates="trainings")
 
 
+# At most one pending or running training per user, enforced by the database so concurrent requests can't race.
+ONE_ACTIVE_TRAINING = Index("one_active_training_per_user", Training.user_id, unique=True,
+                            postgresql_where=Training.status.in_(("pending", "running")))
+
+
 class Scenario(Base):
     __tablename__ = "scenarios"
     __table_args__ = (UniqueConstraint("training_id", "round", "scenario_number"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # The spec's agent_id: each training trains exactly one agent, so training_id identifies it.
     training_id: Mapped[int] = mapped_column(ForeignKey("trainings.id", ondelete="CASCADE"), index=True)
     round: Mapped[int]
     scenario_number: Mapped[int]

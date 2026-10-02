@@ -107,6 +107,22 @@ describe('api', () => {
     expect(init.headers['Content-Type']).toBeUndefined()
   })
 
+  it('keeps the session with the fresh token a password change returns', async () => {
+    vi.stubGlobal('fetch', respond(200, { token: 'fresh' }))
+    setToken('old')
+    await api.changePassword('a', 'b', 'b')
+    expect(getToken()).toBe('fresh')
+  })
+
+  it('revokes the session on logout', async () => {
+    const fetch = respond(204, null)
+    vi.stubGlobal('fetch', fetch)
+    setToken('tok')
+    await api.logout()
+    const [url, init] = fetch.mock.calls[0]
+    expect([url, init.method, init.headers.Authorization]).toEqual(['/api/auth/logout', 'POST', 'Bearer tok'])
+  })
+
   it('builds query strings and nested paths', async () => {
     const fetch = respond(200, [])
     vi.stubGlobal('fetch', fetch)

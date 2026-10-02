@@ -1,6 +1,8 @@
 """Training orchestration plus the train/inspect API."""
 
 import logging
+import os
+import threading
 from statistics import fmean
 from typing import Annotated
 
@@ -8,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import agents, fake
@@ -23,6 +25,8 @@ router = APIRouter(prefix="/trainings", tags=["training"])
 
 HIGH_SCORE = 7.0  # scenarios scoring at least this are used as SFT examples
 INTERNAL_ERROR = "Training failed; see the server logs."
+# Each run holds a loaded model and one of the 40 worker threads the sync routes share, so cap them process-wide.
+_SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
 
 
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal) -> None:
@@ -38,10 +42,12 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
             for r in range(1, t.rounds + 1):
                 t.current_round = r
                 db.commit()
+                weights = model.adapter_bytes()  # what this round's scenarios run with, before its SFT
                 done = []
-                for number, persona in enumerate(agents.generate_personas(llm, prompt, t.scenarios_per_round), 1):
+                personas = agents.generate_personas(llm, prompt, t.scenarios_per_round, rubric=t.rubric)
+                for number, persona in enumerate(personas, 1):
                     message = agents.persona_respond(llm, persona["attributes"], persona["prompt"])
-                    reply = agents.primary_respond(model.generate, prompt, f"User: {message}")
+                    reply = agents.primary_respond(model.generate, prompt, message)  # same user turn SFT trains on
                     conversation = f"User: {message}\nAssistant: {reply}"
                     scores = agents.score_conversation(llm, conversation, t.rubric)
                     s = Scenario(training_id=t.id, round=r, scenario_number=number, persona=persona, prompt=prompt,
@@ -55,8 +61,9 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                             for s in done if s.score >= HIGH_SCORE]
                 if examples:
                     model.sft(examples)
-                m = TrainedModel(training_id=t.id, round=r, prompt=prompt, weights=model.adapter_bytes(),
-                                 mean_score=fmean(s.score for s in done))
+                # Store what earned the score: the round's weights and its best-scoring scenario's prompt.
+                m = TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
+                                 weights=weights, mean_score=fmean(s.score for s in done))
                 db.add(m)
                 db.flush()
                 if best_score is None or m.mean_score > best_score:
@@ -127,21 +134,33 @@ def detail(db: Session, t: Training) -> dict:
 @router.post("", status_code=201)
 def create_training(body: TrainingIn, background: BackgroundTasks, user: User = Depends(current_user),
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
-    if body.base_model not in {m["name"] for m in list_local_models()}:
+    if body.base_model not in {m["name"] for m in list_local_models(user.id)}:
         raise HTTPException(400, f"Unknown base model: {body.base_model}")
-    if db.scalar(select(Training.id).where(Training.user_id == user.id,
-                                           Training.status.in_(("pending", "running"))).limit(1)):
-        raise HTTPException(409, "You already have a training in progress.")
-    t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
-                 scenarios_per_round=body.scenarios, rounds=body.rounds)
-    db.add(t)
-    db.commit()
-    out = detail(db, t)
+    if not _SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "The server is busy with other trainings; try again later.")
+    try:
+        t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
+                     scenarios_per_round=body.scenarios, rounds=body.rounds)
+        db.add(t)
+        db.commit()
+        out = detail(db, t)
+    except Exception as e:
+        _SLOTS.release()
+        if isinstance(e, IntegrityError):  # models.ONE_ACTIVE_TRAINING
+            raise HTTPException(409, "You already have a training in progress.") from None
+        raise
     db.close()  # get_db only exits after background tasks, so return the connection to the pool now
-    # ponytail: each run holds one anyio worker thread (40, shared with the sync routes) and its request open, so
-    # shutdown waits for running trainings; the cap is only per user. Move to a worker process if that bites.
-    background.add_task(run_training, t.id, llm, fake.FakeLocalModel if fake.enabled() else LocalModel)
+    # ponytail: each run holds a worker thread and its request open, so shutdown waits for running trainings, and a
+    # response that never finishes sending would keep its slot. Move runs to a worker process if that bites.
+    background.add_task(_run_in_slot, t.id, llm, fake.FakeLocalModel if fake.enabled() else LocalModel)
     return out
+
+
+def _run_in_slot(*args) -> None:
+    try:
+        run_training(*args)
+    finally:
+        _SLOTS.release()
 
 
 @router.get("")
