@@ -3,6 +3,7 @@ import os
 # Tests always run against the test database, never DATABASE_URL from the environment.
 os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", "postgresql+psycopg://localhost/trainform_test")
 os.environ.setdefault("TRAINFORM_SECRET", "test-secret")
+os.environ.pop("TRAINFORM_FAKE_LLM", None)  # fake mode only where a test sets it
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

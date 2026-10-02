@@ -36,7 +36,7 @@ def zip_names(data):
         return zf.namelist(), json.loads(zf.read("adapter_config.json"))
 
 
-def test_fake_mode_training_over_http(client, fake_mode):
+def test_fake_mode_training_over_http(client, db, fake_mode):
     assert not app.dependency_overrides
     auth = signup(client)  # no Claude key linked
 
@@ -55,12 +55,14 @@ def test_fake_mode_training_over_http(client, fake_mode):
     d = client.get(f"/api/trainings/{tid}", headers=auth).json()
     assert (d["status"], d["error"], d["current_round"], d["scenarios_done"]) == ("completed", None, 2, 6)
     assert [(w["label"], w["runs"]) for w in d["score_windows"]] == [("n", 6), ("n/2", 3), ("n/4", 1), ("last", 1)]
-    assert d["best_score"] is not None and d["best_model_id"] is not None
     assert d["latest_prompt"] != INITIAL_PROMPT and d["latest_prompt"].startswith(INITIAL_PROMPT)
 
     rounds = client.get(f"/api/trainings/{tid}/rounds", headers=auth).json()
     assert [(x["round"], x["scenarios"]) for x in rounds] == [(1, 3), (2, 3)]
     assert all(x["model_id"] for x in rounds)
+    top = max(x["mean_score"] for x in rounds)
+    assert d["best_score"] == pytest.approx(top)
+    assert d["best_model_id"] == next(x["model_id"] for x in rounds if x["mean_score"] == pytest.approx(top))
 
     scenarios = client.get(f"/api/trainings/{tid}/rounds/1/scenarios", headers=auth).json()
     assert [s["scenario_number"] for s in scenarios] == [1, 2, 3]
@@ -74,7 +76,7 @@ def test_fake_mode_training_over_http(client, fake_mode):
     assert max(s["score"] for s in scenarios) >= HIGH_SCORE > min(s["score"] for s in scenarios)
 
     r = client.get(f"/api/trainings/{tid}/download/prompt", headers=auth)
-    assert r.status_code == 200 and r.text == d["latest_prompt"]
+    assert r.status_code == 200 and r.text == db.get(TrainedModel, d["best_model_id"]).prompt
     assert r.headers["content-disposition"] == f'attachment; filename="training-{tid}-prompt.txt"'
     r = client.get(f"/api/trainings/{tid}/download/weights", headers=auth)
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
