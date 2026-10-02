@@ -1,4 +1,4 @@
-import { crc32 } from 'node:zlib'
+import { execFileSync } from 'node:child_process'
 import { expect } from '@playwright/test'
 
 export const uid = (prefix = 'e2e') => `${prefix}_${crypto.randomUUID().slice(0, 13)}`
@@ -19,44 +19,17 @@ export async function signIn(page, { username, password }) {
   await expect(page.getByRole('heading', { name: 'Train an agent' })).toBeVisible()
 }
 
-// A stored (uncompressed) zip; save_upload only needs config.json and a *.safetensors file, fake mode loads neither.
-export function modelZip() {
-  const files = [
-    ['config.json', Buffer.from('{}')],
-    ['model.safetensors', Buffer.from('\x02\0\0\0\0\0\0\0{}')], // empty safetensors: u64 header length + "{}"
-  ]
-  const local = []
-  const central = []
-  let offset = 0
-  for (const [name, data] of files) {
-    const header = Buffer.alloc(26)
-    header.writeUInt16LE(20, 0) // version needed; flags, method (stored), time and date stay 0
-    header.writeUInt32LE(crc32(data), 10)
-    header.writeUInt32LE(data.length, 14)
-    header.writeUInt32LE(data.length, 18)
-    header.writeUInt16LE(name.length, 22)
-    local.push(u32(0x04034b50), header, Buffer.from(name), data)
-    const entry = Buffer.alloc(42)
-    entry.writeUInt16LE(20, 0) // version made by
-    header.copy(entry, 2, 0, 26) // same fields as the local header; extra, comment, disk and attrs stay 0
-    entry.writeUInt32LE(offset, 38)
-    central.push(u32(0x02014b50), entry, Buffer.from(name))
-    offset += 30 + name.length + data.length
-  }
-  const dir = Buffer.concat(central)
-  const end = Buffer.alloc(18)
-  end.writeUInt16LE(files.length, 4)
-  end.writeUInt16LE(files.length, 6)
-  end.writeUInt32LE(dir.length, 8)
-  end.writeUInt32LE(offset, 12)
-  return Buffer.concat([...local, dir, u32(0x06054b50), end])
-}
-
-function u32(n) {
-  const b = Buffer.alloc(4)
-  b.writeUInt32LE(n)
-  return b
-}
+// save_upload only needs config.json and a *.safetensors file (here an empty one: u64 header length + "{}");
+// fake mode loads neither. The backend's Python (set in playwright.config.js) writes the zip.
+const zipScript = `
+import io, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("config.json", "{}")
+    z.writestr("model.safetensors", b"\\x02" + bytes(7) + b"{}")
+sys.stdout.buffer.write(buf.getvalue())
+`
+export const modelZip = () => execFileSync(process.env.E2E_PYTHON, ['-c', zipScript])
 
 export async function uploadModel(request, auth) {
   const name = uid('model')

@@ -113,7 +113,7 @@ all scores, prompts and adapters are canned.
 ```bash
 cd backend && .venv/bin/python -m pytest -q          # uses trainform_test; override with TEST_DATABASE_URL
 cd frontend && npx vitest --run && npm run lint && npm run build
-createdb trainform_e2e && cd frontend && npx playwright install chromium && npm run e2e
+createdb trainform_e2e 2>/dev/null; cd frontend && npx playwright install chromium && npm run e2e
 ```
 
 - **Unit** (`backend/tests/unit`, `frontend/src/**/*.test.{js,jsx}`): auth, agents, Claude call handling, the local

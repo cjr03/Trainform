@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { defineConfig } from '@playwright/test'
 
-const python = process.env.E2E_PYTHON || resolve(import.meta.dirname, '../backend/.venv/bin/python')
-// Workers re-evaluate this file but inherit the env, so the runner and its workers share one models dir.
+// Workers re-evaluate this file but inherit the env, so the runner and its workers share one models dir,
+// and the specs' helpers find the same Python (they use it to build the model zip fixture).
+const python = (process.env.E2E_PYTHON ||= resolve(import.meta.dirname, '../backend/.venv/bin/python'))
 process.env.E2E_MODELS_DIR ||= mkdtempSync(join(tmpdir(), 'trainform-e2e-models-'))
 
 export default defineConfig({
