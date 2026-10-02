@@ -83,14 +83,15 @@ cd frontend && npm install && npm run dev
 | `DATABASE_URL` | `postgresql+psycopg://localhost/trainform` | Application database |
 | `ANTHROPIC_API_KEY` | none | Claude key for users who have not linked their own |
 | `MODELS_DIR` | `backend/data/models` | Where downloaded and uploaded base models are stored |
-| `TRAINFORM_FAKE_LLM` | unset | `1` turns on demo mode (below; added by PR #9). Never set it in production |
+| `TRAINFORM_FAKE_LLM` | unset | `1` turns on demo mode (below). Never set it in production |
 | `TEST_DATABASE_URL` | `postgresql+psycopg://localhost/trainform_test` | Database the test suite uses (it never touches `DATABASE_URL`) |
 
 ### Claude linkage
 
 Each user can link an Anthropic API key at sign-up or on the Account page. The key is stored Fernet-encrypted and
 never returned by the API, which reports only whether a key is linked. Claude calls use the user's own key and fall
-back to `ANTHROPIC_API_KEY`. With neither, Claude-backed actions return 400 and ask the user to link a key.
+back to `ANTHROPIC_API_KEY`. With neither, Claude-backed actions return 400 and ask the user to link a key. A linked
+key that can't be decrypted also returns 400, asking the user to re-link it (no fallback).
 
 ### Base models
 
@@ -101,9 +102,19 @@ safetensors weights. Gated repos need their license accepted on huggingface.co. 
 
 ### Demo / fake mode
 
-`TRAINFORM_FAKE_LLM=1` runs Trainform without Claude or a real model, for demos and end-to-end tests. It is added by
-PR #9 and does nothing until that PR is merged. No API key is needed, but a model must still be listed under
-`MODELS_DIR`. For a demo, a directory containing only a `config.json` of `{}` is enough.
+`TRAINFORM_FAKE_LLM=1` (exactly `1`) runs Trainform without Claude or real model weights, for demos and the E2E
+suite. `backend/app/fake.py` supplies the stand-ins: every Claude agent returns canned, deterministic answers (four
+fixed criteria, three personas used in turn), even for users with a linked key, and trainings use a fake model that
+loads no weights and saves a placeholder LoRA adapter zip. No API key is needed, but the base model must still be listed
+under `MODELS_DIR`: any directory with a `config.json` counts, so `{}` is enough.
+
+```bash
+cd backend
+mkdir -p data/models/demo && echo '{}' > data/models/demo/config.json
+TRAINFORM_FAKE_LLM=1 TRAINFORM_SECRET=demo .venv/bin/uvicorn app.main:app --reload
+```
+
+Hub search and download still call the real Hugging Face Hub in fake mode.
 
 **Never set `TRAINFORM_FAKE_LLM` in production.** Any signed-in user can then run trainings without a Claude key, and
 all scores, prompts and adapters are canned.
@@ -111,10 +122,19 @@ all scores, prompts and adapters are canned.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q          # uses trainform_test; override with TEST_DATABASE_URL
-cd frontend && npx vitest --run && npm run lint && npm run build
+cd backend && .venv/bin/python -m pytest -q --cov=app --cov-branch --cov-fail-under=95   # uses trainform_test
+cd frontend && npm run lint && npx vitest --run --coverage && npm run build                # 95% lines, vite.config.js
 createdb trainform_e2e 2>/dev/null; cd frontend && npx playwright install chromium && npm run e2e
 ```
+
+The backend suite uses `TEST_DATABASE_URL` (default `postgresql+psycopg://localhost/trainform_test`). The E2E run
+reads these variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `E2E_DATABASE_URL` | `postgresql+psycopg://localhost/trainform_e2e` | Database for the E2E backend (not dropped between runs) |
+| `E2E_PYTHON` | `backend/.venv/bin/python` | Python that runs uvicorn and builds the model-zip fixture |
+| `E2E_MODELS_DIR` | a fresh temp dir | `MODELS_DIR` for the E2E backend |
 
 - **Unit** (`backend/tests/unit`, `frontend/src/**/*.test.{js,jsx}`): auth, agents, Claude call handling, the local
   model (a tiny model built in the test), the training loop, the API client and each page. They never call the
@@ -122,15 +142,17 @@ createdb trainform_e2e 2>/dev/null; cd frontend && npx playwright install chromi
 - **Integration** (`backend/tests/integration`): the HTTP API against a real PostgreSQL test database. It is
   dropped and recreated each session.
 - **E2E** (`frontend/e2e`): Playwright drives Chromium through sign-up, account, a full training, Inspect and a
-  390px-wide phone layout. `playwright.config.js` starts the backend in fake mode on port 8000 (database
-  `trainform_e2e`, or `E2E_DATABASE_URL`; models in a fresh temp dir; Python from `E2E_PYTHON` or
-  `backend/.venv`) and serves the production build with `vite preview`. Ports 8000 and 4173 must be free.
+  390px-wide phone layout. `playwright.config.js` starts the backend on port 8000 with `TRAINFORM_FAKE_LLM=1` and
+  `TRAINFORM_SECRET=e2e-secret`, then builds the frontend and serves it with `vite preview` on port 4173. Both ports
+  must be free. Failures keep a trace, and the HTML report is written to `frontend/playwright-report`.
 
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`. The backend job runs pytest on Python
-3.14 with CPU torch against a Postgres 17 service. The frontend job runs `npm ci`, lint, Vitest and the production
-build. The e2e job runs Playwright against its own Postgres 17 service and uploads the HTML report when it fails.
+3.14 with CPU torch against a Postgres 17 service, and fails below 95% coverage of `app` (statements and branches).
+The frontend job runs `npm ci`, lint, Vitest with coverage (fails below 95% of lines) and the production build. The
+e2e job builds the backend venv, installs Chromium, runs `npx playwright test` against its own Postgres 17 service
+and uploads the HTML report when it fails.
 
 ## Operations and security notes
 
@@ -141,9 +163,9 @@ build. The e2e job runs Playwright against its own Postgres 17 service and uploa
 - **Sessions** are stateless HMAC-signed bearer tokens that last 7 days. The frontend keeps them in `localStorage`.
   Changing a password does **not** revoke existing tokens. They stay valid until they expire.
 - **Rotating `TRAINFORM_SECRET`** invalidates every token, which logs everyone out. It also makes every linked Claude
-  key unreadable, because the encryption key comes from the secret, so users must link their keys again. Until they do, their Claude actions fail (HTTP 500 today; a 400 with a
-  re-link message once PR #9 merges), and `ANTHROPIC_API_KEY` is not used as a fallback. Re-linking on the Account
-  page fixes it. Keep the secret stable and back it up.
+  key unreadable, because the encryption key comes from the secret, so users must link their keys again. Until they
+  do, their Claude actions return 400 with a message to re-link the key on the Account page, and
+  `ANTHROPIC_API_KEY` is not used as a fallback. Keep the secret stable and back it up.
 - **Weights:** only safetensors weights are accepted from the Hub and from uploads, and models load with
   `use_safetensors=True`, because pickle weights can execute code on load.
 - **One active training per user:** starting a second training while one is pending or running returns 409.
