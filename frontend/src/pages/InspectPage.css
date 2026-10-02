@@ -256,4 +256,14 @@
   .bubble {
     max-width: 92%;
   }
+
+  /* Name and score share the first row; the bar spans the row below. */
+  .criteria li {
+    grid-template-columns: 1fr auto;
+  }
+
+  .criteria li > .inspect-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }
