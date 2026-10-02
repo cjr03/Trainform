@@ -1,13 +1,17 @@
 import io
 import zipfile
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import HTTPException
+from huggingface_hub.errors import LocalEntryNotFoundError
 
 from app import local_model
 from app.auth import current_user
 from app.main import app
+
+MODEL = {"config.json": "{}", "model.safetensors": "w"}
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +26,16 @@ def zipped(files):
         for path, data in files.items():
             zf.writestr(path, data)
     return buf.getvalue()
+
+
+def corrupt_zip():
+    data = bytearray(zipped({"config.json": "{}", "model.safetensors": "weights-data"}))
+    data[data.find(b"weights-data")] ^= 1  # breaks the stored member's CRC
+    return bytes(data)
+
+
+def empty(path):
+    return not path.exists() or not any(path.iterdir())
 
 
 def upload(client, name, data):
@@ -87,6 +101,27 @@ def test_hub_download_not_found(authed_client, monkeypatch):
     assert "org/missing" in r.json()["detail"]
 
 
+# snapshot_download reports an unreachable Hub as LocalEntryNotFoundError; model_info raises httpx errors.
+@pytest.mark.parametrize("error", [LocalEntryNotFoundError("hub unreachable"), httpx.ConnectError("offline")])
+def test_hub_download_network_error_is_502(authed_client, models_dir, monkeypatch, error):
+    def unreachable(*a, **kw):
+        raise error
+
+    info = SimpleNamespace(siblings=[SimpleNamespace(rfilename="model.safetensors", size=1)])
+    monkeypatch.setattr(local_model, "HfApi", lambda: SimpleNamespace(model_info=lambda *a, **kw: info))
+    monkeypatch.setattr(local_model, "snapshot_download", unreachable)
+    assert authed_client.post("/api/hub/download", json={"repo_id": "org/tiny"}).status_code == 502
+    assert empty(models_dir)
+    monkeypatch.setattr(local_model, "HfApi", lambda: SimpleNamespace(model_info=unreachable))
+    assert authed_client.post("/api/hub/download", json={"repo_id": "org/tiny"}).status_code == 502
+
+
+def test_hub_download_over_upload_is_409(authed_client, monkeypatch):
+    assert upload(authed_client, "org--x", zipped(MODEL)).status_code == 201
+    monkeypatch.setattr(local_model, "snapshot_download", lambda *a, **kw: pytest.fail("must not download"))
+    assert authed_client.post("/api/hub/download", json={"repo_id": "org/x"}).status_code == 409
+
+
 def test_upload_and_list(authed_client, models_dir):
     assert authed_client.get("/api/models").json() == []
     r = upload(authed_client, "mine", zipped({"mine/config.json": "{}", "mine/model.safetensors": "w"}))
@@ -97,19 +132,22 @@ def test_upload_and_list(authed_client, models_dir):
 
 
 def test_upload_duplicate_is_409(authed_client):
-    data = zipped({"config.json": "{}"})
+    data = zipped(MODEL)
     assert upload(authed_client, "dup", data).status_code == 201
     assert upload(authed_client, "dup", data).status_code == 409
 
 
 @pytest.mark.parametrize("name,data", [
     ("bad", b"not a zip"),
-    ("bad", zipped({"config.json": "{}", "pytorch_model.bin": "x"})),
+    ("bad", zipped({**MODEL, "pytorch_model.bin": "x"})),
     ("bad", zipped({"model.safetensors": "w"})),
-    ("../bad", zipped({"config.json": "{}"})),
-], ids=["not-zip", "pickle", "no-config", "bad-name"])
+    ("bad", zipped({"config.json": "{}"})),
+    ("bad", corrupt_zip()),
+    ("bad", zipped({**MODEL, "a": "x", "a/b": "y"})),
+    ("../bad", zipped(MODEL)),
+], ids=["not-zip", "pickle", "no-config", "no-safetensors", "corrupt", "path-collision", "bad-name"])
 def test_upload_invalid_is_400(authed_client, models_dir, name, data):
     r = upload(authed_client, name, data)
     assert r.status_code == 400
     assert r.json()["detail"]
-    assert not (models_dir / "bad").exists()
+    assert empty(models_dir)
