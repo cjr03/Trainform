@@ -1,9 +1,7 @@
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import training
-from app.auth import current_user
 from app.db import engine
 from app.main import app
 from app.models import TrainedModel, Training, User
@@ -196,10 +194,6 @@ def test_other_users_training_is_404(authed_client, db):
 
 
 def test_routes_require_a_user(client):
-    def deny():
-        raise HTTPException(401, "Not authenticated")
-
-    app.dependency_overrides[current_user] = deny
     assert client.post("/api/trainings", json=BODY).status_code == 401
     for path in ("", "/1", "/1/rounds", "/1/rounds/1/scenarios", "/1/download/prompt", "/1/download/weights"):
         assert client.get(f"/api/trainings{path}").status_code == 401

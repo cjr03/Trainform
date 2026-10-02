@@ -4,12 +4,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import HTTPException
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 from app import local_model
-from app.auth import current_user
-from app.main import app
 
 MODEL = {"config.json": "{}", "model.safetensors": "w"}
 
@@ -42,14 +39,9 @@ def upload(client, name, data):
     return client.post("/api/hub/upload", data={"name": name}, files={"file": ("m.zip", data, "application/zip")})
 
 
-def deny():
-    raise HTTPException(401, "Not authenticated")
-
-
 @pytest.mark.parametrize("method,path", [("get", "/api/hub/models"), ("post", "/api/hub/download"),
                                          ("post", "/api/hub/upload"), ("get", "/api/models")])
 def test_routes_require_auth(client, method, path):
-    app.dependency_overrides[current_user] = deny
     assert getattr(client, method)(path).status_code == 401
 
 

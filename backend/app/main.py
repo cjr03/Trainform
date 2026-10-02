@@ -9,6 +9,7 @@ from app.db import Base, engine
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    auth._secret()  # fail fast: tokens and stored Claude keys both need TRAINFORM_SECRET
     # ponytail: create_all instead of migrations; add Alembic once a deployed schema has to change.
     Base.metadata.create_all(engine)
     # Training runs are background threads of this process, so any left pending/running died with the last one.

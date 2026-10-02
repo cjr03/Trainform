@@ -11,13 +11,10 @@ import httpx
 import pytest
 import torch
 from huggingface_hub.errors import GatedRepoError, LocalEntryNotFoundError, RepositoryNotFoundError
-from tokenizers import Tokenizer, models as tokenizer_models, pre_tokenizers
-from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
 from app import local_model
 from app.local_model import LocalModel
 
-WORDS = ["<unk>", "<pad>", "</s>", "system", "user", "assistant", ":", "be", "helpful", "hi", "hello", "there"]
 MODEL = {"config.json": "{}", "model.safetensors": "w"}
 
 
@@ -42,23 +39,6 @@ def empty(path):
 def models_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(local_model, "MODELS_DIR", tmp_path / "models")
     return tmp_path / "models"
-
-
-@pytest.fixture(scope="session")
-def tiny_model_dir(tmp_path_factory):
-    """A 2-layer Llama with a word-level tokenizer, built offline."""
-    root = tmp_path_factory.mktemp("models")
-    path = root / "tiny"
-    tok = Tokenizer(tokenizer_models.WordLevel({w: i for i, w in enumerate(WORDS)}, unk_token="<unk>"))
-    tok.pre_tokenizer = pre_tokenizers.Whitespace()
-    tokenizer = PreTrainedTokenizerFast(tokenizer_object=tok, unk_token="<unk>", pad_token="<pad>", eos_token="</s>")
-    tokenizer.chat_template = ("{% for m in messages %}{{ m['role'] }}: {{ m['content'] }} {% endfor %}"
-                               "{% if add_generation_prompt %}assistant: {% endif %}")
-    tokenizer.save_pretrained(path)
-    config = LlamaConfig(vocab_size=len(WORDS), hidden_size=32, intermediate_size=64, num_hidden_layers=2,
-                         num_attention_heads=2, num_key_value_heads=2, eos_token_id=2, pad_token_id=1, bos_token_id=None)
-    LlamaForCausalLM(config).save_pretrained(path)
-    return path
 
 
 @pytest.fixture(scope="session")

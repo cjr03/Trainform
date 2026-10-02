@@ -1,13 +1,17 @@
 import json
+import logging
 import os
-from functools import partial
+from functools import cache, partial
 
 import anthropic
+from cryptography.fernet import InvalidToken
 from fastapi import Depends, HTTPException
 
+from app import fake
 from app.auth import current_user, decrypt_api_key
 from app.models import User
 
+log = logging.getLogger(__name__)
 MODEL = "claude-opus-5-5"
 
 
@@ -53,10 +57,22 @@ def call_claude(api_key: str, system: str, message: str, schema: dict | None = N
         raise LLMError("Claude returned malformed JSON") from e
 
 
+@cache
+def _warn_fake_mode():
+    log.warning("TRAINFORM_FAKE_LLM=1: Claude calls return canned fake answers and trainings use a fake model")
+
+
 def get_llm(user: User = Depends(current_user)):
     """FastAPI dependency: an `llm(system, message, schema=None)` callable bound to the user's Claude key."""
+    if fake.enabled():
+        _warn_fake_mode()
+        return fake.fake_llm
     if user.anthropic_key_encrypted:
-        key = decrypt_api_key(user.anthropic_key_encrypted)
+        try:
+            key = decrypt_api_key(user.anthropic_key_encrypted)
+        except InvalidToken:
+            raise HTTPException(400, "Your linked Claude key can't be read (the server secret changed). "
+                                     "Re-link it on the Account page.") from None
     else:
         key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:

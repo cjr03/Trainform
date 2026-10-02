@@ -73,8 +73,6 @@ def test_limits_are_inclusive(authed_client):
     assert authed_client.post("/api/agents/rubric", json={"agent_prompt": "x" * 20000}).status_code == 200
 
 
-# ponytail: drop the xfail once backend-auth replaces the current_user stub.
-@pytest.mark.xfail(raises=NotImplementedError, reason="current_user is implemented by backend-auth", strict=False)
 @pytest.mark.parametrize("path, body", [("/api/agents/prompt", {"description": "x"}),
                                         ("/api/agents/rubric", {"agent_prompt": "x"})])
 def test_requires_auth(client, path, body):

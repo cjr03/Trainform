@@ -1,6 +1,8 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from app import auth
+from app.main import app
 from app.models import User
 
 SIGNUP = {"email": "Ada@Example.com", "username": "ada", "password": "password1", "password_confirm": "password1"}
@@ -179,3 +181,10 @@ def test_token_for_deleted_user_401(client, db):
 @pytest.mark.parametrize("method,path", [("put", "/api/me/claude-key"), ("delete", "/api/me/claude-key")])
 def test_claude_key_requires_auth(client, method, path):
     assert client.request(method, path, json={"api_key": "k"}).status_code == 401
+
+
+def test_startup_fails_fast_without_secret(db, monkeypatch):
+    monkeypatch.delenv("TRAINFORM_SECRET")
+    with pytest.raises(RuntimeError, match="TRAINFORM_SECRET is not set"):
+        with TestClient(app):
+            pass
