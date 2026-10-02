@@ -1,5 +1,7 @@
+import io
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -79,19 +81,45 @@ def test_main_wires_env_and_always_stops_postgres(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop, "stop_postgres", lambda pg_bin, data_dir: calls.append("stop"))
     monkeypatch.setattr(desktop, "mount_frontend", lambda app, static_dir: calls.append(("mount", static_dir)))
 
-    def crash(app, host, port):
-        calls.append(("serve", host, port))
+    def crash(app, host, port, timeout_graceful_shutdown):
+        calls.append(("serve", host, port, timeout_graceful_shutdown))
         raise RuntimeError("boom")
 
     monkeypatch.setattr(desktop.uvicorn, "run", crash)
     data = tmp_path / "data"
     with pytest.raises(RuntimeError, match="boom"):
         desktop.main(["--port", "4321", "--pg-bin", "/pg/bin", "--static-dir", "/fe", "--data-dir", str(data)])
-    assert calls == ["start", ("mount", Path("/fe")), ("serve", "127.0.0.1", 4321), "stop"]
+    # A running training must not hold up quitting; startup marks it failed next launch.
+    assert calls == ["start", ("mount", Path("/fe")), ("serve", "127.0.0.1", 4321, 5), "stop"]
     assert os.environ["DATABASE_URL"] == desktop.database_url(Path("/s"))
     assert os.environ["TRAINFORM_SECRET"] == (data / "secret").read_text().strip()
     assert os.environ["MODELS_DIR"] == str(data / "models")
     assert stat.S_IMODE(data.stat().st_mode) == 0o700
+
+
+def test_server_shuts_down_when_the_launcher_goes_away(monkeypatch):
+    killed = []
+    monkeypatch.setattr(desktop.sys, "stdin", io.StringIO(""))  # EOF: the launcher closed its end of the pipe
+    monkeypatch.setattr(desktop.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    desktop.exit_with_launcher()
+    assert killed == [(os.getpid(), signal.SIGTERM)]
+
+
+def test_main_watches_the_launcher_only_when_asked(tmp_path, monkeypatch):
+    for key in ("DATABASE_URL", "TRAINFORM_SECRET", "MODELS_DIR"):
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+    started = []
+    monkeypatch.setattr(desktop, "start_postgres", lambda pg_bin, data_dir: Path("/s"))
+    monkeypatch.setattr(desktop, "stop_postgres", lambda pg_bin, data_dir: None)
+    monkeypatch.setattr(desktop, "mount_frontend", lambda app, static_dir: None)
+    monkeypatch.setattr(desktop.uvicorn, "run", lambda *a, **kw: None)
+    monkeypatch.setattr(desktop.threading, "Thread", lambda target, daemon: started.append((target, daemon)) or
+                        type("T", (), {"start": lambda self: None})())
+    base = ["--port", "1", "--pg-bin", "/pg", "--static-dir", "/fe", "--data-dir", str(tmp_path / "d")]
+    desktop.main(base)
+    assert started == []
+    desktop.main([*base, "--exit-with-stdin"])
+    assert started == [(desktop.exit_with_launcher, True)]
 
 
 def _pg_bin():
@@ -114,6 +142,9 @@ def test_embedded_postgres_initialises_starts_and_restarts():
                     assert conn.execute("select 1").fetchone() == (1,)
             finally:
                 desktop.stop_postgres(pg_bin, data)
+        desktop.start_postgres(pg_bin, data)
+        desktop.start_postgres(pg_bin, data)  # a server left behind by a killed launch is replaced, not fatal
+        desktop.stop_postgres(pg_bin, data)
         assert stat.S_IMODE(sock.stat().st_mode) == 0o700
         assert not (data / "postgres" / "postmaster.pid").exists()
     finally:

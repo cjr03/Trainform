@@ -8,7 +8,10 @@ import argparse
 import os
 import secrets
 import shlex
+import signal
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from urllib.parse import quote
 
@@ -53,6 +56,7 @@ def start_postgres(pg_bin: Path, data_dir: Path) -> Path:
     if not (pgdata / "PG_VERSION").exists():
         # Trust auth is safe here: the server listens only on a socket inside a 0700 directory.
         _pg(pg_bin, "initdb", "-D", str(pgdata), "-U", "trainform", "-A", "trust", "-E", "UTF8", "--no-locale")
+    stop_postgres(pg_bin, data_dir)  # a server orphaned by a killed launch would make pg_ctl start fail
     sock.mkdir(mode=0o700, exist_ok=True)
     sock.chmod(0o700)
     _pg(pg_bin, "pg_ctl", "-D", str(pgdata), "-l", str(data_dir / "postgres.log"), "-w", "-t", "60",
@@ -66,6 +70,12 @@ def start_postgres(pg_bin: Path, data_dir: Path) -> Path:
 def stop_postgres(pg_bin: Path, data_dir: Path) -> None:
     subprocess.run([str(pg_bin / "pg_ctl"), "-D", str(data_dir / "postgres"), "-m", "fast", "-w", "stop"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def exit_with_launcher() -> None:
+    """Shut down cleanly (stopping Postgres) once the launcher is gone, even if it was force-quit."""
+    sys.stdin.read()  # the launcher holds the write end of our stdin; EOF means it exited
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def mount_frontend(app, static_dir: Path) -> None:
@@ -86,6 +96,7 @@ def main(argv=None) -> None:
     parser.add_argument("--pg-bin", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("TRAINFORM_DATA_DIR", DEFAULT_DATA_DIR)))
+    parser.add_argument("--exit-with-stdin", action="store_true")
     args = parser.parse_args(argv)
 
     args.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -98,7 +109,10 @@ def main(argv=None) -> None:
         from app.main import app
 
         mount_frontend(app, args.static_dir)
-        uvicorn.run(app, host="127.0.0.1", port=args.port)
+        if args.exit_with_stdin:
+            threading.Thread(target=exit_with_launcher, daemon=True).start()
+        # Don't wait on running trainings when quitting; startup marks them failed next launch.
+        uvicorn.run(app, host="127.0.0.1", port=args.port, timeout_graceful_shutdown=5)
     finally:
         stop_postgres(args.pg_bin, args.data_dir)
 
