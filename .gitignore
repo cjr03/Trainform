@@ -17,3 +17,4 @@ coverage/
 AGENTS.md
 CLAUDE.md
 .claude/skills/gitnexus-*/
+macos/.cache/

@@ -130,6 +130,28 @@ Hub search and download still call the real Hugging Face Hub in fake mode.
 **Never set `TRAINFORM_FAKE_LLM` in production.** Any signed-in user can then run trainings without a Claude key, and
 all scores, prompts and adapters are canned.
 
+## macOS app
+
+```bash
+macos/build.sh        # -> dist/Trainform-0.1.0-arm64.dmg (Apple silicon, macOS 13+), about 2 minutes, 290 MB
+macos/smoke-test.sh   # starts the built bundle's server headlessly and checks the API, UI and a clean shutdown
+```
+
+Open the DMG and drag Trainform into Applications. The app needs nothing installed: it bundles Python with the
+backend's dependencies, PostgreSQL 17 and the built frontend. The build needs Xcode's command line tools (`swiftc`)
+and Node; Python and PostgreSQL are pinned, checksummed downloads cached in `macos/.cache`.
+
+- `macos/Trainform.swift` is a small native window (WKWebView). It starts `python -m app.desktop`
+  (`backend/app/desktop.py`), waits for `/api/health`, and shows the UI from `http://127.0.0.1:47821`. Quitting stops
+  the server and Postgres. If the app is force-quit, the server notices its stdin closing and shuts down on its own.
+- Data lives in `~/Library/Application Support/Trainform`: the Postgres cluster (socket only, no TCP port), downloaded
+  models and the generated `TRAINFORM_SECRET`. Delete that folder to reset the app. To keep it elsewhere, launch with
+  `open --env TRAINFORM_DATA_DIR=<dir> -a Trainform`; macOS caps the Postgres socket path at 103 bytes, so keep it
+  short. The server log is `~/Library/Logs/Trainform.log`.
+- The app is signed ad hoc, which is fine on the Mac that built it. Other Macs block it as from an unidentified
+  developer: right-click > Open, or System Settings > Privacy & Security > Open Anyway. Distributing it properly needs
+  a Developer ID signature and notarization.
+
 ## Tests
 
 ```bash
