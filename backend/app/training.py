@@ -7,7 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field, StringConstraints
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import agents
@@ -21,13 +22,14 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/trainings", tags=["training"])
 
 HIGH_SCORE = 7.0  # scenarios scoring at least this are used as SFT examples
+INTERNAL_ERROR = "Training failed; see the server logs."
 
 
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal) -> None:
     """Run every round of a training. `load_model(name)` returns a LocalModel-like object."""
     with session_factory() as db:
-        t = db.get(Training, training_id)
         try:
+            t = db.get(Training, training_id)
             t.status = "running"
             db.commit()
             model = load_model(t.base_model)
@@ -64,9 +66,14 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
             db.commit()
         except Exception as exc:
             log.exception("Training %s failed", training_id)
-            db.rollback()
-            t.status, t.error = "failed", str(exc)[:1000]
-            db.commit()
+            # File paths and SQL are server internals; LLM/agent errors are what the user can act on.
+            error = INTERNAL_ERROR if isinstance(exc, (OSError, SQLAlchemyError)) else str(exc)[:1000]
+            try:
+                db.rollback()
+                db.execute(update(Training).where(Training.id == training_id).values(status="failed", error=error))
+                db.commit()
+            except Exception:
+                log.exception("Could not mark training %s failed", training_id)
 
 
 def score_windows(scores: list[float]) -> list[dict]:
@@ -121,12 +128,19 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
     if body.base_model not in {m["name"] for m in list_local_models()}:
         raise HTTPException(400, f"Unknown base model: {body.base_model}")
+    if db.scalar(select(Training.id).where(Training.user_id == user.id,
+                                           Training.status.in_(("pending", "running"))).limit(1)):
+        raise HTTPException(409, "You already have a training in progress.")
     t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
                  scenarios_per_round=body.scenarios, rounds=body.rounds)
     db.add(t)
     db.commit()
+    out = detail(db, t)
+    db.close()  # get_db only exits after background tasks, so return the connection to the pool now
+    # ponytail: each run holds one anyio worker thread (40, shared with the sync routes) and its request open, so
+    # shutdown waits for running trainings; the cap is only per user. Move to a worker process if that bites.
     background.add_task(run_training, t.id, llm, LocalModel)
-    return detail(db, t)
+    return out
 
 
 @router.get("")
