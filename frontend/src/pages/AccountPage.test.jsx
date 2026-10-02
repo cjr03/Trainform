@@ -83,7 +83,14 @@ it('links a Claude key and updates the badge', async () => {
   await user.click(within(claude()).getByRole('button', { name: 'Link key' }))
   expect(api.setClaudeKey).toHaveBeenCalledWith('sk-ant-123')
   expect(await within(claude()).findByText('Linked')).toBeInTheDocument()
+  expect(within(claude()).getByRole('status')).toHaveTextContent('Key saved.')
   expect(key).toHaveValue('')
+})
+
+it('ignores a whitespace-only key', async () => {
+  const user = await setup()
+  await user.type(within(claude()).getByLabelText('Anthropic API key'), '   ')
+  expect(within(claude()).getByRole('button', { name: 'Link key' })).toBeDisabled()
 })
 
 it('unlinks the Claude key and updates the badge', async () => {
@@ -94,6 +101,7 @@ it('unlinks the Claude key and updates the badge', async () => {
   await user.click(within(claude()).getByRole('button', { name: 'Unlink' }))
   expect(api.removeClaudeKey).toHaveBeenCalled()
   expect(await within(claude()).findByText('Not linked')).toBeInTheDocument()
+  expect(within(claude()).getByRole('status')).toHaveTextContent('Key removed.')
   expect(within(claude()).queryByRole('button', { name: 'Unlink' })).not.toBeInTheDocument()
 })
 

@@ -160,3 +160,78 @@ it('stays on the last phase for other server errors', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Anthropic API key was rejected')
   expect(currentStep()).toHaveTextContent('Link Claude')
 })
+
+it('switches tabs with the arrow keys and keeps focus on the tab', async () => {
+  const { user } = setup()
+  const signIn = screen.getByRole('tab', { name: 'Sign in' })
+  const create = screen.getByRole('tab', { name: 'Create account' })
+  signIn.focus()
+  await user.keyboard('{ArrowRight}')
+  expect(create).toHaveAttribute('aria-selected', 'true')
+  expect(create).toHaveFocus()
+  await user.keyboard('{ArrowLeft}')
+  expect(signIn).toHaveAttribute('aria-selected', 'true')
+  expect(signIn).toHaveFocus()
+})
+
+it('blocks usernames the server would reject', async () => {
+  const { user } = setup()
+  await user.click(screen.getByRole('tab', { name: 'Create account' }))
+  await user.type(screen.getByLabelText('Email'), 'ada@x.io')
+  await user.type(screen.getByLabelText('Username'), 'a b')
+  await user.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(screen.getByRole('alert')).toHaveTextContent(/username/i)
+  expect(currentStep()).toHaveTextContent('Identity')
+  expect(screen.getByLabelText('Username')).toHaveAttribute('maxLength', '32')
+})
+
+it('caps signup passwords at the server limit', async () => {
+  const { user } = setup()
+  await toSecurity(user)
+  expect(screen.getByLabelText('Password')).toHaveAttribute('maxLength', '128')
+  expect(screen.getByLabelText('Confirm password')).toHaveAttribute('maxLength', '128')
+})
+
+it('returns to identity on an email conflict or an invalid email', async () => {
+  const { user } = setup()
+  api.signup.mockRejectedValueOnce(new ApiError(409, 'Email already registered'))
+  await toLinkClaude(user)
+  await user.click(screen.getByRole('button', { name: 'Skip for now' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Email already registered')
+  expect(currentStep()).toHaveTextContent('Identity')
+
+  api.signup.mockRejectedValueOnce(new ApiError(422, 'value is not a valid email address: It should have a period.'))
+  await user.click(screen.getByRole('button', { name: 'Continue' }))
+  await user.click(screen.getByRole('button', { name: 'Continue' }))
+  await user.click(screen.getByRole('button', { name: 'Skip for now' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('not a valid email')
+  expect(currentStep()).toHaveTextContent('Identity')
+})
+
+it('disables both final buttons while signup is pending', async () => {
+  const { user } = setup()
+  api.signup.mockReturnValue(new Promise(() => {}))
+  await toLinkClaude(user)
+  await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-1')
+  await user.click(screen.getByRole('button', { name: 'Link & create account' }))
+  expect(screen.getByRole('button', { name: 'Skip for now' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /Link & create account/ })).toBeDisabled()
+})
+
+it('does not carry a sign-in password into signup', async () => {
+  const { user } = setup()
+  await user.type(screen.getByLabelText('Password'), 'other-account-pw')
+  await toSecurity(user)
+  expect(screen.getByLabelText('Password')).toHaveValue('')
+})
+
+it('treats a whitespace-only key as no key', async () => {
+  const { user } = setup()
+  api.signup.mockResolvedValue(result)
+  await toLinkClaude(user)
+  await user.type(screen.getByLabelText('Anthropic API key'), '   ')
+  expect(screen.getByRole('button', { name: 'Link & create account' })).toBeDisabled()
+  await user.type(screen.getByLabelText('Anthropic API key'), ' sk-ant-1 ')
+  await user.click(screen.getByRole('button', { name: 'Link & create account' }))
+  expect(api.signup).toHaveBeenCalledWith(expect.objectContaining({ anthropic_api_key: 'sk-ant-1' }))
+})
