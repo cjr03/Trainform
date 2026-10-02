@@ -39,6 +39,7 @@ const detail = (over = {}) => ({
   score_windows: [],
   best_model_id: null,
   best_score: null,
+  best_prompt: null,
   created_at: '2026-10-02T10:00:00Z',
   ...over,
 })
@@ -86,6 +87,7 @@ const completed = detail({
   scenarios_done: 15,
   best_score: 8.4,
   latest_prompt: 'Be brief.',
+  best_prompt: 'Be kind.',
 })
 
 it('unlocks each step only once the previous ones are valid', async () => {
@@ -101,6 +103,8 @@ it('unlocks each step only once the previous ones are valid', async () => {
   expect(step('Rubric')).toBeDisabled()
   await user.click(nextButton())
   expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
+  // Next is now disabled, so focus must move into the new slide rather than drop to <body>.
+  expect(screen.getByRole('region', { name: 'Prompt' })).toHaveFocus()
 
   const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
   await user.type(prompt, '   ')
@@ -225,6 +229,35 @@ it('generates a prompt from a description into the editable prompt', async () =>
   expect(nextButton()).toBeEnabled()
 })
 
+it('asks before a generated prompt replaces a written one', async () => {
+  const user = userEvent.setup()
+  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
+  render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
+  await user.type(prompt, 'My own prompt.')
+  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
+  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
+
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
+  expect(confirm).toHaveBeenCalledOnce()
+  expect(api.generatePrompt).not.toHaveBeenCalled()
+  expect(prompt).toHaveValue('My own prompt.')
+
+  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
+  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
+  confirm.mockRestore()
+})
+
+it('shows no source badge for a model without one', async () => {
+  api.listLocalModels.mockResolvedValue([{ name: 'demo', source: null }])
+  render(<TrainPage />)
+  const option = (await screen.findByRole('radio', { name: 'demo' })).closest('label')
+  expect(option.querySelector('.badge')).toBeNull()
+})
+
 it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
   const user = userEvent.setup()
   api.generateRubric
@@ -306,6 +339,18 @@ it('shows a failed start inline on the Scenarios slide', async () => {
   expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
 })
 
+it('opens the running training when Start reports one is already in progress', async () => {
+  const user = userEvent.setup()
+  await reachScenarios(user)
+  api.startTraining.mockRejectedValue(Object.assign(new Error('You already have a training in progress.'), { status: 409 }))
+  api.listTrainings.mockResolvedValue([{ id: 9, status: 'running' }])
+  api.getTraining.mockResolvedValue(detail({ id: 9, scenarios_done: 2 }))
+  await user.click(screen.getByRole('button', { name: 'Start training' }))
+  await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
+  expect(api.getTraining).toHaveBeenCalledWith(9)
+  expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '2')
+})
+
 it('reopens a training that is still running', async () => {
   api.listTrainings.mockResolvedValue([{ id: 7, status: 'running' }, { id: 6, status: 'completed' }])
   api.getTraining.mockResolvedValue(detail({ scenarios_done: 4 }))
@@ -372,8 +417,9 @@ it('polls every 2 s, rendering both progress bars and the four score windows, un
   const scenarios = screen.getByRole('progressbar', { name: 'Scenarios tested' })
   expect(scenarios).toHaveAttribute('aria-valuenow', '6')
   expect(scenarios).toHaveAttribute('aria-valuemax', '15')
-  const rounds = screen.getByRole('progressbar', { name: 'Training rounds' })
-  expect(rounds).toHaveAttribute('aria-valuenow', '2')
+  // Round 2 is still running, so only one round is complete.
+  const rounds = screen.getByRole('progressbar', { name: 'Rounds completed' })
+  expect(rounds).toHaveAttribute('aria-valuenow', '1')
   expect(rounds).toHaveAttribute('aria-valuemax', '3')
   expect(screen.getByRole('status')).toHaveTextContent(/running/i)
 
@@ -412,9 +458,12 @@ it('advances to the completion screen and downloads the prompt and weights', asy
   await tick(6000)
   expect(api.getTraining).toHaveBeenCalledTimes(calls)
   expect(screen.getByTestId('best-score')).toHaveTextContent('8.4')
-  expect(screen.getByText('Be brief.')).toBeInTheDocument()
+  // The prompt shown is the best round's, which is what Download prompt saves.
+  expect(screen.getByRole('heading', { name: 'Best prompt' })).toBeInTheDocument()
+  expect(screen.getByTestId('best-prompt')).toHaveTextContent('Be kind.')
+  expect(screen.queryByText('Be brief.')).not.toBeInTheDocument()
 
-  const promptBlob = new Blob(['Be brief.'])
+  const promptBlob = new Blob(['Be kind.'])
   const weightsBlob = new Blob(['zip'])
   api.downloadPrompt.mockResolvedValue(promptBlob)
   api.downloadWeights.mockResolvedValue(weightsBlob)
@@ -424,6 +473,9 @@ it('advances to the completion screen and downloads the prompt and weights', asy
   await user.click(screen.getByRole('button', { name: 'Download weights' }))
   expect(api.downloadWeights).toHaveBeenCalledWith(7)
   await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(weightsBlob, 'training-7-lora.zip'))
+
+  await user.click(step('Training'))
+  expect(screen.getByRole('progressbar', { name: 'Rounds completed' })).toHaveAttribute('aria-valuenow', '3')
 })
 
 it('resets the dashboard for a new training', async () => {
