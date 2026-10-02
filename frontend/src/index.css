@@ -141,11 +141,6 @@ pre {
     flex-wrap: wrap;
     justify-content: space-between;
     gap: 8px;
-    padding: 10px 12px;
-  }
-
-  .brand {
-    letter-spacing: 0.2em;
   }
 
   .nav-links {
