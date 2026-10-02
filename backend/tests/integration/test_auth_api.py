@@ -14,12 +14,23 @@ def bearer(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_signup_race_integrity_error_is_409(client, monkeypatch):
+@pytest.mark.parametrize("overrides,detail", [
+    ({"email": "other@example.com"}, "Username already taken"),
+    ({"username": "other"}, "Email already registered"),
+])
+def test_signup_race_integrity_error_is_409(client, monkeypatch, overrides, detail):
     signup(client)
     real, results = auth._conflict, [None]  # the pre-check misses the concurrent insert
     monkeypatch.setattr(auth, "_conflict", lambda *a: results.pop() if results else real(*a))
-    r = signup(client, email="other@example.com")
-    assert (r.status_code, r.json()["detail"]) == (409, "Username already taken")
+    r = signup(client, **overrides)
+    assert (r.status_code, r.json()["detail"]) == (409, detail)
+
+
+def test_signup_without_secret_leaves_no_account(client, db, monkeypatch):
+    monkeypatch.delenv("TRAINFORM_SECRET")
+    with pytest.raises(RuntimeError, match="TRAINFORM_SECRET"):
+        signup(client)
+    assert db.query(User).count() == 0
 
 
 def test_full_account_flow(client):
@@ -70,6 +81,7 @@ def test_signup_blank_claude_key_not_linked(client, db, key):
     {"username": "bad name!"},
     {"password": "short", "password_confirm": "short"},
     {"password": "p" * 129, "password_confirm": "p" * 129},
+    {"anthropic_api_key": "k" * 513},
 ])
 def test_signup_validation_422(client, overrides):
     assert signup(client, **overrides).status_code == 422
@@ -94,6 +106,14 @@ def test_login_failures_identical(client, creds):
     signup(client)
     r = client.post("/api/auth/login", json=creds)
     assert (r.status_code, r.json()["detail"]) == (401, "Invalid username or password")
+
+
+def test_login_unknown_user_runs_dummy_verify(client, monkeypatch):
+    calls = []
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", lambda pw, stored: calls.append(stored) or real(pw, stored))
+    assert client.post("/api/auth/login", json={"username": "nobody", "password": "password1"}).status_code == 401
+    assert calls == [auth._DUMMY_HASH]
 
 
 def token(client):
@@ -127,6 +147,7 @@ def test_claude_key_link_and_unlink(client, db):
     assert client.get("/api/me", headers=bearer(t)).json()["claude_linked"] is True
 
     assert client.put("/api/me/claude-key", headers=bearer(t), json={"api_key": "  "}).status_code == 422
+    assert client.put("/api/me/claude-key", headers=bearer(t), json={"api_key": "k" * 513}).status_code == 422
 
     r = client.delete("/api/me/claude-key", headers=bearer(t))
     assert r.status_code == 200 and r.json()["claude_linked"] is False
