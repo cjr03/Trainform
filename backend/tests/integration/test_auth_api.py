@@ -14,6 +14,14 @@ def bearer(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_signup_race_integrity_error_is_409(client, monkeypatch):
+    signup(client)
+    real, results = auth._conflict, [None]  # the pre-check misses the concurrent insert
+    monkeypatch.setattr(auth, "_conflict", lambda *a: results.pop() if results else real(*a))
+    r = signup(client, email="other@example.com")
+    assert (r.status_code, r.json()["detail"]) == (409, "Username already taken")
+
+
 def test_full_account_flow(client):
     r = signup(client)
     assert r.status_code == 201
