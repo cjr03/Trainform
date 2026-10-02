@@ -1,9 +1,7 @@
 /* Trainform theme: deep-space glass with neon edges. Pages add their own CSS files next to the page. */
 :root {
   --bg: #05060f;
-  --bg-2: #0a0c1f;
   --panel: rgba(18, 22, 48, 0.55);
-  --panel-strong: rgba(24, 29, 64, 0.8);
   --border: rgba(140, 160, 255, 0.16);
   --border-strong: rgba(120, 220, 255, 0.45);
   --text: #e8ebff;
