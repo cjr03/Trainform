@@ -8,6 +8,8 @@ import shutil
 import stat
 import tempfile
 import zipfile
+import zlib
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -15,7 +17,8 @@ import httpx
 import torch
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from huggingface_hub import HfApi, snapshot_download
-from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+from huggingface_hub.errors import GatedRepoError, LocalEntryNotFoundError, RepositoryNotFoundError
+from huggingface_hub.utils import filter_repo_objects
 from peft import LoraConfig, get_peft_model
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -25,8 +28,8 @@ from app.auth import current_user
 router = APIRouter(tags=["models"], dependencies=[Depends(current_user)])
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", Path(__file__).resolve().parent.parent / "data" / "models"))
-MAX_UPLOAD_BYTES = 20 * 2**30  # uncompressed; zip-bomb guard
-NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+MAX_UPLOAD_BYTES = 20 * 2**30  # per model, uncompressed: zip-bomb and disk-fill guard
+NAME_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")  # no leading dot: hidden dirs are staging areas
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 # Configs, safetensors weights and tokenizer files only: pickle weights (*.bin, *.pt, ...) can execute code on load.
 HUB_PATTERNS = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]
@@ -38,6 +41,31 @@ def _model_dir(name: str) -> Path:
     if not NAME_RE.fullmatch(name) or (root / name).resolve().parent != root:
         raise ValueError(f"Invalid model name: {name!r}")
     return root / name
+
+
+def _source(path: Path) -> str | None:
+    try:
+        return json.loads((path / "trainform.json").read_text()).get("source")
+    except (OSError, ValueError):
+        return None
+
+
+@contextmanager
+def _staged(dest: Path, meta: dict):
+    """Yield a hidden staging dir that is renamed to dest on success, so half-written models are never listed."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".partial-"))
+    try:
+        yield tmp
+        (tmp / "trainform.json").write_text(json.dumps(meta))
+        try:
+            os.rename(tmp, dest)
+        except OSError as e:
+            if dest.exists():
+                raise FileExistsError(dest.name) from e
+            raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def list_hub_models(search: str | None = None, sort: str = "downloads", limit: int = 20) -> list[dict]:
@@ -54,21 +82,24 @@ def download_model(repo_id: str) -> str:
     if not REPO_RE.fullmatch(repo_id):
         raise ValueError(f"Invalid Hugging Face repo id {repo_id!r}; expected 'owner/name'")
     name = repo_id.replace("/", "--")
-    path = _model_dir(name)
-    existed = path.exists()
+    dest = _model_dir(name)
+    if dest.exists():
+        if _source(dest) == "hub":
+            return name
+        raise FileExistsError(name)
     try:
-        snapshot_download(repo_id, local_dir=path, allow_patterns=HUB_PATTERNS)
-        if not any(path.rglob("*.safetensors")):
+        info = HfApi().model_info(repo_id, files_metadata=True)
+        files = list(filter_repo_objects(info.siblings or [], allow_patterns=HUB_PATTERNS, key=lambda s: s.rfilename))
+        if not any(s.rfilename.endswith(".safetensors") for s in files):
             raise ValueError(f"{repo_id} has no safetensors weights")
-    except Exception as e:
-        if not existed:
-            shutil.rmtree(path, ignore_errors=True)
-        if isinstance(e, GatedRepoError):
-            raise ValueError(f"{repo_id} is gated; accept its license on huggingface.co first") from e
-        if isinstance(e, RepositoryNotFoundError):
-            raise ValueError(f"{repo_id} not found on the Hugging Face Hub") from e
-        raise
-    (path / "trainform.json").write_text(json.dumps({"source": "hub", "repo_id": repo_id}))
+        if sum(s.size or 0 for s in files) > MAX_UPLOAD_BYTES:
+            raise ValueError(f"{repo_id} is too large (limit {MAX_UPLOAD_BYTES // 2**30} GiB)")
+        with _staged(dest, {"source": "hub", "repo_id": repo_id}) as tmp:
+            snapshot_download(repo_id, local_dir=tmp, allow_patterns=HUB_PATTERNS)
+    except GatedRepoError as e:
+        raise ValueError(f"{repo_id} is gated; accept its license on huggingface.co first") from e
+    except RepositoryNotFoundError as e:
+        raise ValueError(f"{repo_id} not found on the Hugging Face Hub") from e
     return name
 
 
@@ -100,19 +131,20 @@ def save_upload(fileobj, name: str) -> str:
             entries = [(info, p[1:]) for info, p in entries]
         if ("config.json",) not in [p for _, p in entries]:
             raise ValueError("Zip must contain a model directory with config.json")
-        dest.mkdir(parents=True)
-        try:
+        if not any(p[-1].endswith(".safetensors") for _, p in entries):
+            raise ValueError("Zip must contain *.safetensors weights")
+        with _staged(dest, {"source": "upload"}) as tmp:
             for info, parts in entries:
-                target = dest.joinpath(*parts)
-                if not target.resolve().is_relative_to(dest):
+                target = tmp.joinpath(*parts)
+                if not target.resolve().is_relative_to(tmp):
                     raise ValueError(f"Unsafe path in zip: {info.filename}")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as src, open(target, "wb") as out:
-                    shutil.copyfileobj(src, out)
-            (dest / "trainform.json").write_text(json.dumps({"source": "upload"}))
-        except BaseException:
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, open(target, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                except (zipfile.BadZipFile, zlib.error, EOFError, FileExistsError, IsADirectoryError,
+                        NotADirectoryError) as e:  # bad CRC/deflate data, or paths like "a" and "a/b" colliding
+                    raise ValueError(f"Corrupt or invalid zip member {info.filename}: {e}") from e
     return name
 
 
@@ -120,14 +152,8 @@ def list_local_models() -> list[dict]:
     if not MODELS_DIR.is_dir():
         return []
     models = []
-    for d in sorted(MODELS_DIR.iterdir()):
-        if (d / "config.json").is_file():
-            try:
-                source = json.loads((d / "trainform.json").read_text()).get("source")
-            except (OSError, ValueError):
-                source = None
-            models.append({"name": d.name, "source": source})
-    return models
+    return [{"name": d.name, "source": _source(d)} for d in sorted(MODELS_DIR.iterdir())
+            if not d.name.startswith(".") and (d / "config.json").is_file()]
 
 
 class LocalModel:
@@ -213,9 +239,11 @@ def hub_models(search: str = "", sort: Literal["downloads", "lastModified"] = "d
 def hub_download(body: DownloadIn):
     try:
         name = download_model(body.repo_id)
+    except FileExistsError as e:
+        raise HTTPException(409, f"A model named {e} already exists") from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, LocalEntryNotFoundError) as e:  # snapshot_download reports an unreachable Hub as the latter
         raise HTTPException(502, "Hugging Face Hub request failed") from e
     return {"name": name, "source": "hub"}
 
