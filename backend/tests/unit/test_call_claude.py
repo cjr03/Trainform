@@ -62,9 +62,16 @@ def test_schema_request_parses_json(monkeypatch):
 
 
 def test_bad_json_is_llm_error(monkeypatch):
-    fake_anthropic(monkeypatch, reply(block("text", text='{"prompt": "trunc'), stop_reason="max_tokens"))
-    with pytest.raises(LLMError):
+    fake_anthropic(monkeypatch, reply(block("text", text='{"prompt": "x"')))
+    with pytest.raises(LLMError, match="malformed JSON"):
         call_claude("k", "s", "m", {"type": "object"})
+
+
+@pytest.mark.parametrize("schema", [None, {"type": "object"}])
+def test_max_tokens_is_llm_error(monkeypatch, schema):
+    fake_anthropic(monkeypatch, reply(block("text", text="truncated reply"), stop_reason="max_tokens"))
+    with pytest.raises(LLMError, match="cut off"):
+        call_claude("k", "s", "m", schema)
 
 
 def test_refusal_checked_before_content(monkeypatch):
@@ -78,8 +85,12 @@ def test_refusal_checked_before_content(monkeypatch):
      "Claude rejected the API key"),
     (anthropic.RateLimitError("rate_limit_error", response=httpx2.Response(429, request=REQUEST), body=None),
      "rate limit"),
-    (anthropic.InternalServerError("overloaded", response=httpx2.Response(529, request=REQUEST), body=None),
-     "529.*overloaded"),
+    (anthropic.InternalServerError("Error code: 529 - {'type': 'error'}", response=httpx2.Response(529, request=REQUEST),
+                                   body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}),
+     r"^Claude API error 529: Overloaded$"),
+    (anthropic.InternalServerError("Error code: 500 - b'oops'", response=httpx2.Response(500, request=REQUEST),
+                                   body="oops"),
+     r"^Claude API error 500: unexpected error$"),
     (anthropic.APIConnectionError(request=REQUEST), "reach"),
 ])
 def test_sdk_errors_become_llm_errors(monkeypatch, error, message):

@@ -101,12 +101,15 @@ def test_score_conversation_rejects_count_mismatch():
         agents.score_conversation(llm, "c", ["a", "b"])
 
 
-def persona(prompt, *ratings):
-    return {"attributes": [{"criterion": f"c{i}", "rating": r} for i, r in enumerate(ratings)], "prompt": prompt}
+RUBRIC = ["Greets the user.", "Is concise."]
+
+
+def persona(prompt, *ratings, criteria=RUBRIC):
+    return {"attributes": [{"criterion": c, "rating": r} for c, r in zip(criteria, ratings)], "prompt": prompt}
 
 
 def test_generate_personas_calls_rubric_first_and_clamps():
-    llm = FakeLLM({"criteria": ["Greets the user.", "Is concise."]},
+    llm = FakeLLM({"criteria": RUBRIC},
                   {"personas": [persona(" Busy CFO ", 0, 11), persona("Lost student", 5, 6)]})
     out = agents.generate_personas(llm, "You are Acme support.", 2)
     assert out == [persona("Busy CFO", 1, 10), persona("Lost student", 5, 6)]
@@ -118,10 +121,37 @@ def test_generate_personas_calls_rubric_first_and_clamps():
     assert_strict(schema)
 
 
+def test_generate_personas_aligns_attributes_to_rubric():
+    reworded = {"personas": [persona("a", 3, 7, criteria=["greets", "concise"])]}
+    out = agents.generate_personas(FakeLLM({"criteria": RUBRIC}, reworded), "p", 1)
+    assert out == [persona("a", 3, 7)]
+
+
+@pytest.mark.parametrize("ratings", [(5,), (5, 5, 5)])
+def test_generate_personas_rejects_attribute_count_mismatch(ratings):
+    bad = {"personas": [persona("a", *ratings, criteria=["x", "y", "z"])]}
+    with pytest.raises(LLMError, match="rubric has 2"):
+        agents.generate_personas(FakeLLM({"criteria": RUBRIC}, bad), "p", 1)
+
+
+@pytest.mark.parametrize("call, outputs", [
+    (lambda llm: agents.create_prompt(llm, "d"), [{"text": "x"}]),
+    (lambda llm: agents.create_rubric(llm, "p"), [{"criteria": [3]}]),
+    (lambda llm: agents.generate_improved_prompt(llm, "p", "c", []), ["not json"]),
+    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": [{"criterion": "a", "score": "high"}]}]),
+    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": [{"criterion": "a"}]}]),
+    (lambda llm: agents.generate_personas(llm, "p", 1), [{"criteria": ["x"]}, {"personas": [{"prompt": "a"}]}]),
+    (lambda llm: agents.generate_personas(llm, "p", 1), [{"criteria": ["x"]}, {"personas": None}]),
+])
+def test_unexpected_output_shape_is_llm_error(call, outputs):
+    with pytest.raises(LLMError, match="unexpected response shape"):
+        call(FakeLLM(*outputs))
+
+
 def test_generate_personas_truncates_and_pads_cyclically():
-    many = {"personas": [persona(p, 5) for p in "abc"]}
+    many = {"personas": [persona(p, 5, criteria=["x"]) for p in "abc"]}
     assert [p["prompt"] for p in agents.generate_personas(FakeLLM({"criteria": ["x"]}, many), "p", 2)] == ["a", "b"]
-    few = {"personas": [persona(p, 5) for p in "ab"]}
+    few = {"personas": [persona(p, 5, criteria=["x"]) for p in "ab"]}
     out = agents.generate_personas(FakeLLM({"criteria": ["x"]}, few), "p", 5)
     assert [p["prompt"] for p in out] == ["a", "b", "a", "b", "a"]
     assert out[0] is not out[2]
