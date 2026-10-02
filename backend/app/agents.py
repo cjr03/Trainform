@@ -151,16 +151,25 @@ def _clamp(value):
     return max(1, min(10, int(value)))
 
 
+def _ask(llm, system, message, schema, parse):
+    """Call Claude and parse its JSON with `parse`; a malformed shape becomes an LLMError rather than a 500."""
+    out = llm(system, message, schema)
+    try:
+        return parse(out)
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        raise LLMError("Claude returned an unexpected response shape") from e
+
+
 def create_prompt(llm, description: str) -> str:
     """Prompt creator agent: agent description -> system prompt."""
-    out = llm(PROMPT_CREATOR_SYSTEM, _tag("agent_description", description), PROMPT_SCHEMA)
-    return _text(out["prompt"], "prompt")
+    return _ask(llm, PROMPT_CREATOR_SYSTEM, _tag("agent_description", description), PROMPT_SCHEMA,
+                lambda out: _text(out["prompt"], "prompt"))
 
 
 def create_rubric(llm, agent_prompt: str) -> list[str]:
     """Rubric creator agent: agent prompt -> scoring criteria."""
-    out = llm(RUBRIC_CREATOR_SYSTEM, _tag("agent_prompt", agent_prompt), RUBRIC_SCHEMA)
-    criteria = [c.strip() for c in out["criteria"] if c.strip()]
+    criteria = _ask(llm, RUBRIC_CREATOR_SYSTEM, _tag("agent_prompt", agent_prompt), RUBRIC_SCHEMA,
+                    lambda out: [c.strip() for c in out["criteria"] if c.strip()])
     if not criteria:
         raise LLMError("Claude returned an empty rubric")
     return criteria
@@ -171,29 +180,34 @@ def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: 
     lines = "\n".join(f"- {s['criterion']}: {s['score']}/10" for s in scores)
     message = "\n\n".join([_tag("current_prompt", agent_prompt), _tag("conversation", conversation),
                            _tag("scores", lines)])
-    return _text(llm(PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA)["prompt"], "prompt")
+    return _ask(llm, PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA, lambda out: _text(out["prompt"], "prompt"))
 
 
 def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     """Scoring agent: conversation + rubric -> [{"criterion", "score"}] in rubric order, scores 1-10."""
     numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(rubric, 1))
     message = f"{_tag('conversation', conversation)}\n\n{_tag('rubric', numbered)}"
-    scores = llm(SCORING_SYSTEM, message, SCORES_SCHEMA)["scores"]
+    scores = _ask(llm, SCORING_SYSTEM, message, SCORES_SCHEMA,
+                  lambda out: [_clamp(s["score"]) for s in out["scores"]])
     if len(scores) != len(rubric):
         raise LLMError(f"Claude scored {len(scores)} criteria but the rubric has {len(rubric)}")
-    return [{"criterion": c, "score": _clamp(s["score"])} for c, s in zip(rubric, scores)]
+    return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
 def generate_personas(llm, agent_prompt: str, n: int) -> list[dict]:
     """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}."""
-    criteria = "\n".join(f"- {c}" for c in create_rubric(llm, agent_prompt))
+    rubric = create_rubric(llm, agent_prompt)
+    criteria = "\n".join(f"- {c}" for c in rubric)
     message = f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', criteria)}\n\n<count>{n}</count>"
-    personas = llm(PERSONA_GENERATOR_SYSTEM, message, PERSONAS_SCHEMA)["personas"]
+    personas = _ask(llm, PERSONA_GENERATOR_SYSTEM, message, PERSONAS_SCHEMA,
+                    lambda out: [([_clamp(a["rating"]) for a in p["attributes"]], p["prompt"].strip())
+                                 for p in out["personas"]])
     if not personas:
         raise LLMError("Claude returned no personas")
-    return [{"attributes": [{"criterion": a["criterion"], "rating": _clamp(a["rating"])} for a in p["attributes"]],
-             "prompt": p["prompt"].strip()}
-            for p in (personas[i % len(personas)] for i in range(n))]
+    if any(len(ratings) != len(rubric) for ratings, _ in personas):
+        raise LLMError(f"Claude rated the wrong number of criteria for a persona; the rubric has {len(rubric)}")
+    return [{"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)], "prompt": prompt}
+            for ratings, prompt in (personas[i % len(personas)] for i in range(n))]
 
 
 def persona_respond(llm, attributes: list[dict], context: str) -> str:

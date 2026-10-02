@@ -35,18 +35,22 @@ def call_claude(api_key: str, system: str, message: str, schema: dict | None = N
     except anthropic.RateLimitError as e:
         raise LLMError("Claude rate limit reached; try again shortly") from e
     except anthropic.APIStatusError as e:
-        raise LLMError(f"Claude API error {e.status_code}: {e.message}") from e
+        err = e.body.get("error") if isinstance(e.body, dict) else None
+        msg = err.get("message") if isinstance(err, dict) else None
+        raise LLMError(f"Claude API error {e.status_code}: {msg or 'unexpected error'}") from e
     except anthropic.APIConnectionError as e:
         raise LLMError("Could not reach the Claude API") from e
     if response.stop_reason == "refusal":
         raise LLMError("Claude declined this request")
+    if response.stop_reason == "max_tokens":
+        raise LLMError("Claude's reply was cut off at the token limit")
     text = "".join(block.text for block in response.content if block.type == "text")
     if not schema:
         return text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        raise LLMError(f"Claude returned malformed JSON (stop reason: {response.stop_reason})") from e
+        raise LLMError("Claude returned malformed JSON") from e
 
 
 def get_llm(user: User = Depends(current_user)):
