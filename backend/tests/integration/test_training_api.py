@@ -228,7 +228,8 @@ def test_routes_require_a_user(client):
 
 
 def test_restart_fails_orphaned_trainings(db, user):
-    for status in ("pending", "running", "completed", "failed"):
+    other_users_training(db)  # pending; one active training per user, so the running one is the second user's
+    for status in ("running", "completed", "failed"):
         db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
                         rounds=1, status=status))
     db.commit()

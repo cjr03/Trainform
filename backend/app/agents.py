@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.llm import LLMError, get_llm
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+PERSONA_BATCH = 10  # personas per Claude call; each is a few hundred tokens and a reply is capped at 16k
 
 PROMPT_CREATOR_SYSTEM = """\
 You are an expert prompt engineer who writes system prompts for AI agents that run in production.
@@ -194,14 +195,19 @@ def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
-def generate_personas(llm, agent_prompt: str, n: int) -> list[dict]:
-    """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}."""
-    rubric = create_rubric(llm, agent_prompt)
+def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None) -> list[dict]:
+    """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}.
+
+    The personas pressure `rubric`, or criteria from the rubric creator agent when none is given."""
+    rubric = rubric or create_rubric(llm, agent_prompt)
     criteria = "\n".join(f"- {c}" for c in rubric)
-    message = f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', criteria)}\n\n<count>{n}</count>"
-    personas = _ask(llm, PERSONA_GENERATOR_SYSTEM, message, PERSONAS_SCHEMA,
-                    lambda out: [([_clamp(a["rating"]) for a in p["attributes"]], p["prompt"].strip())
-                                 for p in out["personas"]])
+    personas = []
+    for start in range(0, n, PERSONA_BATCH):
+        count = min(PERSONA_BATCH, n - start)
+        message = f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', criteria)}\n\n<count>{count}</count>"
+        personas += _ask(llm, PERSONA_GENERATOR_SYSTEM, message, PERSONAS_SCHEMA,
+                         lambda out: [([_clamp(a["rating"]) for a in p["attributes"]], p["prompt"].strip())
+                                      for p in out["personas"]])[:count]
     if not personas:
         raise LLMError("Claude returned no personas")
     if any(len(ratings) != len(rubric) for ratings, _ in personas):

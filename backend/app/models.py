@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -43,6 +43,11 @@ class Training(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="trainings")
+
+
+# At most one pending or running training per user, enforced by the database so concurrent requests can't race.
+ONE_ACTIVE_TRAINING = Index("one_active_training_per_user", Training.user_id, unique=True,
+                            postgresql_where=Training.status.in_(("pending", "running")))
 
 
 class Scenario(Base):
