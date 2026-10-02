@@ -26,7 +26,8 @@ SCRYPT = {"n": 2**14, "r": 8, "p": 1}
 def _secret() -> bytes:
     secret = os.environ.get("TRAINFORM_SECRET")
     if not secret:
-        raise RuntimeError("TRAINFORM_SECRET is not set")
+        raise RuntimeError("TRAINFORM_SECRET is not set; set it to a long random string, e.g. the output of "
+                           "`python -c 'import secrets; print(secrets.token_urlsafe(32))'`")
     return secret.encode()
 
 

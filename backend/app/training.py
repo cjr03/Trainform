@@ -11,7 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import agents
+from app import agents, fake
 from app.auth import current_user
 from app.db import SessionLocal, get_db
 from app.llm import get_llm
@@ -139,7 +139,7 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
     db.close()  # get_db only exits after background tasks, so return the connection to the pool now
     # ponytail: each run holds one anyio worker thread (40, shared with the sync routes) and its request open, so
     # shutdown waits for running trainings; the cap is only per user. Move to a worker process if that bites.
-    background.add_task(run_training, t.id, llm, LocalModel)
+    background.add_task(run_training, t.id, llm, fake.FakeLocalModel if fake.enabled() else LocalModel)
     return out
 
 

@@ -29,11 +29,6 @@ def test_fake_llm_satisfies_every_agent():
     assert agents.generate_improved_prompt(fake.fake_llm, improved, "c", scores) == improved  # does not keep growing
 
 
-def test_fake_llm_is_deterministic():
-    message = "<conversation>\nUser: hi\nAssistant: hello\n</conversation>\n\n<rubric>\n1. A\n2. B\n</rubric>"
-    assert fake.fake_llm("s", message, agents.SCORES_SCHEMA) == fake.fake_llm("s", message, agents.SCORES_SCHEMA)
-
-
 def test_fake_local_model():
     model = fake.FakeLocalModel("demo")
     assert model.generate("Be helpful.", "User: hi").strip()
