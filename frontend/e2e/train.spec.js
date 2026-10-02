@@ -5,6 +5,8 @@ import { createUser, modelZip, signIn, uid } from './helpers'
 test('train an agent from model upload to downloads', async ({ page, request }) => {
   await signIn(page, await createUser(request))
   const next = page.getByRole('button', { name: 'Next' })
+  const stepButton = (name) => page.getByRole('list', { name: 'Training workflow' }).getByRole('button', { name })
+  await expect(stepButton(/^Prompt/)).toHaveCSS('opacity', '0.4') // locked
 
   // Model: upload a zip through the UI and select it.
   const model = uid('model')
@@ -57,13 +59,15 @@ test('train an agent from model upload to downloads', async ({ page, request }) 
 
   await expect(page.getByRole('heading', { name: 'Training', exact: true })).toBeVisible()
   await expect(page.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuemax', '4')
-  await expect(page.getByRole('progressbar', { name: 'Training rounds' })).toHaveAttribute('aria-valuemax', '2')
+  await expect(page.getByRole('progressbar', { name: 'Rounds completed' })).toHaveAttribute('aria-valuemax', '2')
   for (const name of ['Last n runs', 'Last n/2', 'Last n/4', 'Last run'])
     await expect(page.getByRole('group', { name, exact: true })).toBeVisible()
   release()
 
   await expect(page.getByRole('heading', { name: 'Complete' })).toBeVisible({ timeout: 30_000 })
   await expect(page.getByTestId('best-score')).toHaveText(/^\d+\.\d\/ 10$/)
+  // Finished steps are done, not dimmed like locked ones.
+  await expect(stepButton(/^Model/)).toHaveCSS('opacity', '1')
 
   const download = async (name) => {
     const [file] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name }).click()])
@@ -72,6 +76,7 @@ test('train an agent from model upload to downloads', async ({ page, request }) 
   const [promptName, prompt] = await download('Download prompt')
   expect(promptName).toBe(`training-${id}-prompt.txt`)
   expect(prompt.toString()).toContain('You are an AI agent for: A support agent for a bike shop')
+  expect(prompt.toString()).toBe(await page.getByTestId('best-prompt').textContent())
   const [weightsName, weights] = await download('Download weights')
   expect(weightsName).toBe(`training-${id}-lora.zip`)
   expect(weights.subarray(0, 2).toString()).toBe('PK')
@@ -79,6 +84,6 @@ test('train an agent from model upload to downloads', async ({ page, request }) 
   // The finished run's progress screen is full.
   await page.getByRole('button', { name: /^Training/ }).click()
   await expect(page.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '4')
-  await expect(page.getByRole('progressbar', { name: 'Training rounds' })).toHaveAttribute('aria-valuenow', '2')
+  await expect(page.getByRole('progressbar', { name: 'Rounds completed' })).toHaveAttribute('aria-valuenow', '2')
   await expect(page.getByRole('group', { name: 'Last n runs' })).toContainText('4 runs')
 })

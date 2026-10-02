@@ -1,13 +1,21 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, expect, it, vi } from 'vitest'
-import { api } from '../api'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { api, saveBlob } from '../api'
 import InspectPage from './InspectPage'
 
 vi.mock('../api', () => ({
-  api: { listTrainings: vi.fn(), listRounds: vi.fn(), listScenarios: vi.fn() },
+  api: {
+    listTrainings: vi.fn(),
+    listRounds: vi.fn(),
+    listScenarios: vi.fn(),
+    downloadPrompt: vi.fn(),
+    downloadWeights: vi.fn(),
+  },
+  saveBlob: vi.fn(),
 }))
+Element.prototype.scrollIntoView = vi.fn() // jsdom has no layout
 
 const trainings = [
   { id: 2, base_model: 'qwen-0.5b', status: 'completed', best_score: 8.25, created_at: '2026-09-30T10:00:00Z' },
@@ -50,6 +58,7 @@ beforeEach(() => {
   api.listRounds.mockImplementation(async (id) => rounds[id])
   api.listScenarios.mockResolvedValue([scenario, { ...scenario, id: 32, scenario_number: 2, score: 5 }])
 })
+afterEach(() => vi.useRealTimers())
 
 async function openScenario(user) {
   await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
@@ -181,4 +190,68 @@ it('shows scenario load errors', async () => {
   await user.click(await screen.findByRole('button', { name: /Round 2/ }))
   const col = screen.getByRole('region', { name: 'Scenarios' })
   expect(await within(col).findByRole('alert')).toHaveTextContent('Round not found')
+})
+
+it('downloads the prompt and weights of a completed training', async () => {
+  const user = userEvent.setup()
+  const promptBlob = new Blob(['Be kind.'])
+  const weightsBlob = new Blob(['zip'])
+  api.downloadPrompt.mockResolvedValue(promptBlob)
+  api.downloadWeights.mockResolvedValue(weightsBlob)
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /llama-1b/ }))
+  expect(screen.queryByRole('button', { name: 'Download prompt' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /qwen-0\.5b/ }))
+  await user.click(screen.getByRole('button', { name: 'Download prompt' }))
+  expect(api.downloadPrompt).toHaveBeenCalledWith(2)
+  await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(promptBlob, 'training-2-prompt.txt'))
+  await user.click(screen.getByRole('button', { name: 'Download weights' }))
+  expect(api.downloadWeights).toHaveBeenCalledWith(2)
+  await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(weightsBlob, 'training-2-lora.zip'))
+})
+
+it('shows download errors', async () => {
+  const user = userEvent.setup()
+  api.downloadPrompt.mockRejectedValue(new Error('Training has no trained model yet'))
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  await user.click(screen.getByRole('button', { name: 'Download prompt' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Training has no trained model yet')
+})
+
+it('refreshes every 2 s while a training is in progress, keeping the selection', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  const tick = () => act(() => vi.advanceTimersByTimeAsync(2000))
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /llama-1b/ }))
+  await user.click(await screen.findByRole('button', { name: /Round 1/ }))
+  await screen.findByRole('button', { name: /Scenario 1/ })
+
+  api.listTrainings.mockResolvedValue([trainings[0], { ...trainings[1], status: 'completed', best_score: 6 }])
+  api.listRounds.mockResolvedValue([...rounds[1], { round: 2, mean_score: 6, scenarios: 1, model_id: 13 }])
+  await tick()
+  const llama = screen.getByRole('button', { name: /llama-1b/, pressed: true })
+  expect(within(llama).getByText('completed')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Round 2/ })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Round 1/, pressed: true })).toBeInTheDocument()
+  expect(api.listScenarios).toHaveBeenLastCalledWith(1, 1)
+  expect(screen.getByRole('button', { name: /Scenario 1/ })).toBeInTheDocument()
+
+  const calls = api.listTrainings.mock.calls.length
+  await tick()
+  await tick()
+  expect(api.listTrainings).toHaveBeenCalledTimes(calls)
+})
+
+it('brings each new panel into view and focuses the transcript', async () => {
+  const user = userEvent.setup()
+  const revealed = () => Element.prototype.scrollIntoView.mock.contexts.map((el) => el.getAttribute('aria-label'))
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  await user.click(await screen.findByRole('button', { name: /Round 2/ }))
+  await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
+  expect(revealed()).toEqual(['Rounds', 'Scenarios', 'Scenario 1'])
+  expect(screen.getByRole('region', { name: 'Scenario 1' })).toHaveFocus()
 })

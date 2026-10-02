@@ -112,14 +112,15 @@ def detail(db: Session, t: Training) -> dict:
                         .order_by(Scenario.round, Scenario.scenario_number)).all()
     latest_prompt = db.scalar(select(TrainedModel.prompt).where(TrainedModel.training_id == t.id)
                               .order_by(TrainedModel.round.desc()).limit(1))
-    best_score = db.scalar(select(TrainedModel.mean_score).where(TrainedModel.id == t.best_model_id))
+    best_score, best_prompt = db.execute(select(TrainedModel.mean_score, TrainedModel.prompt)
+                                         .where(TrainedModel.id == t.best_model_id)).first() or (None, None)
     return {
         "id": t.id, "status": t.status, "error": t.error, "base_model": t.base_model,
         "initial_prompt": t.initial_prompt, "rubric": t.rubric, "rounds": t.rounds,
         "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round, "scenarios_done": t.scenarios_done,
         "total_scenarios": t.rounds * t.scenarios_per_round, "latest_prompt": latest_prompt or t.initial_prompt,
         "score_windows": score_windows(scores), "best_model_id": t.best_model_id, "best_score": best_score,
-        "created_at": t.created_at,
+        "best_prompt": best_prompt, "created_at": t.created_at,
     }
 
 

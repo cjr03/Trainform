@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, saveBlob } from '../api'
 import './InspectPage.css'
 
 const fmt = (score) => (score == null ? '—' : String(Math.round(score * 10) / 10))
+// Below 860px the panels stack, so a newly opened one can start below the fold.
+const reveal = (el) => el?.scrollIntoView({ block: 'nearest' })
 
-// Loads data for `key`; results for a previous key are ignored, so fast clicking never shows stale lists.
-function useLoad(load, key) {
+// Loads data for `key`, reloading when `version` changes; results for a previous key are ignored, so fast
+// clicking never shows stale lists, and a reload keeps showing the current data until the new data arrives.
+function useLoad(load, key, version) {
   const [state, setState] = useState({ key: null })
   useEffect(() => {
     if (key == null) return
@@ -20,13 +23,13 @@ function useLoad(load, key) {
     }
     // `load` is a fresh closure each render; `key` identifies the request.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [key, version])
   return state.key === key ? state : { loading: key != null }
 }
 
-function Column({ title, state, loadingText, emptyText, children }) {
+function Column({ ref, title, state, loadingText, emptyText, children }) {
   return (
-    <section className="inspect-col glass" aria-label={title}>
+    <section ref={ref} className="inspect-col glass" aria-label={title}>
       <h2 className="inspect-col-title">{title}</h2>
       {state.loading && (
         <p className="row muted" role="status">
@@ -76,8 +79,18 @@ function Ratings({ label, items }) {
 }
 
 function Transcript({ scenario }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    reveal(ref.current)
+    ref.current.focus({ preventScroll: true })
+  }, [scenario.id])
   return (
-    <section className="inspect-transcript glass card" aria-label={`Scenario ${scenario.scenario_number}`}>
+    <section
+      ref={ref}
+      tabIndex={-1}
+      className="inspect-transcript glass card"
+      aria-label={`Scenario ${scenario.scenario_number}`}
+    >
       <h2 className="inspect-col-title">Scenario {scenario.scenario_number}</h2>
       <div className="chat">
         <article className="bubble bubble-persona" aria-label="Persona">
@@ -120,16 +133,44 @@ export default function InspectPage() {
   const [trainingId, setTrainingId] = useState(null)
   const [round, setRound] = useState(null)
   const [scenarioId, setScenarioId] = useState(null)
+  const [version, setVersion] = useState(0)
+  const [downloadError, setDownloadError] = useState('')
+  const roundsRef = useRef(null)
+  const scenariosRef = useRef(null)
 
-  const trainings = useLoad(api.listTrainings, 'all')
-  const rounds = useLoad(() => api.listRounds(trainingId), trainingId)
-  const scenarios = useLoad(() => api.listScenarios(trainingId, round), round == null ? null : `${trainingId}/${round}`)
+  const trainings = useLoad(api.listTrainings, 'all', version)
+  const rounds = useLoad(() => api.listRounds(trainingId), trainingId, version)
+  const scenarios = useLoad(
+    () => api.listScenarios(trainingId, round),
+    round == null ? null : `${trainingId}/${round}`,
+    version,
+  )
   const scenario = scenarios.data?.find((s) => s.id === scenarioId)
+  const selected = trainings.data?.find((t) => t.id === trainingId)
 
+  // While any training is in progress, reload everything 2 s after each trainings list arrives.
+  const active = trainings.data?.some((t) => t.status === 'pending' || t.status === 'running')
+  useEffect(() => {
+    if (!active) return
+    const timer = setTimeout(() => setVersion((v) => v + 1), 2000)
+    return () => clearTimeout(timer)
+  }, [trainings, active])
+
+  useEffect(() => reveal(roundsRef.current), [trainingId])
+  useEffect(() => reveal(scenariosRef.current), [round])
+
+  const save = (fetchBlob, filename) => {
+    setDownloadError('')
+    fetchBlob(trainingId).then(
+      (blob) => saveBlob(blob, filename),
+      (e) => setDownloadError(e.message),
+    )
+  }
   const pickTraining = (id) => {
     setTrainingId(id)
     setRound(null)
     setScenarioId(null)
+    setDownloadError('')
   }
   const pickRound = (r) => {
     setRound(r)
@@ -165,7 +206,7 @@ export default function InspectPage() {
         </Column>
 
         {trainingId != null && (
-          <Column title="Rounds" state={rounds} loadingText="Loading rounds…" emptyText="No rounds finished yet.">
+          <Column ref={roundsRef} title="Rounds" state={rounds} loadingText="Loading rounds…" emptyText="No rounds finished yet.">
             {rounds.data?.map((r) => (
               <Option key={r.round} selected={r.round === round} onSelect={() => pickRound(r.round)}>
                 <span className="option-main">Round {r.round}</span>
@@ -179,7 +220,7 @@ export default function InspectPage() {
         )}
 
         {round != null && (
-          <Column title="Scenarios" state={scenarios} loadingText="Loading scenarios…" emptyText="No scenarios in this round.">
+          <Column ref={scenariosRef} title="Scenarios" state={scenarios} loadingText="Loading scenarios…" emptyText="No scenarios in this round.">
             {scenarios.data?.map((s) => (
               <Option key={s.id} selected={s.id === scenarioId} onSelect={() => setScenarioId(s.id)}>
                 <span className="option-main">Scenario {s.scenario_number}</span>
@@ -190,6 +231,30 @@ export default function InspectPage() {
           </Column>
         )}
       </div>
+
+      {selected?.status === 'completed' && (
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}
+          >
+            Download prompt
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}
+          >
+            Download weights
+          </button>
+        </div>
+      )}
+      {downloadError && (
+        <p className="error" role="alert">
+          {downloadError}
+        </p>
+      )}
 
       {scenario && <Transcript scenario={scenario} />}
     </div>

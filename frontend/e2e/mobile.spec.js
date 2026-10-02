@@ -37,6 +37,16 @@ test('a filled Inspect page fits a phone, even with an unbroken criterion', asyn
 
   await signIn(page, user)
   const transcript = await openScenario(page, id)
-  await expect(transcript.getByRole('list', { name: 'Criterion scores' }).getByRole('listitem')).toHaveCount(2)
+  const scores = transcript.getByRole('list', { name: 'Criterion scores' }).getByRole('listitem')
+  await expect(scores).toHaveCount(2)
   expect(await fits(page)).toBe(true)
+  await expect(transcript).toBeFocused()
+  await expect(transcript).toBeInViewport()
+
+  // Each criterion gets the full width for its name, with its bar on a row below.
+  const name = await scores.nth(1).getByText('Is polite.').boundingBox()
+  const bar = await scores.nth(1).locator('.inspect-bar').boundingBox()
+  const row = await scores.nth(1).boundingBox()
+  expect(bar.y).toBeGreaterThanOrEqual(name.y + name.height)
+  expect(bar.width).toBeGreaterThan(row.width * 0.9)
 })
