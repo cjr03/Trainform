@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { readdirSync, readFileSync } from 'node:fs'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, saveBlob } from '../api'
 import TrainPage from './TrainPage'
@@ -10,6 +11,7 @@ vi.mock('../api', () => ({
     downloadHubModel: vi.fn(),
     uploadModel: vi.fn(),
     listLocalModels: vi.fn(),
+    listTrainings: vi.fn(),
     generatePrompt: vi.fn(),
     generateRubric: vi.fn(),
     startTraining: vi.fn(),
@@ -44,6 +46,7 @@ const detail = (over = {}) => ({
 beforeEach(() => {
   vi.resetAllMocks()
   api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
+  api.listTrainings.mockResolvedValue([])
 })
 afterEach(() => vi.useRealTimers())
 
@@ -68,12 +71,12 @@ function polling() {
 }
 const tick = (ms = 2000) => act(() => vi.advanceTimersByTimeAsync(ms))
 
-async function startTraining(user, polled) {
+async function startTraining(user, polled, ms = 2000) {
   const view = await reachScenarios(user)
   api.startTraining.mockResolvedValue(detail({ status: 'pending' }))
   api.getTraining.mockResolvedValue(polled)
   await user.click(screen.getByRole('button', { name: 'Start training' }))
-  await tick()
+  await tick(ms)
   return view
 }
 
@@ -115,6 +118,9 @@ it('unlocks each step only once the previous ones are valid', async () => {
   expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
   await user.click(step('Model'))
   expect(step('Model')).toHaveAttribute('aria-current', 'step')
+  expect(step('Prompt')).toHaveAccessibleName(/done/)
+  expect(step('Rubric')).toHaveAccessibleName(/done/)
+  expect(step('Training').closest('li')).toHaveAttribute('data-state', 'locked')
 })
 
 it('searches the hub with the chosen sort', async () => {
@@ -144,6 +150,25 @@ it('shows hub errors inline', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Hub unreachable')
 })
 
+it('clears stale model errors once a later action succeeds', async () => {
+  const user = userEvent.setup()
+  api.listLocalModels.mockRejectedValueOnce(new Error('Server down')).mockResolvedValue([{ name: 'Qwen2.5-0.5B', source: 'hub' }])
+  api.searchHubModels.mockResolvedValue([HUB_MODEL])
+  api.downloadHubModel.mockRejectedValueOnce(new Error('Disk full')).mockResolvedValue({ name: 'Qwen2.5-0.5B', source: 'hub' })
+  render(<TrainPage />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Server down')
+
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  await user.click(await screen.findByRole('button', { name: `Download ${HUB_MODEL.id}` }))
+  await waitFor(() => expect(screen.getByText('Disk full')).toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  await waitFor(() => expect(screen.queryByText('Disk full')).not.toBeInTheDocument())
+
+  await user.click(screen.getByRole('button', { name: `Download ${HUB_MODEL.id}` }))
+  expect(await screen.findByRole('radio', { name: /Qwen2.5-0.5B/ })).toBeChecked()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
 it('downloads a hub model, refreshes local models and selects it', async () => {
   const user = userEvent.setup()
   let finish
@@ -170,7 +195,8 @@ it('uploads a zipped model and selects it', async () => {
   api.uploadModel.mockResolvedValue({ name: 'mine', source: 'upload' })
   api.listLocalModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'mine', source: 'upload' }])
   render(<TrainPage />)
-  await user.click(screen.getByRole('tab', { name: 'Upload' }))
+  expect(screen.getByRole('radio', { name: 'Hugging Face Hub' })).toBeChecked()
+  await user.click(screen.getByRole('radio', { name: 'Upload' }))
   const file = new File(['zip'], 'model.zip', { type: 'application/zip' })
   await user.upload(screen.getByLabelText('Model archive (.zip)'), file)
   await user.type(screen.getByRole('textbox', { name: 'Model name' }), 'mine')
@@ -270,6 +296,61 @@ it('starts training with the exact config and locks the setup steps', async () =
   for (const name of ['Model', 'Prompt', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
 })
 
+it('shows a failed start inline on the Scenarios slide', async () => {
+  const user = userEvent.setup()
+  await reachScenarios(user)
+  api.startTraining.mockRejectedValue(new Error('You already have a training in progress.'))
+  await user.click(screen.getByRole('button', { name: 'Start training' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('You already have a training in progress.')
+  expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
+})
+
+it('reopens a training that is still running', async () => {
+  api.listTrainings.mockResolvedValue([{ id: 7, status: 'running' }, { id: 6, status: 'completed' }])
+  api.getTraining.mockResolvedValue(detail({ scenarios_done: 4 }))
+  render(<TrainPage />)
+  await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
+  expect(api.getTraining).toHaveBeenCalledWith(7)
+  expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '4')
+  expect(step('Model')).toBeDisabled()
+})
+
+it('polls exactly every 2 s and never overlaps requests', async () => {
+  const user = polling()
+  await startTraining(user, detail(), 0)
+  const at = []
+  let release
+  api.getTraining.mockImplementation(() => {
+    at.push(Date.now())
+    return new Promise((resolve) => (release = () => resolve(detail())))
+  })
+  await tick(1900)
+  expect(api.getTraining).not.toHaveBeenCalled()
+  await tick(100)
+  expect(api.getTraining).toHaveBeenCalledOnce()
+  await tick(10000)
+  expect(api.getTraining).toHaveBeenCalledOnce()
+
+  await act(async () => release())
+  await tick(2000)
+  expect(api.getTraining).toHaveBeenCalledTimes(2)
+  expect(at[1] - at[0]).toBe(12000)
+  await act(async () => release())
+  await tick(2000)
+  expect(at[2] - at[1]).toBe(2000)
+})
+
+it('shows a retry notice when a poll fails', async () => {
+  const user = polling()
+  await startTraining(user, detail(), 0)
+  api.getTraining.mockRejectedValueOnce(new Error('Network down')).mockResolvedValue(detail())
+  await tick()
+  expect(screen.getByRole('alert')).toHaveTextContent('Network down')
+  expect(screen.getByRole('alert')).toHaveTextContent('Retrying')
+  await tick()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
 it('polls every 2 s, rendering both progress bars and the four score windows, until unmounted', async () => {
   const user = polling()
   const view = await startTraining(
@@ -326,6 +407,9 @@ it('advances to the completion screen and downloads the prompt and weights', asy
   const user = polling()
   await startTraining(user, completed)
   expect(step('Complete')).toHaveAttribute('aria-current', 'step')
+  const calls = api.getTraining.mock.calls.length
+  await tick(6000)
+  expect(api.getTraining).toHaveBeenCalledTimes(calls)
   expect(screen.getByTestId('best-score')).toHaveTextContent('8.4')
   expect(screen.getByText('Be brief.')).toBeInTheDocument()
 
@@ -356,4 +440,16 @@ it('resets the dashboard for a new training', async () => {
   const calls = api.getTraining.mock.calls.length
   await tick(6000)
   expect(api.getTraining).toHaveBeenCalledTimes(calls)
+})
+
+it('defines no CSS classes that another page stylesheet also defines', () => {
+  const dir = import.meta.dirname
+  const classes = (file) =>
+    new Set(readFileSync(`${dir}/${file}`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').match(/\.[a-z][\w-]*/gi))
+  const shared = classes('../index.css')
+  const own = [...classes('TrainPage.css')].filter((c) => !shared.has(c))
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.css') && f !== 'TrainPage.css')) {
+    const theirs = classes(file)
+    expect(own.filter((c) => theirs.has(c)), file).toEqual([])
+  }
 })
