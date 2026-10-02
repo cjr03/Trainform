@@ -1,0 +1,192 @@
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 24px;
+  padding: 32px 16px;
+}
+
+.auth-head {
+  text-align: center;
+}
+
+.auth-head p {
+  margin: 0;
+}
+
+.auth-brand {
+  font-size: clamp(1.6rem, 6vw, 2.2rem);
+  margin-bottom: 8px;
+}
+
+.auth-card {
+  width: min(440px, 100%);
+}
+
+/* Segmented toggle: a gradient pill slides under the active option. */
+.segmented {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 4px;
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(5, 6, 15, 0.6);
+}
+
+.segmented::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: 999px;
+  background: var(--gradient);
+  box-shadow: var(--glow);
+  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.segmented[data-mode='signup']::before {
+  transform: translateX(100%);
+}
+
+.segmented [role='tab'] {
+  position: relative;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.segmented [aria-selected='true'] {
+  color: var(--bg);
+}
+
+/* Step rail: the gradient line fills toward the current phase. */
+.steps {
+  --progress: 0;
+  position: relative;
+  display: flex;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+
+.steps::before,
+.steps::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: calc(100% / 6);
+  right: calc(100% / 6);
+  height: 2px;
+  background: var(--border);
+}
+
+.steps::after {
+  background: var(--gradient);
+  box-shadow: var(--glow);
+  transform-origin: left;
+  transform: scaleX(var(--progress));
+  transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.steps li {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  transition: color 0.3s;
+}
+
+.step-dot {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, color 0.3s;
+}
+
+.steps li[aria-current='step'] {
+  color: var(--text);
+}
+
+.steps li[aria-current='step'] .step-dot {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: var(--glow);
+}
+
+.steps li.done .step-dot {
+  border-color: transparent;
+  background: var(--gradient);
+  color: var(--bg);
+}
+
+/* Each pane slides in from the direction of travel. */
+.auth-pane {
+  animation: pane-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.auth-pane[data-dir='back'] {
+  animation-name: pane-in-back;
+}
+
+@keyframes pane-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+
+@keyframes pane-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+}
+
+.auth-note {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.auth-actions .btn-ghost {
+  margin-right: auto;
+}
+
+.auth-actions .btn-primary {
+  min-width: 140px;
+}
+
+/* Final phase: the main action takes its own full-width row. */
+.auth-final {
+  order: -1;
+  flex-basis: 100%;
+}
