@@ -17,6 +17,8 @@ from app.models import User
 
 router = APIRouter(tags=["auth"])
 
+# ponytail: stateless tokens survive a password change until expiry; rotating TRAINFORM_SECRET logs
+# everyone out. Sign a per-user value (e.g. a hash of password_hash) into the token if revocation is needed.
 TOKEN_TTL = 7 * 24 * 3600
 SCRYPT = {"n": 2**14, "r": 8, "p": 1}
 
@@ -144,11 +146,13 @@ def signup(body: Signup, db: Session = Depends(get_db)):
                 anthropic_key_encrypted=encrypt_api_key(body.anthropic_api_key) if body.anthropic_api_key else None)
     db.add(user)
     try:
-        db.commit()
+        db.flush()
     except IntegrityError:  # lost a race with a concurrent signup
         db.rollback()
         raise HTTPException(409, _conflict(db, body.username, email) or "Username already taken")
-    return _session(user)
+    session = _session(user)  # before commit: a missing TRAINFORM_SECRET must not leave an account behind
+    db.commit()
+    return session
 
 
 @router.post("/auth/login")
