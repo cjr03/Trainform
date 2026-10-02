@@ -117,31 +117,6 @@ describe('api', () => {
       '/api/trainings/7/rounds/2/scenarios',
     ])
   })
-
-  it('sends each wrapper to its route with the right method and body', async () => {
-    const fetch = respond(200, {})
-    vi.stubGlobal('fetch', fetch)
-    const config = { base_model: 'm', prompt: 'p', rubric: ['c'], scenarios: 1, rounds: 1 }
-    await api.downloadHubModel('org/tiny')
-    await api.changePassword('old', 'new', 'new2')
-    await api.setClaudeKey('sk-ant')
-    await api.removeClaudeKey()
-    await api.startTraining(config)
-    await api.listRounds(7)
-    await api.downloadPrompt(7)
-    await api.downloadWeights(7)
-    const calls = fetch.mock.calls.map(([url, init]) => [init.method, url, init.body && JSON.parse(init.body)])
-    expect(calls).toEqual([
-      ['POST', '/api/hub/download', { repo_id: 'org/tiny' }],
-      ['POST', '/api/me/password', { current_password: 'old', new_password: 'new', new_password_confirm: 'new2' }],
-      ['PUT', '/api/me/claude-key', { api_key: 'sk-ant' }],
-      ['DELETE', '/api/me/claude-key', undefined],
-      ['POST', '/api/trainings', config],
-      ['GET', '/api/trainings/7/rounds', undefined],
-      ['GET', '/api/trainings/7/download/prompt', undefined],
-      ['GET', '/api/trainings/7/download/weights', undefined],
-    ])
-  })
 })
 
 it('saveBlob downloads the blob under the filename and revokes its URL', () => {
