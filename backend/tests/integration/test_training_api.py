@@ -34,11 +34,10 @@ def fakes(monkeypatch):
     monkeypatch.setattr(training.agents, "generate_personas", lambda llm, prompt, n: [
         {"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)])
     monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: "Hi?")
-    monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conversation: generate(prompt, conversation))
-    monkeypatch.setattr(training.agents, "score_conversation",
-                        lambda llm, conversation, rubric: [{"criterion": c, "score": next(scores)} for c in rubric[:1]] +
-                        [{"criterion": c, "score": 8} for c in rubric[1:]])
-    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conversation, scores: prompt + "!")
+    monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
+    monkeypatch.setattr(training.agents, "score_conversation", lambda llm, conv, rubric: [
+        {"criterion": "Clarity", "score": next(scores)}, {"criterion": "Tone", "score": 8}])
+    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conv, scores: prompt + "!")
 
 
 def other_users_training(db):
@@ -61,10 +60,11 @@ def test_create_runs_training_in_background(authed_client, fakes):
     assert (created["latest_prompt"], created["score_windows"], created["best_score"]) == ("Be helpful.", [], None)
 
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
-    assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds", "scenarios_per_round",
-                      "current_round", "scenarios_done", "total_scenarios", "latest_prompt", "score_windows",
-                      "best_model_id", "best_score", "created_at"}
-    assert (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"]) == ("completed", None, 2, 4, 4)
+    assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
+                      "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
+                      "score_windows", "best_model_id", "best_score", "created_at"}
+    progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"])
+    assert progress == ("completed", None, 2, 4, 4)
     assert d["latest_prompt"] == "Be helpful.!!!!"
     # Scenario means: 7.0, 8.0, 8.5, 8.5 -> rounds 7.5 and 8.5.
     assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 8.0}, {"label": "n/2", "runs": 2, "score": 8.5},
@@ -88,7 +88,8 @@ def test_create_runs_training_in_background(authed_client, fakes):
 
 def test_list_newest_first(authed_client, fakes, db, user):
     first = authed_client.post("/api/trainings", json=BODY).json()
-    db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["Clarity"], scenarios_per_round=1, rounds=1))
+    db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
+                    rounds=1))
     db.commit()
     other_users_training(db)
     listed = authed_client.get("/api/trainings").json()
@@ -113,7 +114,8 @@ def test_downloads(authed_client, fakes, db, user):
     assert r.headers["content-type"] == "application/zip"
     assert r.headers["content-disposition"] == f'attachment; filename="training-{t["id"]}-lora.zip"'
 
-    pending = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1, rounds=1)
+    pending = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
+                       rounds=1)
     db.add(pending)
     db.commit()
     for kind in ("prompt", "weights"):

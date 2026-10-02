@@ -37,7 +37,8 @@ def fake_agents(monkeypatch):
 
     def generate_personas(llm, agent_prompt, n):
         state.persona_prompts.append(agent_prompt)
-        return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)]
+        return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"}
+                for k in range(1, n + 1)]
 
     def score_conversation(llm, conversation, rubric):
         with SessionLocal() as s:  # what another process (the API) can see right now
@@ -50,9 +51,9 @@ def fake_agents(monkeypatch):
 
     monkeypatch.setattr(training.agents, "generate_personas", generate_personas)
     monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: f"msg from {context}")
-    monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conversation: generate(prompt, conversation))
+    monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
-    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conversation, scores: prompt + "+")
+    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conv, scores: prompt + "+")
     return state
 
 
@@ -96,7 +97,8 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     assert s.score == 8.0
 
     # Only round 1 had scores >= HIGH_SCORE, and only those exchanges are trained on.
-    assert model.sft_calls == [[{"prompt": x.prompt, "input": x.input, "output": x.output} for x in (scenarios[0], scenarios[2])]]
+    high = (scenarios[0], scenarios[2])
+    assert model.sft_calls == [[{"prompt": x.prompt, "input": x.input, "output": x.output} for x in high]]
 
     trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
     assert [(m.round, m.prompt, m.weights) for m in trained] == [(1, "P+++", b"PK-1"), (2, "P++++++", b"PK-1")]
@@ -105,7 +107,7 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     assert t.best_model_id == trained[0].id
 
     # Progress is committed as it happens: status, round and each finished scenario.
-    assert fake_agents.progress == [("running", 1, n, n) for n in range(3)] + [("running", 2, n, n) for n in range(3, 6)]
+    assert fake_agents.progress == [("running", 1 + n // 3, n, n) for n in range(6)]
 
 
 def test_best_model_is_the_highest_round_mean(db, user, fake_agents):
