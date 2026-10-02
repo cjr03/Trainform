@@ -21,15 +21,17 @@ fine-tune the model at the end of every round. When it finishes you download the
 
 For each round (`backend/app/training.py`, `run_training`):
 
-1. The persona generator creates `scenarios_per_round` personas for the current prompt. It derives their criteria
-   by running the rubric creator on that prompt.
+1. The persona generator creates `scenarios_per_round` personas for the current prompt, rating how hard each one
+   pressures every criterion of your rubric (the one the rubric creator drafted and you edited). It asks Claude for
+   at most 10 personas per call.
 2. For each persona, the persona agent writes one message, the primary agent replies, and the scoring agent scores
    the exchange against your rubric. The result is stored as a scenario, and the prompt generator rewrites the prompt
    before the next scenario. Conversations are a single turn: one persona message and one reply.
 3. Scenarios with a mean score of 7 or more become SFT examples. The model is fine-tuned on them through a LoRA
    adapter (r=8, all linear layers). Rounds without such examples skip the fine-tune.
-4. The round is saved as a trained model: the current prompt, the zipped LoRA adapter and the round's mean score.
-   The round with the highest mean becomes the training's best model.
+4. The round is saved as a trained model holding what earned its score: the LoRA adapter the round's scenarios ran
+   with (before step 3), the prompt of its highest-scoring scenario and the round's mean score. The round with the
+   highest mean becomes the training's best model, which is what the downloads return.
 
 The Train page shows progress and the mean score over the last n, n/2, n/4 and 1 scenarios. The Inspect page drills
 down from training to round to scenario and shows the transcript, the scores and the prompt that was used.
@@ -50,13 +52,14 @@ down from training to round to scenario and shows the transcript, the scores and
 
 | Table | Holds |
 | --- | --- |
-| `users` | email, username, scrypt password hash, encrypted Anthropic key; owns a list of trainings |
+| `users` | email, username, scrypt password hash, `token_version` (bumped to revoke sessions), encrypted Anthropic key; owns a list of trainings |
 | `trainings` | `id` (training_id), base model, initial prompt, rubric, rounds × scenarios per round, status (`pending`/`running`/`completed`/`failed`), progress, error, `best_model_id` |
-| `scenarios` | `training_id`, `round`, `scenario_number` (unique together), persona, prompt used, `input` (persona message), `output` (model reply), `scores` per criterion, mean `score` |
+| `scenarios` | `training_id` (the agent_id: one training trains one agent), `round`, `scenario_number` (unique together), persona, prompt used, `input` (persona message), `output` (model reply), `scores` per criterion, mean `score` |
 | `trained_models` | `id` (model_id), `training_id`, `round`, `prompt`, `weights` (zipped LoRA adapter), `mean_score` |
 
-Tables are created on startup with `create_all`. There are no migrations, so a schema change on an existing database
-must be applied by hand. Base models live on disk under `MODELS_DIR` (default `backend/data/models`), not in the
+Tables are created on startup with `create_all`. There are no migrations: startup adds the two later additions
+(`users.token_version` and the one-active-training index) to an existing database, and any other schema change must
+be applied by hand. Base models live on disk under `MODELS_DIR` (default `backend/data/models`), not in the
 database.
 
 ## Run locally
@@ -69,8 +72,8 @@ createdb trainform && createdb trainform_test
 # Backend (http://localhost:8000)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-export TRAINFORM_SECRET="$(openssl rand -hex 32)"   # required; keep it stable (see below)
-export ANTHROPIC_API_KEY=sk-ant-...                 # optional fallback for users without a linked key
+export TRAINFORM_SECRET="$(openssl rand -hex 32)"   # required, at least 32 bytes; keep it stable (see below)
+export ANTHROPIC_API_KEY=sk-ant-...                 # optional, for the users in TRAINFORM_SHARED_KEY_USERS
 .venv/bin/uvicorn app.main:app --reload
 
 # Frontend (second terminal, http://localhost:5173)
@@ -79,9 +82,11 @@ cd frontend && npm install && npm run dev
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TRAINFORM_SECRET` | none (required) | Signs session tokens and derives the key that encrypts linked Claude keys |
+| `TRAINFORM_SECRET` | none (required) | Signs session tokens and derives the key that encrypts linked Claude keys. At least 32 bytes, or startup fails |
 | `DATABASE_URL` | `postgresql+psycopg://localhost/trainform` | Application database |
-| `ANTHROPIC_API_KEY` | none | Claude key for users who have not linked their own |
+| `ANTHROPIC_API_KEY` | none | Claude key for allow-listed users who have not linked their own |
+| `TRAINFORM_SHARED_KEY_USERS` | none | Comma-separated usernames allowed to use `ANTHROPIC_API_KEY` |
+| `TRAINFORM_MAX_TRAININGS` | `2` | Trainings that may run at once across all users; more return 429 |
 | `MODELS_DIR` | `backend/data/models` | Where downloaded and uploaded base models are stored |
 | `TRAINFORM_FAKE_LLM` | unset | `1` turns on demo mode (below). Never set it in production |
 | `TEST_DATABASE_URL` | `postgresql+psycopg://localhost/trainform_test` | Database the test suite uses (it never touches `DATABASE_URL`) |
@@ -89,8 +94,9 @@ cd frontend && npm install && npm run dev
 ### Claude linkage
 
 Each user can link an Anthropic API key at sign-up or on the Account page. The key is stored Fernet-encrypted and
-never returned by the API, which reports only whether a key is linked. Claude calls use the user's own key and fall
-back to `ANTHROPIC_API_KEY`. With neither, Claude-backed actions return 400 and ask the user to link a key. A linked
+never returned by the API, which reports only whether a key is linked. Claude calls use the user's own key. Only
+users listed in `TRAINFORM_SHARED_KEY_USERS` fall back to `ANTHROPIC_API_KEY`, so open sign-up can't spend the
+operator's credits. With neither, Claude-backed actions return 400 and ask the user to link a key. A linked
 key that can't be decrypted also returns 400, asking the user to re-link it (no fallback).
 
 ### Base models
@@ -98,7 +104,12 @@ key that can't be decrypted also returns 400, asking the user to re-link it (no 
 On the Model step you can search the Hub for text-generation models and download one, or upload a zipped model
 directory containing `config.json` and `*.safetensors`. Downloads fetch only configs, tokenizer files and
 safetensors weights. Gated repos need their license accepted on huggingface.co. Uploads reject pickle weights
-(`.bin`, `.pt`, `.pth`, `.pkl`, `.ckpt`), symlinks and paths that escape the archive. Models are capped at 20 GiB.
+(`.bin`, `.pt`, `.pth`, `.pkl`, `.ckpt`), symlinks and paths that escape the archive. Models are capped at 20 GiB,
+and an upload request must declare a `Content-Length` within that cap (else 411/413).
+
+Downloaded Hub models are shared by all users. Uploads are private: only their owner sees and can train them, and
+upload names can't contain `--`, which Hub models use (`owner--name`). Each user can add at most 5 models (uploads
+plus downloads) and remove their own with `DELETE /api/models/{name}`. At most two Hub downloads run at once (429).
 
 ### Demo / fake mode
 
@@ -111,7 +122,7 @@ under `MODELS_DIR`: any directory with a `config.json` counts, so `{}` is enough
 ```bash
 cd backend
 mkdir -p data/models/demo && echo '{}' > data/models/demo/config.json
-TRAINFORM_FAKE_LLM=1 TRAINFORM_SECRET=demo .venv/bin/uvicorn app.main:app --reload
+TRAINFORM_FAKE_LLM=1 TRAINFORM_SECRET="$(openssl rand -hex 32)" .venv/bin/uvicorn app.main:app --reload
 ```
 
 Hub search and download still call the real Hugging Face Hub in fake mode.
@@ -143,7 +154,7 @@ reads these variables:
   dropped and recreated each session.
 - **E2E** (`frontend/e2e`): Playwright drives Chromium through sign-up, account, a full training, Inspect and a
   390px-wide phone layout. `playwright.config.js` starts the backend on port 8000 with `TRAINFORM_FAKE_LLM=1` and
-  `TRAINFORM_SECRET=e2e-secret`, then builds the frontend and serves it with `vite preview` on port 4173. Both ports
+  a fixed 32+ byte `TRAINFORM_SECRET`, then builds the frontend and serves it with `vite preview` on port 4173. Both ports
   must be free. Failures keep a trace, and the HTML report is written to `frontend/playwright-report`.
 
 ## CI
@@ -157,18 +168,22 @@ and uploads the HTML report when it fails.
 ## Operations and security notes
 
 - **Passwords** are hashed with scrypt (n=2¹⁴, r=8, p=1, random salt). Login does a dummy hash for unknown usernames
-  so response timing does not reveal which accounts exist.
+  so response timing does not reveal which accounts exist. After 5 failed sign-ins for a username from one IP within
+  15 minutes, login returns 429 until the window passes (per process; behind a proxy, rate-limit there too).
 - **Viewing the password:** passwords are stored hashed, so the Account page shows a masked value. It can't show the
   real one. Users can change it there.
-- **Sessions** are stateless HMAC-signed bearer tokens that last 7 days. The frontend keeps them in `localStorage`.
-  Changing a password does **not** revoke existing tokens. They stay valid until they expire.
+- **Sessions** are HMAC-signed bearer tokens that last 7 days and carry the user's `token_version`. The frontend
+  keeps them in `localStorage`. Signing out (`POST /api/auth/logout`) and changing the password bump the version,
+  which revokes every existing token; a password change returns a fresh token for the current session.
 - **Rotating `TRAINFORM_SECRET`** invalidates every token, which logs everyone out. It also makes every linked Claude
   key unreadable, because the encryption key comes from the secret, so users must link their keys again. Until they
   do, their Claude actions return 400 with a message to re-link the key on the Account page, and
   `ANTHROPIC_API_KEY` is not used as a fallback. Keep the secret stable and back it up.
 - **Weights:** only safetensors weights are accepted from the Hub and from uploads, and models load with
   `use_safetensors=True`, because pickle weights can execute code on load.
-- **One active training per user:** starting a second training while one is pending or running returns 409.
+- **One active training per user:** starting a second training while one is pending or running returns 409. A
+  partial unique index enforces it, so concurrent requests can't both start one. Across all users, at most
+  `TRAINFORM_MAX_TRAININGS` run at once, because each holds a loaded model and a worker thread the API shares.
 - **Restarts:** trainings run inside the API process. On startup, any training still `pending` or `running` is marked
   `failed` with "Interrupted by a server restart". Shutdown waits for running trainings to finish.
 - **Fake mode:** never set `TRAINFORM_FAKE_LLM` in production. Any signed-in user can then run trainings without a

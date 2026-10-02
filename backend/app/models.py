@@ -55,6 +55,7 @@ class Scenario(Base):
     __table_args__ = (UniqueConstraint("training_id", "round", "scenario_number"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # The spec's agent_id: each training trains exactly one agent, so training_id identifies it.
     training_id: Mapped[int] = mapped_column(ForeignKey("trainings.id", ondelete="CASCADE"), index=True)
     round: Mapped[int]
     scenario_number: Mapped[int]
