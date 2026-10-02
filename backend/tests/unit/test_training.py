@@ -1,10 +1,11 @@
 import logging
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app import training
 from app.db import SessionLocal
-from app.models import Scenario, TrainedModel, Training
+from app.models import Scenario, TrainedModel, Training, User
 
 
 class FakeModel:
@@ -32,6 +33,7 @@ def fake_agents(monkeypatch):
         scores = []
         persona_prompts = []
         progress = []
+        rounds = []
 
     state = State()
 
@@ -44,6 +46,7 @@ def fake_agents(monkeypatch):
         with SessionLocal() as s:  # what another process (the API) can see right now
             t = s.query(Training).one()
             state.progress.append((t.status, t.current_round, t.scenarios_done, s.query(Scenario).count()))
+            state.rounds.append(training.list_rounds(t.id, s.get(User, t.user_id), s))
         value = state.scores.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -108,6 +111,10 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
 
     # Progress is committed as it happens: status, round and each finished scenario.
     assert fake_agents.progress == [("running", 1 + n // 3, n, n) for n in range(6)]
+    # Mid-round, /rounds shows the running round with a partial mean and no model yet.
+    mid = fake_agents.rounds[4]
+    assert [(x["round"], x["scenarios"], x["model_id"]) for x in mid] == [(1, 3, trained[0].id), (2, 1, None)]
+    assert (mid[0]["mean_score"], mid[1]["mean_score"]) == (pytest.approx(22 / 3), 4.0)
 
 
 def test_best_model_is_the_highest_round_mean(db, user, fake_agents):
@@ -145,7 +152,32 @@ def test_model_load_failure_marks_training_failed(db, user, fake_agents):
 
     training.run_training(t.id, "llm", load_model)
     db.expire_all()
-    assert (db.get(Training, t.id).status, db.get(Training, t.id).error) == ("failed", "no such model")
+    # Server internals (paths, SQL) stay in the log, not in the API's error field.
+    assert (db.get(Training, t.id).status, db.get(Training, t.id).error) == ("failed", training.INTERNAL_ERROR)
+
+
+def test_missing_training_is_logged_not_raised(db, caplog):
+    with caplog.at_level(logging.ERROR):
+        training.run_training(424242, "llm", FakeModel)
+    assert "424242" in caplog.text
+
+
+def test_dead_database_is_logged_not_raised(caplog):
+    class DeadSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def get(self, *args):
+            raise OperationalError("SELECT 1", {}, Exception("server closed the connection"))
+
+        rollback = get
+
+    with caplog.at_level(logging.ERROR):
+        training.run_training(1, "llm", FakeModel, session_factory=DeadSession)
+    assert caplog.records and all(r.exc_info for r in caplog.records)
 
 
 def test_score_windows():

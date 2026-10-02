@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app import training
 from app.auth import current_user
+from app.db import engine
 from app.main import app
 from app.models import TrainedModel, Training, User
 
@@ -31,13 +32,22 @@ def fakes(monkeypatch):
     monkeypatch.setattr(training, "list_local_models", lambda: [{"name": "tiny", "source": "upload"}])
     monkeypatch.setattr(training, "LocalModel", FakeModel)
     scores = iter([6, 8, 9, 9])
-    monkeypatch.setattr(training.agents, "generate_personas", lambda llm, prompt, n: [
-        {"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)])
+    llms = []
+
+    def generate_personas(llm, prompt, n):
+        llms.append(llm)
+        return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)]
+
+    def score_conversation(llm, conv, rubric):
+        llms.append(llm)
+        return [{"criterion": "Clarity", "score": next(scores)}, {"criterion": "Tone", "score": 8}]
+
+    monkeypatch.setattr(training.agents, "generate_personas", generate_personas)
     monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: "Hi?")
     monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
-    monkeypatch.setattr(training.agents, "score_conversation", lambda llm, conv, rubric: [
-        {"criterion": "Clarity", "score": next(scores)}, {"criterion": "Tone", "score": 8}])
+    monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
     monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conv, scores: prompt + "!")
+    return llms
 
 
 def other_users_training(db):
@@ -70,6 +80,8 @@ def test_create_runs_training_in_background(authed_client, fakes):
     assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 8.0}, {"label": "n/2", "runs": 2, "score": 8.5},
                                   {"label": "n/4", "runs": 1, "score": 8.5}, {"label": "last", "runs": 1, "score": 8.5}]
     assert d["best_score"] == 8.5
+    # The background run uses the requesting user's Claude key.
+    assert len(fakes) == 6 and all(llm.args == ("server-key",) for llm in fakes)
 
     rounds = authed_client.get(f"/api/trainings/{d['id']}/rounds").json()
     assert [(x["round"], x["mean_score"], x["scenarios"]) for x in rounds] == [(1, 7.5, 2), (2, 8.5, 2)]
@@ -138,9 +150,28 @@ def test_create_accepts_limits(authed_client, fakes, monkeypatch):
     assert authed_client.post("/api/trainings", json=body).status_code == 201
 
 
+def test_request_releases_its_db_connection_before_training(authed_client, fakes, monkeypatch):
+    checked_out = []
+    monkeypatch.setattr(training, "run_training", lambda *args: checked_out.append(engine.pool.checkedout()))
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 201
+    assert checked_out == [0]
+
+
+def test_one_training_in_progress_per_user(authed_client, fakes, monkeypatch, db):
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    other_users_training(db)  # pending, but someone else's
+    first = authed_client.post("/api/trainings", json=BODY)
+    assert first.status_code == 201
+    r = authed_client.post("/api/trainings", json=BODY)
+    assert (r.status_code, r.json()) == (409, {"detail": "You already have a training in progress."})
+    db.get(Training, first.json()["id"]).status = "failed"
+    db.commit()
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 201
+
+
 def test_unknown_base_model(authed_client, fakes, db):
     r = authed_client.post("/api/trainings", json=BODY | {"base_model": "missing"})
-    assert r.status_code == 400
+    assert (r.status_code, r.json()) == (400, {"detail": "Unknown base model: missing"})
     assert db.query(Training).count() == 0
 
 
