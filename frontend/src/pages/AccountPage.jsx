@@ -106,15 +106,18 @@ function PasswordForm() {
 function ClaudeLink({ user, setUser }) {
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
+  const [done, setDone] = useState('')
   const [busy, setBusy] = useState(false)
   const linked = user.claude_linked
 
-  async function run(call) {
+  async function run(call, message) {
     setBusy(true)
     setError('')
+    setDone('')
     try {
       setUser(await call())
       setKey('')
+      setDone(message)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -135,7 +138,7 @@ function ClaudeLink({ user, setUser }) {
         className="stack"
         onSubmit={(e) => {
           e.preventDefault()
-          run(() => api.setClaudeKey(key))
+          run(() => api.setClaudeKey(key.trim()), 'Key saved.')
         }}
       >
         <div className="field">
@@ -151,12 +154,13 @@ function ClaudeLink({ user, setUser }) {
           />
         </div>
         {error && <p className="error" role="alert">{error}</p>}
+        {done && <p className="success" role="status">{done}</p>}
         <div className="row">
-          <button className="btn btn-primary" disabled={busy || !key}>
+          <button className="btn btn-primary" disabled={busy || !key.trim()}>
             {linked ? 'Replace key' : 'Link key'}
           </button>
           {linked && (
-            <button type="button" className="btn btn-danger" onClick={() => run(api.removeClaudeKey)} disabled={busy}>
+            <button type="button" className="btn btn-danger" onClick={() => run(api.removeClaudeKey, 'Key removed.')} disabled={busy}>
               Unlink
             </button>
           )}

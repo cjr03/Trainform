@@ -28,6 +28,7 @@ export default function AuthPage({ onAuth }) {
   const switchMode = (m) => {
     setDir(m === 'signup' ? 'forward' : 'back')
     setMode(m)
+    setForm((f) => ({ ...f, password: '', password_confirm: '' }))
     setError('')
   }
   const go = (p) => {
@@ -42,7 +43,7 @@ export default function AuthPage({ onAuth }) {
     try {
       onAuth(await call())
     } catch (err) {
-      if (err.status === 409 && /username|email/i.test(err.message)) go(0)
+      if (err.status === 409 || (err.status === 422 && /email|pattern/i.test(err.message))) go(0)
       setError(err.message)
     } finally {
       setBusy(false)
@@ -56,13 +57,13 @@ export default function AuthPage({ onAuth }) {
 
   const signup = (key) => {
     const { email, username, password, password_confirm } = form
-    submit(() => api.signup({ email, username, password, password_confirm, anthropic_api_key: key || null }))
+    submit(() => api.signup({ email, username, password, password_confirm, anthropic_api_key: key?.trim() || null }))
   }
 
   const next = (e) => {
     e.preventDefault()
     if (phase === 0) {
-      if (!e.currentTarget.checkValidity()) return setError('Enter a valid email address and a username.')
+      if (!e.currentTarget.checkValidity()) return setError('Enter a valid email and a username of 3-32 letters, digits, _ . or -.')
       go(1)
     } else if (phase === 1) {
       if (form.password.length < 8) return setError('Use a password of at least 8 characters.')
@@ -122,7 +123,7 @@ export default function AuthPage({ onAuth }) {
               <form className="stack" onSubmit={login}>
                 <div className="field">
                   <label className="label" htmlFor="auth-username">Username</label>
-                  <input className="input" {...bind('username')} autoComplete="username" required autoFocus />
+                  <input className="input" {...bind('username')} autoComplete="username" required />
                 </div>
                 <div className="field">
                   <label className="label" htmlFor="auth-password">Password</label>
@@ -139,11 +140,18 @@ export default function AuthPage({ onAuth }) {
                   <>
                     <div className="field">
                       <label className="label" htmlFor="auth-email">Email</label>
-                      <input className="input" {...bind('email')} type="email" autoComplete="email" required autoFocus />
+                      <input className="input" {...bind('email')} type="email" autoComplete="email" required autoFocus={dir === 'back'} />
                     </div>
                     <div className="field">
                       <label className="label" htmlFor="auth-username">Username</label>
-                      <input className="input" {...bind('username')} autoComplete="username" required />
+                      <input
+                        className="input"
+                        {...bind('username')}
+                        autoComplete="username"
+                        pattern="[A-Za-z0-9_.\-]{3,32}"
+                        maxLength={32}
+                        required
+                      />
                     </div>
                   </>
                 )}
@@ -151,11 +159,11 @@ export default function AuthPage({ onAuth }) {
                   <>
                     <div className="field">
                       <label className="label" htmlFor="auth-password">Password</label>
-                      <input className="input" {...bind('password')} type="password" autoComplete="new-password" autoFocus />
+                      <input className="input" {...bind('password')} type="password" autoComplete="new-password" maxLength={128} autoFocus />
                     </div>
                     <div className="field">
                       <label className="label" htmlFor="auth-password_confirm">Confirm password</label>
-                      <input className="input" {...bind('password_confirm')} type="password" autoComplete="new-password" />
+                      <input className="input" {...bind('password_confirm')} type="password" autoComplete="new-password" maxLength={128} />
                     </div>
                     <p className="muted auth-note">At least 8 characters.</p>
                   </>
@@ -189,7 +197,7 @@ export default function AuthPage({ onAuth }) {
                       <button type="button" className="btn" onClick={() => signup(null)} disabled={busy}>
                         Skip for now
                       </button>
-                      <button className="btn btn-primary" disabled={busy || !form.key}>
+                      <button className="btn btn-primary auth-final" disabled={busy || !form.key.trim()}>
                         {spinner}Link &amp; create account
                       </button>
                     </>
