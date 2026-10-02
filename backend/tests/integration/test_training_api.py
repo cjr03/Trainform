@@ -75,7 +75,7 @@ def test_create_runs_training_in_background(authed_client, fakes):
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
     assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
                       "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
-                      "score_windows", "best_model_id", "best_score", "created_at"}
+                      "score_windows", "best_model_id", "best_score", "best_prompt", "created_at"}
     progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"])
     assert progress == ("completed", None, 2, 4, 4)
     assert d["latest_prompt"] == "Be helpful.!!"
@@ -136,6 +136,17 @@ def test_downloads(authed_client, fakes, db, user):
     for kind in ("prompt", "weights"):
         r = authed_client.get(f"/api/trainings/{pending.id}/download/{kind}")
         assert (r.status_code, r.json()) == (404, {"detail": "Training has no trained model yet"})
+
+
+def test_best_prompt_is_the_downloaded_prompt(authed_client, fakes, monkeypatch):
+    scores = iter([9, 9, 5, 5])  # round 1 is best, round 2 regresses
+    monkeypatch.setattr(training.agents, "score_conversation",
+                        lambda llm, conv, rubric: [{"criterion": "Clarity", "score": next(scores)}])
+    created = authed_client.post("/api/trainings", json=BODY).json()
+    assert created["best_prompt"] is None
+    d = authed_client.get(f"/api/trainings/{created['id']}").json()
+    assert (d["latest_prompt"], d["best_prompt"], d["best_score"]) == ("Be helpful.!!!!", "Be helpful.!!", 9.0)
+    assert authed_client.get(f"/api/trainings/{d['id']}/download/prompt").text == d["best_prompt"]
 
 
 @pytest.mark.parametrize("change", [

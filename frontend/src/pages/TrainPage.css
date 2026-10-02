@@ -81,6 +81,9 @@
 
 .stepper-node:disabled {
   cursor: not-allowed;
+}
+
+.stepper-item[data-state='locked'] .stepper-node {
   opacity: 0.4;
 }
 

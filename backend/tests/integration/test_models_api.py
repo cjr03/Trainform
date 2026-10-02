@@ -85,6 +85,19 @@ def test_hub_download(authed_client, monkeypatch, user):
     assert r.json() == {"name": "org--tiny", "source": "hub"}
 
 
+def test_hub_download_through_download_model(authed_client, monkeypatch):
+    info = SimpleNamespace(siblings=[SimpleNamespace(rfilename=f, size=1) for f in MODEL])
+
+    def snapshot_download(repo_id, local_dir, allow_patterns):
+        for f, data in MODEL.items():
+            (local_dir / f).write_text(data)
+    monkeypatch.setattr(local_model, "HfApi", lambda: SimpleNamespace(model_info=lambda *a, **kw: info))
+    monkeypatch.setattr(local_model, "snapshot_download", snapshot_download)
+    r = authed_client.post("/api/hub/download", json={"repo_id": "org/tiny"})
+    assert (r.status_code, r.json()) == (201, {"name": "org--tiny", "source": "hub"})
+    assert authed_client.get("/api/models").json() == [{"name": "org--tiny", "source": "hub"}]
+
+
 def test_hub_download_bad_id(authed_client):
     r = authed_client.post("/api/hub/download", json={"repo_id": "../etc"})
     assert r.status_code == 400

@@ -208,7 +208,7 @@ function ModelStep({ value, onChange }) {
           <label key={m.name} className="model-option">
             <input type="radio" name="train-base-model" checked={value === m.name} onChange={() => onChange(m.name)} />
             <span className="model-name">{m.name}</span>
-            <span className="badge">{m.source}</span>
+            {m.source && <span className="badge">{m.source}</span>}
           </label>
         ))}
       </fieldset>
@@ -220,7 +220,10 @@ function PromptStep({ prompt, onChange }) {
   const [mode, setMode] = useState('write')
   const [description, setDescription] = useState('')
   const [run, busy, error] = useAction()
-  const generate = () => run(async () => onChange((await api.generatePrompt(description.trim())).prompt))
+  const generate = () => {
+    if (prompt.trim() && !window.confirm('Replace your prompt with a generated one?')) return
+    run(async () => onChange((await api.generatePrompt(description.trim())).prompt))
+  }
 
   return (
     <div className="stack">
@@ -376,7 +379,11 @@ function TrainingStep({ training, pollError, onReset }) {
       <Alert>{pollError && `Lost contact with the server (${pollError}). Retrying…`}</Alert>
       <div className="meters">
         <Meter label="Scenarios tested" value={training.scenarios_done} max={training.total_scenarios} />
-        <Meter label="Training rounds" value={training.current_round} max={training.rounds} />
+        <Meter
+          label="Rounds completed"
+          value={training.status === 'completed' ? training.rounds : Math.max(training.current_round - 1, 0)}
+          max={training.rounds}
+        />
       </div>
       <h3 className="section-title">Latest model scores</h3>
       <div className="score-grid">
@@ -415,8 +422,10 @@ function CompleteStep({ training, onReset }) {
           <small>/ 10</small>
         </span>
       </div>
-      <h3 className="section-title">Final prompt</h3>
-      <pre className="prompt-preview">{training.latest_prompt}</pre>
+      <h3 className="section-title">Best prompt</h3>
+      <pre className="prompt-preview" data-testid="best-prompt">
+        {training.best_prompt}
+      </pre>
       <Alert>{error}</Alert>
       <div className="row">
         <button
@@ -512,26 +521,31 @@ function Dashboard({ onReset }) {
     }
   }, [id, polling])
 
-  // Move focus into the new slide when the control that changed it has gone (or is now inert).
+  // Move focus into the new slide when the control that changed it has gone (or is now inert or disabled).
   useEffect(() => {
     if (shown.current === step) return
     shown.current = step
     const active = document.activeElement
-    if (!active || active === document.body || active.closest('[inert]'))
+    if (!active || active === document.body || active.disabled || active.closest('[inert]'))
       slides.current[step]?.focus({ preventScroll: true })
   }, [step])
 
   const start = () =>
     runStart(async () => {
-      setTraining(
-        await api.startTraining({
-          base_model: baseModel,
-          prompt: prompt.trim(),
-          rubric: criteria,
-          scenarios: Number(scenarios),
-          rounds: Number(rounds),
-        }),
-      )
+      const config = {
+        base_model: baseModel,
+        prompt: prompt.trim(),
+        rubric: criteria,
+        scenarios: Number(scenarios),
+        rounds: Number(rounds),
+      }
+      // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
+      const t = await api.startTraining(config).catch(async (e) => {
+        if (e.status !== 409) throw e
+        const [latest] = await api.listTrainings()
+        return api.getTraining(latest.id)
+      })
+      setTraining(t)
       setStep(4)
     })
 
