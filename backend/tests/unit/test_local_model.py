@@ -54,18 +54,54 @@ def tiny(tiny_model_dir):
 @pytest.mark.parametrize("name", ["", ".", "..", ".hidden", "a/b", "../x", "a b", "x" * 129, "é"])
 def test_invalid_names_rejected(models_dir, name):
     with pytest.raises(ValueError):
-        local_model.save_upload(make_zip(MODEL), name)
+        local_model.save_upload(make_zip(MODEL), name, 1)
 
 
 def test_list_local_models(models_dir):
-    assert local_model.list_local_models() == []
-    for name, source in [("b-model", "upload"), ("a--model", "hub"), (".partial-x", "upload")]:
+    assert local_model.list_local_models(1) == []
+    for name, meta in [("b-model", {"source": "upload", "owner": 1}), ("a--model", {"source": "hub", "owner": 2}),
+                       (".partial-x", {"source": "upload", "owner": 1}), ("c-bobs", {"source": "upload", "owner": 2}),
+                       ("d-legacy", {"source": "upload"}), ("e-operator", None)]:
         (models_dir / name).mkdir(parents=True)
         (models_dir / name / "config.json").write_text("{}")
-        (models_dir / name / "trainform.json").write_text(json.dumps({"source": source}))
+        if meta:
+            (models_dir / name / "trainform.json").write_text(json.dumps(meta))
     (models_dir / "no-config").mkdir()
-    assert local_model.list_local_models() == [{"name": "a--model", "source": "hub"},
-                                               {"name": "b-model", "source": "upload"}]
+    # Hub and operator-provided models are shared; uploads are visible to their owner only.
+    assert local_model.list_local_models(1) == [{"name": "a--model", "source": "hub"},
+                                                {"name": "b-model", "source": "upload"},
+                                                {"name": "e-operator", "source": None}]
+    assert [m["name"] for m in local_model.list_local_models(2)] == ["a--model", "c-bobs", "e-operator"]
+
+
+def test_upload_names_cannot_take_hub_names(models_dir):
+    with pytest.raises(ValueError, match="--"):
+        local_model.save_upload(make_zip(MODEL), "Qwen--Qwen2.5-0.5B-Instruct", 1)
+    assert empty(models_dir)
+
+
+def test_model_quota_per_user(models_dir, monkeypatch):
+    monkeypatch.setattr(local_model, "MAX_MODELS_PER_USER", 2)
+    local_model.save_upload(make_zip(MODEL), "one", 1)
+    fake_hub(monkeypatch, TINY_REPO)
+    local_model.download_model("org/two", 1)
+    local_model.save_upload(make_zip(MODEL), "bobs", 2)  # other users have their own quota
+    with pytest.raises(ValueError, match="at most 2 models"):
+        local_model.save_upload(make_zip(MODEL), "three", 1)
+    with pytest.raises(ValueError, match="at most 2 models"):
+        local_model.download_model("org/three", 1)
+    assert local_model.download_model("org/two", 1) == "org--two"  # reusing a downloaded model costs nothing
+    local_model.delete_model("one", 1)
+    assert local_model.save_upload(make_zip(MODEL), "three", 1) == "three"
+
+
+def test_delete_model_only_by_its_owner(models_dir):
+    local_model.save_upload(make_zip(MODEL), "mine", 1)
+    for name, owner in [("mine", 2), ("missing", 1), ("../x", 1)]:
+        with pytest.raises((FileNotFoundError, ValueError)):
+            local_model.delete_model(name, owner)
+    local_model.delete_model("mine", 1)
+    assert empty(models_dir)
 
 
 # --- uploads ---
@@ -73,18 +109,18 @@ def test_list_local_models(models_dir):
 def test_upload_extracts_and_strips_top_folder(models_dir):
     zf = make_zip({"my-model/config.json": "{}", "my-model/model.safetensors": "w", "my-model/sub/tokenizer.json": "t",
                    "__MACOSX/my-model/._config.json": "junk"})
-    assert local_model.save_upload(zf, "mine") == "mine"
+    assert local_model.save_upload(zf, "mine", 1) == "mine"
     d = models_dir / "mine"
     assert (d / "config.json").read_text() == "{}"
     assert (d / "sub" / "tokenizer.json").read_text() == "t"
     assert not (d / "__MACOSX").exists()
-    assert json.loads((d / "trainform.json").read_text())["source"] == "upload"
-    assert local_model.list_local_models() == [{"name": "mine", "source": "upload"}]
+    assert json.loads((d / "trainform.json").read_text()) == {"source": "upload", "owner": 1}
+    assert local_model.list_local_models(1) == [{"name": "mine", "source": "upload"}]
     assert [p.name for p in models_dir.iterdir()] == ["mine"]
 
 
 def test_upload_flat_zip(models_dir):
-    local_model.save_upload(make_zip(MODEL), "flat")
+    local_model.save_upload(make_zip(MODEL), "flat", 1)
     assert (models_dir / "flat" / "model.safetensors").exists()
 
 
@@ -105,51 +141,57 @@ def test_upload_flat_zip(models_dir):
 ])
 def test_upload_rejects_unsafe_or_invalid(models_dir, files, symlink):
     with pytest.raises(ValueError):
-        local_model.save_upload(make_zip(files, symlink), "bad")
+        local_model.save_upload(make_zip(files, symlink), "bad", 1)
     assert empty(models_dir)
     assert not (models_dir.parent / "evil.txt").exists()
+
+
+def test_upload_errors_do_not_leak_server_paths(models_dir):
+    with pytest.raises(ValueError) as e:
+        local_model.save_upload(make_zip({**MODEL, "a": "x", "a/b": "y"}), "bad", 1)
+    assert str(models_dir) not in str(e.value) and "Errno" not in str(e.value)
 
 
 def test_upload_rejects_corrupt_member(models_dir):
     data = bytearray(make_zip({"config.json": "{}", "model.safetensors": "weights-data"}).getvalue())
     data[data.find(b"weights-data")] ^= 1  # stored member: flipping a byte breaks its CRC
     with pytest.raises(ValueError, match="Corrupt"):
-        local_model.save_upload(io.BytesIO(bytes(data)), "bad")
+        local_model.save_upload(io.BytesIO(bytes(data)), "bad", 1)
     assert empty(models_dir)
 
 
 def test_upload_rejects_non_zip(models_dir):
     with pytest.raises(ValueError):
-        local_model.save_upload(io.BytesIO(b"not a zip"), "bad")
+        local_model.save_upload(io.BytesIO(b"not a zip"), "bad", 1)
 
 
 def test_upload_zip_bomb_guard(models_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MAX_UPLOAD_BYTES", 10)
     with pytest.raises(ValueError):
-        local_model.save_upload(make_zip({"config.json": "{}", "model.safetensors": "x" * 11}), "bomb")
+        local_model.save_upload(make_zip({"config.json": "{}", "model.safetensors": "x" * 11}), "bomb", 1)
     assert empty(models_dir)
 
 
 def test_upload_existing_name(models_dir):
-    local_model.save_upload(make_zip(MODEL), "dup")
+    local_model.save_upload(make_zip(MODEL), "dup", 1)
     with pytest.raises(FileExistsError):
-        local_model.save_upload(make_zip(MODEL), "dup")
+        local_model.save_upload(make_zip(MODEL), "dup", 1)
 
 
 def test_upload_is_not_listed_until_complete(models_dir, monkeypatch):
     seen = []
     copy = local_model.shutil.copyfileobj
     monkeypatch.setattr(local_model.shutil, "copyfileobj",
-                        lambda *a: (seen.append(local_model.list_local_models()), copy(*a)))
-    local_model.save_upload(make_zip(MODEL), "inprog")
+                        lambda *a: (seen.append(local_model.list_local_models(1)), copy(*a)))
+    local_model.save_upload(make_zip(MODEL), "inprog", 1)
     assert seen and all(s == [] for s in seen)
-    assert local_model.list_local_models() == [{"name": "inprog", "source": "upload"}]
+    assert local_model.list_local_models(1) == [{"name": "inprog", "source": "upload"}]
 
 
 def test_upload_cleans_up_on_extraction_failure(models_dir, monkeypatch):
     monkeypatch.setattr(local_model.shutil, "copyfileobj", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(OSError):
-        local_model.save_upload(make_zip(MODEL), "partial")
+        local_model.save_upload(make_zip(MODEL), "partial", 1)
     assert empty(models_dir)
 
 
@@ -186,17 +228,17 @@ def fake_hub(monkeypatch, files, snapshot_error=None):
     class FakeApi:
         def model_info(self, repo_id, files_metadata=False):
             calls.update(info_repo_id=repo_id, files_metadata=files_metadata)
-            return SimpleNamespace(siblings=[SimpleNamespace(rfilename=f, size=n) for f, n in files.items()])
+            return SimpleNamespace(sha="abc123", siblings=[SimpleNamespace(rfilename=f, size=n) for f, n in files.items()])
 
-    def snapshot_download(repo_id, local_dir, allow_patterns):
-        calls.update(repo_id=repo_id, local_dir=local_dir, allow_patterns=allow_patterns)
+    def snapshot_download(repo_id, revision, local_dir, allow_patterns):
+        calls.update(repo_id=repo_id, revision=revision, local_dir=local_dir, allow_patterns=allow_patterns)
         if snapshot_error:
             raise snapshot_error
         for f in files:
             if any(fnmatch(f, p) for p in allow_patterns):
                 (local_dir / f).parent.mkdir(parents=True, exist_ok=True)
                 (local_dir / f).write_text("x")
-                assert local_model.list_local_models() == []  # not visible while downloading
+                assert local_model.list_local_models(1) == []  # not visible while downloading
 
     monkeypatch.setattr(local_model, "HfApi", FakeApi)
     monkeypatch.setattr(local_model, "snapshot_download", snapshot_download)
@@ -208,26 +250,28 @@ TINY_REPO = {"config.json": 10, "model.safetensors": 100, "tokenizer.json": 10, 
 
 def test_download_model(models_dir, monkeypatch):
     calls = fake_hub(monkeypatch, TINY_REPO)
-    assert local_model.download_model("org/tiny-1.0") == "org--tiny-1.0"
+    assert local_model.download_model("org/tiny-1.0", 1) == "org--tiny-1.0"
     assert calls["repo_id"] == calls["info_repo_id"] == "org/tiny-1.0" and calls["files_metadata"]
+    assert calls["revision"] == "abc123"  # the revision whose sizes were checked
     allowed = lambda f: any(fnmatch(f, p) for p in calls["allow_patterns"])  # noqa: E731
     assert all(map(allowed, ["config.json", "model.safetensors", "tokenizer.model", "merges.txt", "chat_template.jinja"]))
     assert not any(map(allowed, ["pytorch_model.bin", "model.pt", "model.pth", "x.pkl", "x.ckpt", "model.onnx"]))
     d = models_dir / "org--tiny-1.0"
     assert (d / "model.safetensors").exists() and not (d / "pytorch_model.bin").exists()
-    assert json.loads((d / "trainform.json").read_text()) == {"source": "hub", "repo_id": "org/tiny-1.0"}
+    assert json.loads((d / "trainform.json").read_text()) == {"source": "hub", "repo_id": "org/tiny-1.0", "owner": 1}
     assert [p.name for p in models_dir.iterdir()] == ["org--tiny-1.0"]
-    assert local_model.list_local_models() == [{"name": "org--tiny-1.0", "source": "hub"}]
+    assert local_model.list_local_models(1) == [{"name": "org--tiny-1.0", "source": "hub"}]
     calls.clear()
-    assert local_model.download_model("org/tiny-1.0") == "org--tiny-1.0"  # already downloaded: reused
+    assert local_model.download_model("org/tiny-1.0", 1) == "org--tiny-1.0"  # already downloaded: reused
     assert calls == {}
 
 
 def test_download_does_not_overwrite_upload(models_dir, monkeypatch):
-    local_model.save_upload(make_zip(MODEL), "org--x")
+    (models_dir / "org--x").mkdir(parents=True)  # an upload from before '--' was reserved for Hub names
+    (models_dir / "org--x" / "trainform.json").write_text(json.dumps({"source": "upload"}))
     calls = fake_hub(monkeypatch, TINY_REPO)
     with pytest.raises(FileExistsError):
-        local_model.download_model("org/x")
+        local_model.download_model("org/x", 1)
     assert calls == {}
     assert json.loads((models_dir / "org--x" / "trainform.json").read_text()) == {"source": "upload"}
 
@@ -236,16 +280,16 @@ def test_download_too_large(models_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MAX_UPLOAD_BYTES", 119)
     calls = fake_hub(monkeypatch, TINY_REPO)  # 120 bytes of allowed files; the 1 TB .bin is not counted
     with pytest.raises(ValueError, match="too large"):
-        local_model.download_model("org/big")
+        local_model.download_model("org/big", 1)
     assert "repo_id" not in calls  # rejected before downloading
     monkeypatch.setattr(local_model, "MAX_UPLOAD_BYTES", 120)
-    assert local_model.download_model("org/big") == "org--big"
+    assert local_model.download_model("org/big", 1) == "org--big"
 
 
 @pytest.mark.parametrize("repo_id", ["tiny", "a/b/c", "../x", "org/", "/x", "org/a b", "org/..", "./x"])
 def test_download_bad_repo_id(models_dir, repo_id):
     with pytest.raises(ValueError):
-        local_model.download_model(repo_id)
+        local_model.download_model(repo_id, 1)
 
 
 @pytest.mark.parametrize("error", [RepositoryNotFoundError, GatedRepoError])
@@ -253,21 +297,21 @@ def test_download_not_found_or_gated(models_dir, monkeypatch, error):
     response = httpx.Response(404, request=httpx.Request("GET", "https://hf.co"))
     fake_hub(monkeypatch, TINY_REPO, error("nope", response=response))
     with pytest.raises(ValueError, match="org/missing"):
-        local_model.download_model("org/missing")
+        local_model.download_model("org/missing", 1)
     assert empty(models_dir)
 
 
 def test_download_failure_cleans_up(models_dir, monkeypatch):
     fake_hub(monkeypatch, TINY_REPO, LocalEntryNotFoundError("hub unreachable"))
     with pytest.raises(LocalEntryNotFoundError):
-        local_model.download_model("org/tiny")
+        local_model.download_model("org/tiny", 1)
     assert empty(models_dir)
 
 
 def test_download_without_safetensors_rejected(models_dir, monkeypatch):
     calls = fake_hub(monkeypatch, {"config.json": 1, "pytorch_model.bin": 1})
     with pytest.raises(ValueError, match="safetensors"):
-        local_model.download_model("org/old")
+        local_model.download_model("org/old", 1)
     assert "repo_id" not in calls
     assert empty(models_dir)
 
