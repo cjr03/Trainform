@@ -1,5 +1,8 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 from app import training
 from app.db import engine
@@ -33,7 +36,7 @@ def fakes(monkeypatch):
     scores = iter([6, 8, 9, 9])
     llms = []
 
-    def generate_personas(llm, prompt, n):
+    def generate_personas(llm, prompt, n, rubric=None):
         llms.append(llm)
         return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)]
 
@@ -74,7 +77,7 @@ def test_create_runs_training_in_background(authed_client, fakes):
                       "score_windows", "best_model_id", "best_score", "created_at"}
     progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"])
     assert progress == ("completed", None, 2, 4, 4)
-    assert d["latest_prompt"] == "Be helpful.!!!!"
+    assert d["latest_prompt"] == "Be helpful.!!"
     # Scenario means: 7.0, 8.0, 8.5, 8.5 -> rounds 7.5 and 8.5.
     assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 8.0}, {"label": "n/2", "runs": 2, "score": 8.5},
                                   {"label": "n/4", "runs": 1, "score": 8.5}, {"label": "last", "runs": 1, "score": 8.5}]
@@ -115,7 +118,7 @@ def test_downloads(authed_client, fakes, db, user):
     t = authed_client.post("/api/trainings", json=BODY).json()
     r = authed_client.get(f"/api/trainings/{t['id']}/download/prompt")
     assert r.status_code == 200
-    assert r.text == "Be helpful.!!!!"
+    assert r.text == "Be helpful.!!"
     assert r.headers["content-type"].startswith("text/plain")
     assert r.headers["content-disposition"] == f'attachment; filename="training-{t["id"]}-prompt.txt"'
 
@@ -156,16 +159,39 @@ def test_request_releases_its_db_connection_before_training(authed_client, fakes
     assert checked_out == [0]
 
 
-def test_one_training_in_progress_per_user(authed_client, fakes, monkeypatch, db):
+def test_one_training_in_progress_per_user(authed_client, fakes, monkeypatch, db, user):
     monkeypatch.setattr(training, "run_training", lambda *args: None)
     other_users_training(db)  # pending, but someone else's
     first = authed_client.post("/api/trainings", json=BODY)
     assert first.status_code == 201
     r = authed_client.post("/api/trainings", json=BODY)
     assert (r.status_code, r.json()) == (409, {"detail": "You already have a training in progress."})
+    # The database enforces it, so two concurrent requests can't both pass a check-then-insert.
+    with pytest.raises(IntegrityError):
+        db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
+                        rounds=1, status="running"))
+        db.commit()
+    db.rollback()
     db.get(Training, first.json()["id"]).status = "failed"
     db.commit()
     assert authed_client.post("/api/trainings", json=BODY).status_code == 201
+
+
+def test_global_cap_on_concurrent_trainings(authed_client, fakes, monkeypatch, db, user):
+    monkeypatch.setattr(training, "_SLOTS", threading.BoundedSemaphore(1))
+    assert training._SLOTS.acquire(blocking=False)  # another user's run holds the only slot
+    r = authed_client.post("/api/trainings", json=BODY)
+    assert (r.status_code, r.json()) == (429, {"detail": "The server is busy with other trainings; try again later."})
+    assert db.query(Training).count() == 0
+    training._SLOTS.release()
+
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 201  # runs to completion here
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 201  # so its slot was released
+    db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
+                    rounds=1))
+    db.commit()
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 409
+    assert training._SLOTS.acquire(blocking=False)  # a rejected request gives its slot back
 
 
 def test_unknown_base_model(authed_client, fakes, db):

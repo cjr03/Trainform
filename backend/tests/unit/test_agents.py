@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from app import agents
@@ -155,6 +157,19 @@ def test_generate_personas_truncates_and_pads_cyclically():
     out = agents.generate_personas(FakeLLM({"criteria": ["x"]}, few), "p", 5)
     assert [p["prompt"] for p in out] == ["a", "b", "a", "b", "a"]
     assert out[0] is not out[2]
+
+
+def test_generate_personas_uses_the_given_rubric_in_batches():
+    def batch(k):
+        return {"personas": [persona(f"p{i}", 5, 6) for i in range(k)]}
+
+    llm = FakeLLM(batch(10), batch(12), batch(5))
+    out = agents.generate_personas(llm, "p", 25, rubric=RUBRIC)
+    assert len(out) == 25 and all([a["criterion"] for a in p["attributes"]] == RUBRIC for p in out)
+    assert [p["prompt"] for p in out[:12]] == [f"p{i}" for i in range(10)] + ["p0", "p1"]
+    assert [c[0] for c in llm.calls] == [agents.PERSONA_GENERATOR_SYSTEM] * 3  # no rubric creator call
+    assert [re.search(r"<count>(\d+)</count>", c[1]).group(1) for c in llm.calls] == ["10", "10", "5"]
+    assert all("- Greets the user.\n- Is concise." in c[1] for c in llm.calls)
 
 
 def test_generate_personas_rejects_none():

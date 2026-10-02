@@ -44,8 +44,8 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
     assert r.status_code == 200 and "Acme order tracking" in r.json()["prompt"]
     r = client.post("/api/agents/rubric", json={"agent_prompt": INITIAL_PROMPT}, headers=auth)
     assert r.status_code == 200
-    rubric = r.json()["criteria"]
-    assert 3 <= len(rubric) <= 4
+    assert 3 <= len(r.json()["criteria"]) <= 4
+    rubric = r.json()["criteria"][:2] + ["Offers to book a repair."]  # edited on the Rubric slide
 
     body = {"base_model": "demo", "prompt": INITIAL_PROMPT, "rubric": rubric, "scenarios": 3, "rounds": 2}
     r = client.post("/api/trainings", json=body, headers=auth)
@@ -113,6 +113,7 @@ def test_fake_llm_with_real_local_model(db, user, tiny_model_dir, monkeypatch):
     assert (t.status, t.error) == ("completed", None)
     scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
     assert len(scenarios) == 6
+    assert all([a["criterion"] for a in s.persona["attributes"]] == rubric for s in scenarios)
     high = [[{"prompt": s.prompt, "input": s.input, "output": s.output} for s in scenarios
              if s.round == r and s.score >= HIGH_SCORE] for r in (1, 2)]
     assert all(high) and len(high[0]) < 3  # some scenarios scored high, some did not
