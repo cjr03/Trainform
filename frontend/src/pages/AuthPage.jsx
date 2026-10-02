@@ -26,6 +26,7 @@ export default function AuthPage({ onAuth }) {
   })
 
   const switchMode = (m) => {
+    if (m === mode) return
     setDir(m === 'signup' ? 'forward' : 'back')
     setMode(m)
     setForm((f) => ({ ...f, password: '', password_confirm: '' }))
