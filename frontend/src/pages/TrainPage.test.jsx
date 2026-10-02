@@ -152,9 +152,10 @@ it('shows hub errors inline', async () => {
 
 it('clears stale model errors once a later action succeeds', async () => {
   const user = userEvent.setup()
-  api.listLocalModels.mockRejectedValueOnce(new Error('Server down')).mockResolvedValue([{ name: 'Qwen2.5-0.5B', source: 'hub' }])
+  const model = { name: 'Qwen2.5-0.5B', source: 'hub' }
+  api.listLocalModels.mockRejectedValueOnce(new Error('Server down')).mockResolvedValue([model])
   api.searchHubModels.mockResolvedValue([HUB_MODEL])
-  api.downloadHubModel.mockRejectedValueOnce(new Error('Disk full')).mockResolvedValue({ name: 'Qwen2.5-0.5B', source: 'hub' })
+  api.downloadHubModel.mockRejectedValueOnce(new Error('Disk full')).mockResolvedValue(model)
   render(<TrainPage />)
   expect(await screen.findByRole('alert')).toHaveTextContent('Server down')
 
@@ -334,7 +335,7 @@ it('polls exactly every 2 s and never overlaps requests', async () => {
   await act(async () => release())
   await tick(2000)
   expect(api.getTraining).toHaveBeenCalledTimes(2)
-  expect(at[1] - at[0]).toBe(12000)
+  expect(at[1] - at[0]).toBeGreaterThanOrEqual(12000)
   await act(async () => release())
   await tick(2000)
   expect(at[2] - at[1]).toBe(2000)

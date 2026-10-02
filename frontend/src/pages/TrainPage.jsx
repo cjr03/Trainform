@@ -55,22 +55,24 @@ function ModelStep({ value, onChange }) {
   const [downloading, setDownloading] = useState('')
   const [file, setFile] = useState(null)
   const [name, setName] = useState('')
-  const [runSearch, searching, searchError] = useAction()
-  const [runDownload, , downloadError] = useAction()
+  const [runHub, hubBusy, hubError] = useAction()
   const [runUpload, uploading, uploadError] = useAction()
 
-  const refresh = async () => setModels(await api.listLocalModels())
+  const refresh = async () => {
+    setModels(await api.listLocalModels())
+    setListError('')
+  }
   useEffect(() => {
     api.listLocalModels().then(setModels, (e) => setListError(e.message))
   }, [])
 
   const onSearch = (e) => {
     e.preventDefault()
-    runSearch(async () => setResults(await api.searchHubModels(search.trim(), sort)))
+    runHub(async () => setResults(await api.searchHubModels(search.trim(), sort)))
   }
   const download = async (id) => {
     setDownloading(id)
-    await runDownload(async () => {
+    await runHub(async () => {
       const model = await api.downloadHubModel(id)
       await refresh()
       onChange(model.name)
@@ -89,33 +91,20 @@ function ModelStep({ value, onChange }) {
   return (
     <div className="model-step">
       <div className="stack">
-        <div className="tabs" role="tablist" aria-label="Model source">
+        <fieldset className="train-toggle">
+          <legend className="sr-only">Model source</legend>
           {[
             ['hub', 'Hugging Face Hub'],
             ['upload', 'Upload'],
           ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              id={`train-tab-${key}`}
-              aria-controls={`train-panel-${key}`}
-              aria-selected={tab === key}
-              className="tab"
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
+            <label key={key}>
+              <input type="radio" name="train-model-source" checked={tab === key} onChange={() => setTab(key)} />
+              <span>{label}</span>
+            </label>
           ))}
-        </div>
+        </fieldset>
 
-        <div
-          role="tabpanel"
-          id="train-panel-hub"
-          aria-labelledby="train-tab-hub"
-          hidden={tab !== 'hub'}
-          className="stack"
-        >
+        <div hidden={tab !== 'hub'} className="stack">
           <form role="search" className="hub-search" onSubmit={onSearch}>
             <input
               type="search"
@@ -129,11 +118,11 @@ function ModelStep({ value, onChange }) {
               <option value="downloads">Most downloaded</option>
               <option value="lastModified">Latest</option>
             </select>
-            <button className="btn btn-primary" disabled={searching}>
-              {searching && <Spinner />}Search
+            <button className="btn btn-primary" disabled={hubBusy}>
+              {hubBusy && !downloading && <Spinner />}Search
             </button>
           </form>
-          <Alert>{searchError || downloadError}</Alert>
+          <Alert>{hubError}</Alert>
           {results === null ? (
             <p className="muted">Search the Hub to find a base model. Small instruct models train fastest.</p>
           ) : results.length === 0 ? (
@@ -179,14 +168,7 @@ function ModelStep({ value, onChange }) {
           )}
         </div>
 
-        <form
-          role="tabpanel"
-          id="train-panel-upload"
-          aria-labelledby="train-tab-upload"
-          hidden={tab !== 'upload'}
-          className="stack"
-          onSubmit={upload}
-        >
+        <form hidden={tab !== 'upload'} className="stack" onSubmit={upload}>
           <p className="muted">Zip a Hugging Face model folder (config, tokenizer and weights) and upload it.</p>
           <div className="field">
             <label className="label" htmlFor="train-upload-file">
@@ -242,7 +224,7 @@ function PromptStep({ prompt, onChange }) {
 
   return (
     <div className="stack">
-      <fieldset className="segmented">
+      <fieldset className="train-toggle">
         <legend className="sr-only">How to create the prompt</legend>
         {[
           ['write', 'Write my own'],
@@ -314,9 +296,9 @@ function RubricStep({ prompt, criteria, onChange }) {
       </div>
       <Alert>{error}</Alert>
       {criteria.length > 0 && (
-        <ol className="criteria">
+        <ol className="rubric-list">
           {criteria.map((c, i) => (
-            <li key={i} className="criterion">
+            <li key={i} className="rubric-item">
               <input
                 className="input"
                 aria-label={`Criterion ${i + 1}`}
@@ -335,7 +317,7 @@ function RubricStep({ prompt, criteria, onChange }) {
           ))}
         </ol>
       )}
-      <form className="criterion-add" onSubmit={add}>
+      <form className="rubric-add" onSubmit={add}>
         <input
           className="input"
           aria-label="New criterion"
@@ -483,14 +465,35 @@ function Dashboard({ onReset }) {
   ]
   const completed = training?.status === 'completed'
   const reachable = (i) => (training ? i === 4 || (i === 5 && completed) : i < 4 && valid.slice(0, i).every(Boolean))
-  const done = (i) => (training ? i < 4 || (i === 4 && completed) : i < step && valid[i])
+  // Scenarios has valid defaults, so it only counts as done once training starts.
+  const done = (i) => (training ? i < 4 || (i === 4 && completed) : i < 3 && i !== step && valid[i] && reachable(i))
+  const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
+
+  // Reopen a training still in progress, e.g. after navigating away or reloading.
+  useEffect(() => {
+    let live = true
+    api
+      .listTrainings()
+      .then(async ([latest]) => {
+        if (latest?.status !== 'pending' && latest?.status !== 'running') return
+        const t = await api.getTraining(latest.id)
+        if (!live) return
+        setTraining(t)
+        setStep(4)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
 
   const id = training?.id
   const polling = training?.status === 'pending' || training?.status === 'running'
   useEffect(() => {
     if (!polling) return
     let live = true
-    const timer = setInterval(async () => {
+    let timer
+    const poll = async () => {
       try {
         const t = await api.getTraining(id)
         if (!live) return
@@ -500,10 +503,12 @@ function Dashboard({ onReset }) {
       } catch (e) {
         if (live) setPollError(e.message)
       }
-    }, 2000)
+      if (live) timer = setTimeout(poll, 2000)
+    }
+    timer = setTimeout(poll, 2000)
     return () => {
       live = false
-      clearInterval(timer)
+      clearTimeout(timer)
     }
   }, [id, polling])
 
@@ -594,7 +599,7 @@ function Dashboard({ onReset }) {
 
       <ol className="stepper" aria-label="Training workflow" style={{ '--progress': step / (STEPS.length - 1) }}>
         {STEPS.map(([name], i) => (
-          <li key={name} className="stepper-item" data-state={i === step ? 'current' : done(i) ? 'done' : 'todo'}>
+          <li key={name} className="stepper-item" data-state={state(i)}>
             <button
               type="button"
               className="stepper-node"

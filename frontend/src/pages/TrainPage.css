@@ -16,7 +16,7 @@
   display: none;
 }
 
-.sr-only {
+.train-page .sr-only {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -220,17 +220,26 @@
   align-items: start;
 }
 
-.tabs {
+.train-toggle {
   display: inline-flex;
   align-self: flex-start;
   gap: 4px;
+  margin: 0;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 999px;
 }
 
-.tab,
-.segmented span {
+.train-toggle label {
+  position: relative;
+}
+
+.train-toggle input {
+  position: absolute;
+  opacity: 0;
+}
+
+.train-toggle span {
   display: inline-block;
   border: none;
   border-radius: 999px;
@@ -245,10 +254,14 @@
     background 0.2s;
 }
 
-.tab[aria-selected='true'],
-.segmented input:checked + span {
+.train-toggle input:checked + span {
   color: var(--bg);
   background: var(--gradient);
+}
+
+.train-toggle input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .hub-search {
@@ -312,6 +325,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+.summary {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.summary dd {
+  font-size: 1.1rem;
+  overflow-wrap: anywhere;
+}
+
 .model-list {
   display: flex;
   flex-direction: column;
@@ -360,37 +384,13 @@
 }
 
 /* ---------- 2 Prompt ---------- */
-.segmented {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: 4px;
-  margin: 0;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.segmented label {
-  position: relative;
-}
-
-.segmented input {
-  position: absolute;
-  opacity: 0;
-}
-
-.segmented input:focus-visible + span {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 textarea.prompt-input {
   min-height: 240px;
 }
 
 /* ---------- 3 Rubric ---------- */
-.criteria {
-  counter-reset: criterion;
+.rubric-list {
+  counter-reset: rubric;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -399,39 +399,27 @@ textarea.prompt-input {
   list-style: none;
 }
 
-.criterion {
-  counter-increment: criterion;
+.rubric-item {
+  counter-increment: rubric;
   display: grid;
   grid-template-columns: 2.2em 1fr auto;
   align-items: center;
   gap: 10px;
 }
 
-.criterion::before {
-  content: counter(criterion);
+.rubric-item::before {
+  content: counter(rubric);
   font-family: var(--font-display);
   font-size: 0.8rem;
   color: var(--accent);
   text-align: center;
 }
 
-.criterion-add {
+.rubric-add {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
   padding-left: calc(2.2em + 10px);
-}
-
-/* ---------- 4 Scenarios ---------- */
-.summary {
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.summary dd {
-  font-size: 1.1rem;
-  overflow-wrap: anywhere;
 }
 
 /* ---------- 5 Training ---------- */
@@ -600,7 +588,7 @@ textarea.prompt-input {
   }
 
   .hub-search,
-  .criterion-add {
+  .rubric-add {
     grid-template-columns: 1fr;
     padding-left: 0;
   }
