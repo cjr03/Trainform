@@ -7,11 +7,15 @@ os.environ.setdefault("TRAINFORM_SECRET", "test-secret")
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
+from tokenizers import Tokenizer, models as tokenizer_models, pre_tokenizers  # noqa: E402
+from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast  # noqa: E402
 
 from app import models  # noqa: E402
 from app.auth import current_user  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+
+WORDS = ["<unk>", "<pad>", "</s>", "system", "user", "assistant", ":", "be", "helpful", "hi", "hello", "there"]
 
 
 @pytest.fixture(scope="session")
@@ -51,3 +55,19 @@ def authed_client(client, user):
     """A client whose requests are authenticated as `user` (bypasses token auth)."""
     app.dependency_overrides[current_user] = lambda: user
     return client
+
+
+@pytest.fixture(scope="session")
+def tiny_model_dir(tmp_path_factory):
+    """A 2-layer Llama with a word-level tokenizer, built offline, at <models dir>/tiny."""
+    path = tmp_path_factory.mktemp("models") / "tiny"
+    tok = Tokenizer(tokenizer_models.WordLevel({w: i for i, w in enumerate(WORDS)}, unk_token="<unk>"))
+    tok.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=tok, unk_token="<unk>", pad_token="<pad>", eos_token="</s>")
+    tokenizer.chat_template = ("{% for m in messages %}{{ m['role'] }}: {{ m['content'] }} {% endfor %}"
+                               "{% if add_generation_prompt %}assistant: {% endif %}")
+    tokenizer.save_pretrained(path)
+    config = LlamaConfig(vocab_size=len(WORDS), hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                         num_attention_heads=2, num_key_value_heads=2, eos_token_id=2, pad_token_id=1, bos_token_id=None)
+    LlamaForCausalLM(config).save_pretrained(path)
+    return path
