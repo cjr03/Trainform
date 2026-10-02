@@ -348,7 +348,7 @@ it('resets the dashboard for a new training', async () => {
 
   expect(step('Model')).toHaveAttribute('aria-current', 'step')
   expect(step('Prompt')).toBeDisabled()
-  const model = screen.getByRole('radio', { name: /qwen-0.5b/ })
+  const model = await screen.findByRole('radio', { name: /qwen-0.5b/ })
   expect(model).not.toBeChecked()
   await user.click(model)
   await user.click(nextButton())
