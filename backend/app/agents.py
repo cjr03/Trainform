@@ -1,5 +1,7 @@
 """The seven Trainform agents. Each helper takes `llm(system, message, schema=None)` as its first argument."""
 
+import random
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -222,11 +224,12 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
     The personas pressure `rubric`, or criteria from the rubric creator agent when none is given."""
     rubric = rubric or create_rubric(llm, agent_prompt)
     if getattr(llm, "local", False):
-        # ponytail: code spreads the 1-10 ratings across personas and criteria, since small models can't rate
-        # reliably; the model only writes each brief.
+        # ponytail: code picks the 1-10 ratings, since small models can't rate reliably; the model only writes each
+        # brief. Seeded per persona, so reruns test the same users and no two personas share ratings in practice.
         personas = []
         for i in range(n):
-            ratings = [(i * len(rubric) + j) * 7 % 10 + 1 for j in range(len(rubric))]
+            rng = random.Random(i)
+            ratings = [rng.randint(1, 10) for _ in rubric]
             pressures = "\n".join(f"- {c}: {r}/10" for c, r in zip(rubric, ratings))
             brief = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('pressures', pressures)}",
                          PROMPT_SCHEMA, lambda out: _text(out["prompt"], "persona brief"))

@@ -224,17 +224,24 @@ class LocalModel:
         number of at most two tokens."""
         with self.model.disable_adapter():
             if not digits:
-                # Without the penalty, small models under greedy decoding loop on one line until the token limit.
-                return self.generate(system_prompt, message, max_new_tokens=512, repetition_penalty=1.2)
-            start = len(self._prompt_ids(system_prompt, message))
-            ends = [self.tokenizer.eos_token_id] if self.tokenizer.eos_token_id is not None else []
+                # Greedy decoding makes small models loop on one line until the token limit. A repetition penalty
+                # would also penalise the end-of-turn token (it is in the prompt), so block repeated 4-grams instead.
+                return self.generate(system_prompt, message, max_new_tokens=512, no_repeat_ngram_size=4)
+            start, ends = len(self._prompt_ids(system_prompt, message)), self._end_ids()
             return self.generate(system_prompt, message, max_new_tokens=2, prefix_allowed_tokens_fn=lambda _, ids: (
                 self._digit_ids if len(ids) == start else self._digit_ids + ends))
 
     @cached_property
     def _digit_ids(self) -> list[int]:
+        # isascii: str.isdigit() also accepts superscripts like "²", which int() rejects.
         return [i for token, i in self.tokenizer.get_vocab().items()
-                if self.tokenizer.convert_tokens_to_string([token]).strip().isdigit()]
+                if (text := self.tokenizer.convert_tokens_to_string([token]).strip()).isascii() and text.isdigit()]
+
+    def _end_ids(self) -> list[int]:
+        """Every token that ends the model's turn; chat models often list more than the tokenizer's EOS."""
+        eos = self.model.generation_config.eos_token_id
+        return sorted(i for i in {self.tokenizer.eos_token_id, *(eos if isinstance(eos, list) else [eos])}
+                      if i is not None)
 
     def sft(self, examples: list[dict]) -> float:
         """Fine-tune on [{"prompt", "input", "output"}]; returns the mean training loss."""

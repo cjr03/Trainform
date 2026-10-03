@@ -238,3 +238,11 @@ def test_primary_respond_uses_local_generate():
 
     assert agents.primary_respond(generate, "You are Acme support.", "user: hi") == "Hello there."
     assert calls == [("You are Acme support.", "user: hi")]
+
+
+def test_local_personas_do_not_repeat():
+    # Generation is greedy, so equal ratings would give equal briefs and the same simulated user again.
+    rubric = [f"Rule {j}." for j in range(10)]
+    llm = LocalLLM(*({"prompt": "brief"} for _ in range(20)))
+    personas = agents.generate_personas(llm, "p", 20, rubric=rubric)
+    assert len({tuple(a["rating"] for a in p["attributes"]) for p in personas}) == 20

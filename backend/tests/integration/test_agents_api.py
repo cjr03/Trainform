@@ -111,3 +111,34 @@ def test_without_claude_a_listed_local_model_is_required(authed_client, no_claud
     assert r.status_code == 400
     assert r.json()["detail"] == "Link your Claude API key on the Account page, or pick a local model first."
     assert no_claude == []
+
+
+def test_a_local_model_that_fails_to_load_is_400(authed_client, no_claude, monkeypatch):
+    def broken(key):
+        raise OSError("bad safetensors header")
+    monkeypatch.setattr(llm_module, "_load", broken)
+    r = authed_client.post("/api/agents/prompt", json={"description": "x", "model": "tiny"})
+    assert (r.status_code, r.json()) == (400, {"detail": "The local model tiny could not be loaded."})
+
+
+def test_a_busy_local_model_is_503(authed_client, no_claude, monkeypatch):
+    monkeypatch.setattr(llm_module, "LOCAL_WAIT", 0.01)
+    llm_module._ROUTE_MODEL.acquire()
+    try:
+        r = authed_client.post("/api/agents/prompt", json={"description": "x", "model": "tiny"})
+    finally:
+        llm_module._ROUTE_MODEL.release()
+    assert (r.status_code, r.json()) == (503, {"detail": "The local model is busy; try again shortly."})
+
+
+def test_a_replaced_local_model_is_reloaded(tmp_path, monkeypatch):
+    # Deleting a model and adding another under the same name must not serve the old weights.
+    monkeypatch.setattr(local_model, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(llm_module, "LocalModel", lambda name: object())
+    (tmp_path / "foo").mkdir()
+    first = llm_module._load("foo")
+    assert llm_module._load("foo") is first
+    (tmp_path / "foo").rmdir()
+    (tmp_path / "foo").mkdir()
+    (tmp_path / "foo" / "config.json").write_text("{}")
+    assert llm_module._load("foo") is not first

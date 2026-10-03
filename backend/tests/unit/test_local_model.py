@@ -411,3 +411,12 @@ def test_complete_ignores_the_fine_tuned_adapter(tiny_model_dir, monkeypatch):
     model.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there hello there"}] * 40)
     assert model.generate("be helpful", "hi") != tuned_before  # the adapter did learn something
     assert (model.complete("system", "hi there"), model.complete("system", "hi", digits=True)) == before
+
+
+def test_digits_stop_on_any_end_of_turn_token(tiny_model_dir, monkeypatch):
+    # Chat models often end a turn on a token other than the tokenizer's EOS (Llama 3, Gemma): listed in generation_config.
+    monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
+    model = LocalModel("tiny")
+    assert model._end_ids() == [2]
+    model.model.generation_config.eos_token_id = [4, 2]
+    assert model._end_ids() == [2, 4]

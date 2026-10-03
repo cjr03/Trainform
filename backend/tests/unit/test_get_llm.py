@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from fastapi import HTTPException
 
@@ -92,7 +94,23 @@ def test_local_llm_integer_field_reads_a_digits_only_reply(reply, score):
     assert model.calls[0][2] is True
 
 
-def test_local_llm_empty_number_is_a_parse_error():
-    # ValueError is what agents._ask turns into a user-facing LLMError.
-    with pytest.raises(ValueError):
-        llm.local_llm(StubModel(""))("sys", "msg", agents.SCORE_SCHEMA)
+class BrokenModel:
+    def complete(self, system, message, digits=False):
+        raise RuntimeError("index out of range in self")  # e.g. a prompt longer than the model's context
+
+
+@pytest.mark.parametrize("model", [StubModel(""), BrokenModel()])
+def test_local_model_failures_are_llm_errors(model):
+    with pytest.raises(llm.LLMError, match="^The local model failed to reply$"):
+        llm.local_llm(model)("sys", "msg", agents.SCORE_SCHEMA)
+
+
+def test_a_busy_local_model_is_an_llm_error(monkeypatch):
+    monkeypatch.setattr(llm, "LOCAL_WAIT", 0.01)
+    lock = threading.Lock()
+    lock.acquire()
+    with pytest.raises(llm.LLMError, match="busy"):
+        llm.local_llm(StubModel("x"), lock)("sys", "msg")
+    lock.release()
+    assert llm.local_llm(StubModel("x"), lock)("sys", "msg") == "x"
+    assert lock.acquire(blocking=False)  # released after the call

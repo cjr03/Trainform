@@ -3,13 +3,13 @@ import logging
 import os
 import re
 import threading
-from functools import cache, lru_cache, partial
+from functools import cache, partial
 
 import anthropic
 from cryptography.fernet import InvalidToken
 from fastapi import Depends, HTTPException
 
-from app import fake
+from app import fake, local_model
 from app.auth import current_user, decrypt_api_key
 from app.local_model import LocalModel, list_local_models
 from app.models import User
@@ -84,35 +84,54 @@ def get_llm(user: User = Depends(current_user)):
     return partial(call_claude, key) if key else None
 
 
-_GENERATE = threading.Lock()  # ponytail: one local helper generation at a time, server-wide
+LOCAL_WAIT = 60  # seconds an agent request waits for the shared local model before giving up
+_ROUTE_MODEL = threading.Lock()  # the agent routes share one loaded model, which replies to one request at a time
+_loaded = {}
 
 
-def local_llm(model):
+def _local_reply(model, system, message, schema):
+    if schema is None:
+        return model.complete(system, message)
+    (field, spec), = schema["properties"].items()
+    if spec["type"] == "integer":
+        reply = model.complete(system, message, digits=True).replace(" ", "")
+        return {field: 10 if reply.startswith("10") else int(reply[:1])}
+    if spec["type"] == "array":
+        reply = model.complete(f"{system}\n\nWrite one item per line and nothing else.", message)
+        return {field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
+    return {field: model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)}
+
+
+def local_llm(model, lock=None):
     """An `llm(system, message, schema=None)` running on a LocalModel, for users who haven't linked Claude.
 
     Small models can't write JSON, so a schema must have a single field and the reply is mapped onto it: the whole
-    reply for a string, one item per line for a list of strings, and a digits-only reply for an integer."""
+    reply for a string, one item per line for a list of strings, and a digits-only reply for an integer. `lock`
+    serialises callers that share `model`."""
     def llm(system, message, schema=None):
-        with _GENERATE:
-            if schema is None:
-                return model.complete(system, message)
-            (field, spec), = schema["properties"].items()
-            if spec["type"] == "integer":
-                reply = model.complete(system, message, digits=True).replace(" ", "")
-                return {field: 10 if reply.startswith("10") else int(reply[:1])}
-            if spec["type"] == "array":
-                reply = model.complete(f"{system}\n\nWrite one item per line and nothing else.", message)
-                return {field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
-            return {field: model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)}
+        if lock and not lock.acquire(timeout=LOCAL_WAIT):
+            raise LLMError("The local model is busy; try again shortly")
+        try:
+            return _local_reply(model, system, message, schema)
+        except Exception as e:  # torch errors (e.g. a prompt past the context window) carry no user-facing detail
+            log.exception("Local model failed to reply")
+            raise LLMError("The local model failed to reply") from e
+        finally:
+            if lock:
+                lock.release()
 
     llm.local = True
     return llm
 
 
-@lru_cache(maxsize=1)
 def _load(name: str) -> LocalModel:
-    # ponytail: the last-used model stays loaded for the next request; one at a time bounds the memory.
-    return LocalModel(name)
+    """The routes' model, kept loaded for the next request. Caller holds _ROUTE_MODEL."""
+    stat = (local_model.MODELS_DIR / name).stat()
+    key = (name, stat.st_ino, stat.st_mtime_ns)  # a deleted and re-added model of the same name gets reloaded
+    if key not in _loaded:
+        _loaded.clear()  # ponytail: one model at a time, freed before the next loads
+        _loaded[key] = LocalModel(name)
+    return _loaded[key]
 
 
 def llm_or_local(llm, user: User, model: str | None):
@@ -121,5 +140,13 @@ def llm_or_local(llm, user: User, model: str | None):
         return llm
     if model not in {m["name"] for m in list_local_models(user.id)}:
         raise HTTPException(400, "Link your Claude API key on the Account page, or pick a local model first.")
-    with _GENERATE:
-        return local_llm(_load(model))
+    if not _ROUTE_MODEL.acquire(timeout=LOCAL_WAIT):
+        raise HTTPException(503, "The local model is busy; try again shortly.")
+    try:
+        loaded = _load(model)
+    except Exception as e:
+        log.exception("Could not load local model %s", model)
+        raise HTTPException(400, f"The local model {model} could not be loaded.") from e
+    finally:
+        _ROUTE_MODEL.release()
+    return local_llm(loaded, _ROUTE_MODEL)
