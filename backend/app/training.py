@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import agents, fake
 from app.auth import current_user
 from app.db import SessionLocal, get_db
-from app.llm import get_llm
+from app.llm import get_llm, local_llm
 from app.local_model import LocalModel, list_local_models
 from app.models import Scenario, TrainedModel, Training, User
 
@@ -37,6 +37,7 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
             t.status = "running"
             db.commit()
             model = load_model(t.base_model)
+            llm = llm or local_llm(model)  # no Claude: the helpers share the loaded model, with its adapter off
             prompt = t.initial_prompt
             best_score = None
             for r in range(1, t.rounds + 1):

@@ -11,6 +11,7 @@ import threading
 import zipfile
 import zlib
 from contextlib import contextmanager
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -209,13 +210,38 @@ class LocalModel:
             text = f"{system_prompt}\n\nUser: {conversation}\nAssistant:"
         return self.tokenizer(text, add_special_tokens=False)["input_ids"]
 
-    def generate(self, system_prompt: str, conversation: str) -> str:
+    def generate(self, system_prompt: str, conversation: str, max_new_tokens: int = 256, **kwargs) -> str:
         ids = torch.tensor([self._prompt_ids(system_prompt, conversation)], device=self.device)
         self.model.eval()
         with torch.no_grad():
-            out = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=256,
-                                      do_sample=False, pad_token_id=self.tokenizer.pad_token_id)
+            out = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=max_new_tokens,
+                                      do_sample=False, pad_token_id=self.tokenizer.pad_token_id, **kwargs)
         return self.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True).strip()
+
+    def complete(self, system_prompt: str, message: str, digits: bool = False) -> str:
+        """Helper-agent generation (used when Claude isn't linked). Runs on the base weights with the LoRA adapter off,
+        so fine-tuning never changes the agents that grade and coach the model. `digits` restricts the reply to a
+        number of at most two tokens."""
+        with self.model.disable_adapter():
+            if not digits:
+                # Greedy decoding makes small models loop on one line until the token limit. A repetition penalty
+                # would also penalise the end-of-turn token (it is in the prompt), so block repeated 4-grams instead.
+                return self.generate(system_prompt, message, max_new_tokens=512, no_repeat_ngram_size=4)
+            start, ends = len(self._prompt_ids(system_prompt, message)), self._end_ids()
+            return self.generate(system_prompt, message, max_new_tokens=2, prefix_allowed_tokens_fn=lambda _, ids: (
+                self._digit_ids if len(ids) == start else self._digit_ids + ends))
+
+    @cached_property
+    def _digit_ids(self) -> list[int]:
+        # isascii: str.isdigit() also accepts superscripts like "²", which int() rejects.
+        return [i for token, i in self.tokenizer.get_vocab().items()
+                if (text := self.tokenizer.convert_tokens_to_string([token]).strip()).isascii() and text.isdigit()]
+
+    def _end_ids(self) -> list[int]:
+        """Every token that ends the model's turn; chat models often list more than the tokenizer's EOS."""
+        eos = self.model.generation_config.eos_token_id
+        return sorted(i for i in {self.tokenizer.eos_token_id, *(eos if isinstance(eos, list) else [eos])}
+                      if i is not None)
 
     def sft(self, examples: list[dict]) -> float:
         """Fine-tune on [{"prompt", "input", "output"}]; returns the mean training loss."""

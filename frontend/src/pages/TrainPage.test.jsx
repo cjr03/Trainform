@@ -221,7 +221,7 @@ it('generates a prompt from a description into the editable prompt', async () =>
   await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
   await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
 
-  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot')
+  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot', 'qwen-0.5b') // the local model, if no Claude
   const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
   await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
   await user.type(prompt, ' Be kind.')
@@ -269,7 +269,7 @@ it('generates the rubric and supports add, edit, delete and confirmed regenerate
   await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
   await user.click(nextButton())
   await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
-  expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.')
+  expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.', 'qwen-0.5b')
 
   const first = await screen.findByRole('textbox', { name: 'Criterion 1' })
   expect(first).toHaveValue('Clarity')

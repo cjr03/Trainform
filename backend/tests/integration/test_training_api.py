@@ -218,12 +218,12 @@ def test_unknown_base_model(authed_client, fakes, db):
     assert db.query(Training).count() == 0
 
 
-def test_create_without_claude_key(authed_client, fakes, monkeypatch, db):
+def test_create_without_claude_key_uses_the_local_model(authed_client, fakes, monkeypatch, db):
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     r = authed_client.post("/api/trainings", json=BODY)
-    assert r.status_code == 400
-    assert "Claude" in r.json()["detail"]
-    assert db.query(Training).count() == 0
+    assert r.status_code == 201
+    assert authed_client.get(f"/api/trainings/{r.json()['id']}").json()["status"] == "completed"
+    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
 
 
 def test_other_users_training_is_404(authed_client, db):

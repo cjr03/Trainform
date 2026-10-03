@@ -96,8 +96,20 @@ cd frontend && npm install && npm run dev
 Each user can link an Anthropic API key at sign-up or on the Account page. The key is stored Fernet-encrypted and
 never returned by the API, which reports only whether a key is linked. Claude calls use the user's own key. Only
 users listed in `TRAINFORM_SHARED_KEY_USERS` fall back to `ANTHROPIC_API_KEY`, so open sign-up can't spend the
-operator's credits. With neither, Claude-backed actions return 400 and ask the user to link a key. A linked
-key that can't be decrypted also returns 400, asking the user to re-link it (no fallback).
+operator's credits. A linked key that can't be decrypted returns 400, asking the user to re-link it (no fallback).
+
+With no key, the helper agents run on the local model chosen on the Model step (the frontend sends it as `model` to
+`/api/agents/prompt` and `/api/agents/rubric`; a training uses its base model). They run on the base weights with the
+LoRA adapter switched off, so fine-tuning never changes the agents that grade and coach the model. During a training
+they share the already-loaded model; the agent routes keep the last-used model loaded. Small models can't write
+JSON, so on this path:
+
+- prompts are plain text, and rubrics are one criterion per line (repeats dropped, at most 8);
+- the scorer rates one criterion per call, with generation limited to digit tokens;
+- persona ratings follow a fixed 1-10 spread across personas and criteria, and the model writes only each brief.
+
+Expect much weaker results than with Claude. Qwen2.5-0.5B-Instruct produces usable prompts and rubrics. A 135M model
+writes fluent text but ignores the instructions. Without a key or a chosen model, the agent routes return 400.
 
 ### Base models
 

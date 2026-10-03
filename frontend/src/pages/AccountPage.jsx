@@ -133,6 +133,7 @@ function ClaudeLink({ user, setUser }) {
       </div>
       <p className="muted account-note">
         Trainform's helper agents run on your own Anthropic API key. It is stored encrypted and never shown again.
+        Without a key they run on the model you train, with much weaker results.
       </p>
       <form
         className="stack"
