@@ -84,6 +84,20 @@ def run(db, t):
     return db.get(Training, t.id), models
 
 
+def test_without_claude_the_helper_agents_run_on_the_base_model(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8]
+    helpers, used = [], []
+    monkeypatch.setattr(training, "local_llm", lambda model: helpers.append(model) or "local llm")
+    personas = training.agents.generate_personas
+    monkeypatch.setattr(training.agents, "generate_personas", lambda llm, *a, **kw: used.append(llm) or personas(llm, *a, **kw))
+    models = []
+    t = make_training(db, user, rounds=1, scenarios=1)
+    training.run_training(t.id, None, lambda name: models.append(FakeModel(name)) or models[-1])
+    db.expire_all()
+    assert db.get(Training, t.id).status == "completed"
+    assert helpers == models and used == ["local llm"]  # the already-loaded model, not a second copy
+
+
 def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     fake_agents.scores = [8, 5, 9, 4, 4, 4]
     t, [model] = run(db, make_training(db, user, rounds=2, scenarios=3))

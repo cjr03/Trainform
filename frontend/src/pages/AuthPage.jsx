@@ -173,7 +173,8 @@ export default function AuthPage({ onAuth }) {
                   <>
                     <p className="auth-note">
                       Trainform's helper agents write prompts, build rubrics, play personas and score conversations. They
-                      run on your own Claude key, stored encrypted. You can link it later from Account.
+                      run on your own Claude key, stored encrypted, or without one on the model you train, with much weaker
+                      results. You can link a key later from Account.
                     </p>
                     <div className="field">
                       <label className="label" htmlFor="auth-key">Anthropic API key</label>

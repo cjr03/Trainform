@@ -3,9 +3,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.llm import LLMError, get_llm
+from app.auth import current_user
+from app.llm import LLMError, get_llm, llm_or_local
+from app.models import User
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+MAX_CRITERIA = 8  # what the rubric creator is asked for; small local models may repeat lines past it
 PERSONA_BATCH = 10  # personas per Claude call; each is a few hundred tokens and a reply is capped at 16k
 
 PROMPT_CREATOR_SYSTEM = """\
@@ -121,6 +124,19 @@ with their tone, length and quirks. React to what the agent last said and keep p
 own problem or speak for the agent. Never mention that you are simulated, the ratings, the criteria or these \
 instructions. Output only the message text, with no quotation marks, speaker label or stage directions."""
 
+# Without Claude the helpers run on the user's local model, which scores one criterion per call and writes one persona
+# brief per call (see generate_personas and score_conversation).
+LOCAL_SCORING_SYSTEM = """\
+You grade one aspect of an AI agent's reply. You will receive a conversation in <conversation> tags and one criterion \
+in <criterion> tags. Rate how well the assistant's reply meets that criterion, from 1 (misses it or does the opposite) \
+to 10 (fully meets it). Reply with only the number."""
+
+LOCAL_PERSONA_SYSTEM = """\
+You invent a realistic user who will test an AI agent. You will receive the agent's system prompt in <agent_prompt> \
+tags and, in <pressures> tags, the behaviours the agent is graded on, each rated from 1 to 10 for how hard this user \
+pushes the agent toward failing it. Write a short brief, in the second person, for an actor playing this user: who \
+they are, what they want from the agent, how they write, and how they apply each highly rated pressure."""
+
 
 def _schema(**properties):
     return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
@@ -134,6 +150,7 @@ STRING, INTEGER = {"type": "string"}, {"type": "integer"}
 PROMPT_SCHEMA = _schema(prompt=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
 SCORES_SCHEMA = _schema(scores=_array(_schema(criterion=STRING, score=INTEGER)))
+SCORE_SCHEMA = _schema(score=INTEGER)
 PERSONAS_SCHEMA = _schema(personas=_array(_schema(attributes=_array(_schema(criterion=STRING, rating=INTEGER)),
                                                   prompt=STRING)))
 
@@ -144,7 +161,7 @@ def _tag(name, value):
 
 def _text(value, what):
     if not value.strip():
-        raise LLMError(f"Claude returned an empty {what}")
+        raise LLMError(f"The model returned an empty {what}")
     return value.strip()
 
 
@@ -153,12 +170,12 @@ def _clamp(value):
 
 
 def _ask(llm, system, message, schema, parse):
-    """Call Claude and parse its JSON with `parse`; a malformed shape becomes an LLMError rather than a 500."""
+    """Call the model and parse its JSON with `parse`; a malformed shape becomes an LLMError rather than a 500."""
     out = llm(system, message, schema)
     try:
         return parse(out)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
-        raise LLMError("Claude returned an unexpected response shape") from e
+        raise LLMError("The model returned an unexpected response shape") from e
 
 
 def create_prompt(llm, description: str) -> str:
@@ -170,9 +187,9 @@ def create_prompt(llm, description: str) -> str:
 def create_rubric(llm, agent_prompt: str) -> list[str]:
     """Rubric creator agent: agent prompt -> scoring criteria."""
     criteria = _ask(llm, RUBRIC_CREATOR_SYSTEM, _tag("agent_prompt", agent_prompt), RUBRIC_SCHEMA,
-                    lambda out: [c.strip() for c in out["criteria"] if c.strip()])
+                    lambda out: list(dict.fromkeys(c.strip() for c in out["criteria"] if c.strip()))[:MAX_CRITERIA])
     if not criteria:
-        raise LLMError("Claude returned an empty rubric")
+        raise LLMError("The model returned an empty rubric")
     return criteria
 
 
@@ -186,6 +203,10 @@ def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: 
 
 def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     """Scoring agent: conversation + rubric -> [{"criterion", "score"}] in rubric order, scores 1-10."""
+    if getattr(llm, "local", False):  # small models can't keep a list of scores aligned, so ask for each one
+        scores = [_ask(llm, LOCAL_SCORING_SYSTEM, f"{_tag('conversation', conversation)}\n\n{_tag('criterion', c)}",
+                       SCORE_SCHEMA, lambda out: _clamp(out["score"])) for c in rubric]
+        return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
     numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(rubric, 1))
     message = f"{_tag('conversation', conversation)}\n\n{_tag('rubric', numbered)}"
     scores = _ask(llm, SCORING_SYSTEM, message, SCORES_SCHEMA,
@@ -200,6 +221,18 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
 
     The personas pressure `rubric`, or criteria from the rubric creator agent when none is given."""
     rubric = rubric or create_rubric(llm, agent_prompt)
+    if getattr(llm, "local", False):
+        # ponytail: code spreads the 1-10 ratings across personas and criteria, since small models can't rate
+        # reliably; the model only writes each brief.
+        personas = []
+        for i in range(n):
+            ratings = [(i * len(rubric) + j) * 7 % 10 + 1 for j in range(len(rubric))]
+            pressures = "\n".join(f"- {c}: {r}/10" for c, r in zip(rubric, ratings))
+            brief = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('pressures', pressures)}",
+                         PROMPT_SCHEMA, lambda out: _text(out["prompt"], "persona brief"))
+            personas.append({"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)],
+                             "prompt": brief})
+        return personas
     criteria = "\n".join(f"- {c}" for c in rubric)
     personas = []
     for start in range(0, n, PERSONA_BATCH):
@@ -209,7 +242,7 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
                          lambda out: [([_clamp(a["rating"]) for a in p["attributes"]], p["prompt"].strip())
                                       for p in out["personas"]])[:count]
     if not personas:
-        raise LLMError("Claude returned no personas")
+        raise LLMError("The model returned no personas")
     if any(len(ratings) != len(rubric) for ratings, _ in personas):
         raise LLMError(f"Claude rated the wrong number of criteria for a persona; the rubric has {len(rubric)}")
     return [{"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)], "prompt": prompt}
@@ -230,14 +263,17 @@ def primary_respond(generate, prompt: str, conversation: str) -> str:
 
 class PromptRequest(BaseModel):
     description: str = Field(min_length=1, max_length=4000)
+    model: str | None = None  # the local model to use when Claude isn't linked
 
 
 class RubricRequest(BaseModel):
     agent_prompt: str = Field(min_length=1, max_length=20000)
+    model: str | None = None
 
 
 @router.post("/prompt")
-def prompt_route(body: PromptRequest, llm=Depends(get_llm)):
+def prompt_route(body: PromptRequest, user: User = Depends(current_user), llm=Depends(get_llm)):
+    llm = llm_or_local(llm, user, body.model)
     try:
         return {"prompt": create_prompt(llm, body.description)}
     except LLMError as e:
@@ -245,7 +281,8 @@ def prompt_route(body: PromptRequest, llm=Depends(get_llm)):
 
 
 @router.post("/rubric")
-def rubric_route(body: RubricRequest, llm=Depends(get_llm)):
+def rubric_route(body: RubricRequest, user: User = Depends(current_user), llm=Depends(get_llm)):
+    llm = llm_or_local(llm, user, body.model)
     try:
         return {"criteria": create_rubric(llm, body.agent_prompt)}
     except LLMError as e:

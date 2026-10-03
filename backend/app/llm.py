@@ -1,7 +1,9 @@
 import json
 import logging
 import os
-from functools import cache, partial
+import re
+import threading
+from functools import cache, lru_cache, partial
 
 import anthropic
 from cryptography.fernet import InvalidToken
@@ -9,6 +11,7 @@ from fastapi import Depends, HTTPException
 
 from app import fake
 from app.auth import current_user, decrypt_api_key
+from app.local_model import LocalModel, list_local_models
 from app.models import User
 
 log = logging.getLogger(__name__)
@@ -63,7 +66,8 @@ def _warn_fake_mode():
 
 
 def get_llm(user: User = Depends(current_user)):
-    """FastAPI dependency: an `llm(system, message, schema=None)` callable bound to the user's Claude key."""
+    """FastAPI dependency: an `llm(system, message, schema=None)` callable bound to the user's Claude key, or None
+    when the user has no key; callers then run the helper agents on a local model (`local_llm`)."""
     if fake.enabled():
         _warn_fake_mode()
         return fake.fake_llm
@@ -77,6 +81,45 @@ def get_llm(user: User = Depends(current_user)):
         # ponytail: no per-user budget; add a daily call counter if allow-listed users need limits.
         shared = {u.strip() for u in os.environ.get("TRAINFORM_SHARED_KEY_USERS", "").split(",")}
         key = os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
-    if not key:
-        raise HTTPException(400, "Link your Claude API key on the Account page first.")
-    return partial(call_claude, key)
+    return partial(call_claude, key) if key else None
+
+
+_GENERATE = threading.Lock()  # ponytail: one local helper generation at a time, server-wide
+
+
+def local_llm(model):
+    """An `llm(system, message, schema=None)` running on a LocalModel, for users who haven't linked Claude.
+
+    Small models can't write JSON, so a schema must have a single field and the reply is mapped onto it: the whole
+    reply for a string, one item per line for a list of strings, and a digits-only reply for an integer."""
+    def llm(system, message, schema=None):
+        with _GENERATE:
+            if schema is None:
+                return model.complete(system, message)
+            (field, spec), = schema["properties"].items()
+            if spec["type"] == "integer":
+                reply = model.complete(system, message, digits=True).replace(" ", "")
+                return {field: 10 if reply.startswith("10") else int(reply[:1])}
+            if spec["type"] == "array":
+                reply = model.complete(f"{system}\n\nWrite one item per line and nothing else.", message)
+                return {field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
+            return {field: model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)}
+
+    llm.local = True
+    return llm
+
+
+@lru_cache(maxsize=1)
+def _load(name: str) -> LocalModel:
+    # ponytail: the last-used model stays loaded for the next request; one at a time bounds the memory.
+    return LocalModel(name)
+
+
+def llm_or_local(llm, user: User, model: str | None):
+    """The user's Claude `llm`, else one on `model`, a local model the user can see."""
+    if llm:
+        return llm
+    if model not in {m["name"] for m in list_local_models(user.id)}:
+        raise HTTPException(400, "Link your Claude API key on the Account page, or pick a local model first.")
+    with _GENERATE:
+        return local_llm(_load(model))

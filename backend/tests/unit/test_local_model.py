@@ -394,3 +394,20 @@ def test_local_model_missing_or_invalid(models_dir):
         LocalModel("../etc")
     with pytest.raises(FileNotFoundError):
         LocalModel("absent")
+
+
+def test_complete_with_digits_replies_with_only_a_number(tiny):
+    for message in ("hi", "hello there", "be helpful"):
+        words = tiny.complete("system", message, digits=True).split()
+        assert 1 <= len(words) <= 2 and set(words) <= {"1", "7", "10"}
+
+
+def test_complete_ignores_the_fine_tuned_adapter(tiny_model_dir, monkeypatch):
+    # The helper agents grade and coach the model being trained, so its fine-tuning must never change them.
+    monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
+    model = LocalModel("tiny")
+    before = model.complete("system", "hi there"), model.complete("system", "hi", digits=True)
+    tuned_before = model.generate("be helpful", "hi")
+    model.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there hello there"}] * 40)
+    assert model.generate("be helpful", "hi") != tuned_before  # the adapter did learn something
+    assert (model.complete("system", "hi there"), model.complete("system", "hi", digits=True)) == before

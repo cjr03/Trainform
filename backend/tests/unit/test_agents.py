@@ -61,6 +61,12 @@ def test_create_rubric_strips_blanks():
     assert_strict(schema)
 
 
+def test_create_rubric_drops_repeats_and_keeps_at_most_eight():
+    # Small local models often repeat a line until they run out of tokens.
+    llm = FakeLLM({"criteria": ["Is polite.", "Is polite. ", *(f"Rule {i}." for i in range(12))]})
+    assert agents.create_rubric(llm, "p") == ["Is polite.", *(f"Rule {i}." for i in range(7))]
+
+
 def test_create_rubric_rejects_empty():
     with pytest.raises(LLMError):
         agents.create_rubric(FakeLLM({"criteria": [" ", ""]}), "p")
@@ -95,6 +101,20 @@ def test_score_conversation_aligns_by_order_and_clamps():
     assert "1. Greets the user.\n2. Is concise." in message
     assert schema["properties"]["scores"]["items"]["properties"]["score"] == {"type": "integer"}
     assert_strict(schema)
+
+
+class LocalLLM(FakeLLM):
+    local = True
+
+
+def test_local_scoring_asks_one_criterion_at_a_time_and_clamps():
+    llm = LocalLLM({"score": 0}, {"score": 7})
+    assert agents.score_conversation(llm, "user: hi\nassistant: hello", ["Greets the user.", "Is concise."]) == [
+        {"criterion": "Greets the user.", "score": 1}, {"criterion": "Is concise.", "score": 7}]
+    for (system, message, schema), criterion in zip(llm.calls, ["Greets the user.", "Is concise."]):
+        assert system == agents.LOCAL_SCORING_SYSTEM and schema == agents.SCORE_SCHEMA
+        assert f"<criterion>\n{criterion}\n</criterion>" in message and "assistant: hello" in message
+    assert_strict(agents.SCORE_SCHEMA)
 
 
 def test_score_conversation_rejects_count_mismatch():
@@ -175,6 +195,22 @@ def test_generate_personas_uses_the_given_rubric_in_batches():
 def test_generate_personas_rejects_none():
     with pytest.raises(LLMError):
         agents.generate_personas(FakeLLM({"criteria": ["x"]}, {"personas": []}), "p", 3)
+
+
+def test_local_personas_get_a_spread_of_ratings_and_a_written_brief():
+    llm = LocalLLM(*({"prompt": f" brief {i} "} for i in range(4)))
+    personas = agents.generate_personas(llm, "You are Acme support.", 4, rubric=RUBRIC)
+    assert [p["prompt"] for p in personas] == ["brief 0", "brief 1", "brief 2", "brief 3"]
+    assert all([a["criterion"] for a in p["attributes"]] == RUBRIC for p in personas)
+    ratings = [tuple(a["rating"] for a in p["attributes"]) for p in personas]
+    assert all(1 <= r <= 10 for rs in ratings for r in rs) and len(set(ratings)) == 4
+    for (system, message, schema), rs in zip(llm.calls, ratings):
+        assert system == agents.LOCAL_PERSONA_SYSTEM and schema == agents.PROMPT_SCHEMA
+        assert "You are Acme support." in message and f"- Is concise.: {rs[1]}/10" in message
+
+
+def test_local_system_prompts_are_distinct():
+    assert len({*SYSTEMS, agents.LOCAL_SCORING_SYSTEM, agents.LOCAL_PERSONA_SYSTEM}) == len(SYSTEMS) + 2
 
 
 def test_persona_respond():

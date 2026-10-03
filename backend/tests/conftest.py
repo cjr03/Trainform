@@ -16,7 +16,7 @@ from app.auth import current_user  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 
-WORDS = ["<unk>", "<pad>", "</s>", "system", "user", "assistant", ":", "be", "helpful", "hi", "hello", "there"]
+WORDS = ["<unk>", "<pad>", "</s>", "system", "user", "assistant", ":", "be", "helpful", "hi", "hello", "there", "1", "7", "10"]
 
 
 @pytest.fixture(scope="session")

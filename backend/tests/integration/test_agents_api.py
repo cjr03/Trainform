@@ -1,5 +1,6 @@
 import pytest
 
+from app import llm as llm_module, local_model
 from app.llm import LLMError, get_llm
 from app.main import app
 
@@ -77,3 +78,36 @@ def test_limits_are_inclusive(authed_client):
                                         ("/api/agents/rubric", {"agent_prompt": "x"})])
 def test_requires_auth(client, path, body):
     assert client.post(path, json=body).status_code == 401
+
+
+class StubModel:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def complete(self, system, message, digits=False):
+        return self.reply
+
+
+@pytest.fixture
+def no_claude(monkeypatch, tiny_model_dir):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
+    loaded = []
+    monkeypatch.setattr(llm_module, "_load", lambda name: loaded.append(name) or StubModel(f"{name} reply\nsecond"))
+    return loaded
+
+
+def test_without_claude_the_routes_use_the_chosen_local_model(authed_client, no_claude):
+    r = authed_client.post("/api/agents/prompt", json={"description": "Acme support bot", "model": "tiny"})
+    assert (r.status_code, r.json()) == (200, {"prompt": "tiny reply\nsecond"})
+    r = authed_client.post("/api/agents/rubric", json={"agent_prompt": "You are Acme support.", "model": "tiny"})
+    assert (r.status_code, r.json()) == (200, {"criteria": ["tiny reply", "second"]})
+    assert no_claude == ["tiny", "tiny"]
+
+
+@pytest.mark.parametrize("model", [None, "missing", "../tiny"])
+def test_without_claude_a_listed_local_model_is_required(authed_client, no_claude, model):
+    r = authed_client.post("/api/agents/prompt", json={"description": "x", "model": model})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Link your Claude API key on the Account page, or pick a local model first."
+    assert no_claude == []

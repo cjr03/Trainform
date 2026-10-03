@@ -4,7 +4,7 @@ import './TrainPage.css'
 
 const STEPS = [
   ['Model', 'Pick the base model to fine-tune. Download one from Hugging Face or upload your own.'],
-  ['Prompt', 'Write the system prompt your agent starts from, or describe the agent and let Claude draft it.'],
+  ['Prompt', 'Write the system prompt your agent starts from, or describe the agent and let Claude (or, without a Claude key, your model) draft it.'],
   ['Rubric', 'List the criteria every simulated conversation is scored against, 1 to 10.'],
   ['Scenarios', 'Choose how many simulated personas each round tests, and how many rounds to train.'],
   ['Training', 'Each round tests the agent against new personas, scores it and trains a better version.'],
@@ -216,13 +216,13 @@ function ModelStep({ value, onChange }) {
   )
 }
 
-function PromptStep({ prompt, onChange }) {
+function PromptStep({ model, prompt, onChange }) {
   const [mode, setMode] = useState('write')
   const [description, setDescription] = useState('')
   const [run, busy, error] = useAction()
   const generate = () => {
     if (prompt.trim() && !window.confirm('Replace your prompt with a generated one?')) return
-    run(async () => onChange((await api.generatePrompt(description.trim())).prompt))
+    run(async () => onChange((await api.generatePrompt(description.trim(), model)).prompt))
   }
 
   return (
@@ -275,12 +275,12 @@ function PromptStep({ prompt, onChange }) {
   )
 }
 
-function RubricStep({ prompt, criteria, onChange }) {
+function RubricStep({ model, prompt, criteria, onChange }) {
   const [draft, setDraft] = useState('')
   const [run, busy, error] = useAction()
   const generate = () => {
     if (criteria.length && !window.confirm('Replace your criteria with a newly generated set?')) return
-    run(async () => onChange((await api.generateRubric(prompt.trim())).criteria))
+    run(async () => onChange((await api.generateRubric(prompt.trim(), model)).criteria))
   }
   const add = (e) => {
     e.preventDefault()
@@ -551,8 +551,8 @@ function Dashboard({ onReset }) {
 
   const content = [
     <ModelStep key="model" value={baseModel} onChange={setBaseModel} />,
-    <PromptStep key="prompt" prompt={prompt} onChange={setPrompt} />,
-    <RubricStep key="rubric" prompt={prompt} criteria={rubric} onChange={setRubric} />,
+    <PromptStep key="prompt" model={baseModel} prompt={prompt} onChange={setPrompt} />,
+    <RubricStep key="rubric" model={baseModel} prompt={prompt} criteria={rubric} onChange={setRubric} />,
     <div key="scenarios" className="stack">
       <div className="grid-2">
         <div className="field">

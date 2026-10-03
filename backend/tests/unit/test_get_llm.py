@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from app import fake, llm
+from app import agents, fake, llm
 from app.auth import encrypt_api_key
 from app.models import User
 
@@ -18,17 +18,13 @@ def test_server_key_only_for_allow_listed_users(monkeypatch):
     monkeypatch.delenv("TRAINFORM_SHARED_KEY_USERS", raising=False)
     for allowed in ("", " bob , ada "):
         monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", allowed)
-        with pytest.raises(HTTPException) as e:
-            llm.get_llm(User(username="eve", anthropic_key_encrypted=None))
-        assert e.value.status_code == 400
+        assert llm.get_llm(User(username="eve", anthropic_key_encrypted=None)) is None
     assert llm.get_llm(User(username="ada", anthropic_key_encrypted=None)).args == ("server-key",)
 
 
-def test_no_key_is_400(monkeypatch):
+def test_no_key_means_no_claude(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(HTTPException) as e:
-        llm.get_llm(User(anthropic_key_encrypted=None))
-    assert e.value.status_code == 400
+    assert llm.get_llm(User(anthropic_key_encrypted=None)) is None  # callers fall back to a local model
 
 
 def test_unreadable_key_after_secret_rotation_is_400(monkeypatch):
@@ -56,3 +52,47 @@ def test_fake_mode_only_when_exactly_1(monkeypatch, value):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "server-key")
     monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", "ada")
     assert llm.get_llm(User(username="ada", anthropic_key_encrypted=None)).func is llm.call_claude
+
+
+class StubModel:
+    def __init__(self, *replies):
+        self.replies, self.calls = list(replies), []
+
+    def complete(self, system, message, digits=False):
+        self.calls.append((system, message, digits))
+        return self.replies.pop(0)
+
+
+def test_local_llm_plain_text():
+    model = StubModel(" hi there ")
+    local = llm.local_llm(model)
+    assert local.local is True
+    assert local("sys", "msg") == " hi there "
+    assert model.calls == [("sys", "msg", False)]
+
+
+def test_local_llm_string_field_is_the_whole_reply():
+    model = StubModel("You are Acme support.")
+    assert llm.local_llm(model)("sys", "msg", agents.PROMPT_SCHEMA) == {"prompt": "You are Acme support."}
+    system, message, digits = model.calls[0]
+    assert system.startswith("sys") and system != "sys" and (message, digits) == ("msg", False)
+
+
+def test_local_llm_list_field_is_one_item_per_line():
+    model = StubModel("1. Greets the user.\n- Is concise.\n\n* Never invents prices.\n2) Asks first.")
+    assert llm.local_llm(model)("sys", "msg", agents.RUBRIC_SCHEMA) == {
+        "criteria": ["Greets the user.", "Is concise.", "", "Never invents prices.", "Asks first."]}
+    assert "one item per line" in model.calls[0][0]
+
+
+@pytest.mark.parametrize("reply, score", [("7", 7), ("10", 10), ("1 0", 10), ("7 10", 7), (" 3", 3), ("0", 0)])
+def test_local_llm_integer_field_reads_a_digits_only_reply(reply, score):
+    model = StubModel(reply)
+    assert llm.local_llm(model)("sys", "msg", agents.SCORE_SCHEMA) == {"score": score}
+    assert model.calls[0][2] is True
+
+
+def test_local_llm_empty_number_is_a_parse_error():
+    # ValueError is what agents._ask turns into a user-facing LLMError.
+    with pytest.raises(ValueError):
+        llm.local_llm(StubModel(""))("sys", "msg", agents.SCORE_SCHEMA)
