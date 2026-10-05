@@ -246,9 +246,8 @@ def _tag(name, value):
 
 
 def _prompt(out):
-    """The prompt generator's reply, without the <current_prompt> tag it was given if it echoed that back."""
-    return _text(re.sub(r"\A\s*<current_prompt>(.*)</current_prompt>\s*\Z", r"\1", out["prompt"], flags=re.S),
-                 "prompt")
+    """The prompt generator's reply, without any tags around it, such as the <current_prompt> it was given."""
+    return _text(re.sub(r"\A\s*(?:<[^<>\n]+>\s*)+|(?:\s*<[^<>\n]+>)+\s*\Z", "", out["prompt"]), "prompt")
 
 
 def _text(value, what):
@@ -290,7 +289,7 @@ def concurrently(llm, fn, items):
 def create_prompt(llm, description: str) -> str:
     """Prompt creator agent: agent description -> system prompt."""
     return _ask(llm, PROMPT_CREATOR_SYSTEM, _tag("agent_description", description), PROMPT_SCHEMA,
-                lambda out: _text(out["prompt"], "prompt"))
+                _prompt)
 
 
 def create_rubric(llm, agent_prompt: str) -> list[str]:

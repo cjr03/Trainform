@@ -23,11 +23,11 @@ async def lifespan(_app: FastAPI):
         # progress is saved, so they wait, paused, for the user to resume them.
         conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))
                      .values(status="paused", error=None))
-        # Prompts saved before agents._prompt dropped a <current_prompt> tag the prompt generator echoed back.
+        # Prompts saved before agents._prompt dropped the tags the prompt generator put around them.
+        edge_tags = r"^\s*(<[^<>\n]+>\s*)+|(\s*<[^<>\n]+>)+\s*$"
         for table, column in (("trainings", "next_prompt"), ("scenarios", "prompt"), ("trained_models", "prompt")):
-            conn.execute(text(rf"""UPDATE {table} SET {column} = btrim(regexp_replace({column},
-                '^\s*<current_prompt>(.*)</current_prompt>\s*$', '\1'), E' \n\t\r')
-                WHERE {column} ~ '^\s*<current_prompt>.*</current_prompt>\s*$'"""))
+            conn.execute(text(f"UPDATE {table} SET {column} = regexp_replace({column}, :tags, '', 'g') "
+                              f"WHERE {column} ~ :tags"), {"tags": edge_tags})
         # Recreated so an index from before "pausing" existed covers it too.
         conn.execute(text("DROP INDEX IF EXISTS one_active_training_per_user"))
         models.ONE_ACTIVE_TRAINING.create(conn)

@@ -241,10 +241,10 @@ it('explains what Trainform does next to the sign-in card', () => {
   expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Describe your agent. Get back a better one.')
   const how = screen.getByRole('region', { name: 'How it works' })
   expect(within(how).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
-    'Describe your agent',
-    'Get a prompt and a rubric',
-    'Stress-test it',
-    'Improve every round',
+    'Set the goal',
+    'Simulate',
+    'Improve',
+    'Take it with you',
   ])
   expect(within(how).getByRole('list', { name: 'What you get' })).toHaveTextContent(/LoRA weights/)
 })

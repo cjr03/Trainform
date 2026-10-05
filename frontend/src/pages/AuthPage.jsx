@@ -16,13 +16,10 @@ const MODES = [
 const STEPS = ['Identity', 'Security', 'Link Claude']
 
 const HOW = [
-  ['Describe your agent', 'In plain language: who it serves and what a good answer looks like.'],
-  ['Get a prompt and a rubric', 'Trainform drafts the system prompt and the criteria every reply is graded on.'],
-  ['Stress-test it', 'Simulated customers push on the hard cases, and every reply is scored against the rubric.'],
-  [
-    'Improve every round',
-    'The prompt is rewritten after each conversation and a local model is fine-tuned on the best replies.',
-  ],
+  ['Set the goal', 'A system prompt and a rubric of what every good reply does. Write them or have them drafted.'],
+  ['Simulate', 'Realistic customers talk to your agent, and every reply is scored against the rubric.'],
+  ['Improve', 'The prompt is rewritten after each conversation and a local model is fine-tuned on the best replies.'],
+  ['Take it with you', 'Download the best prompt and LoRA weights. Every conversation and score stays in Inspect.'],
 ]
 const BENEFITS = [
   [Download, 'Yours to keep', 'Download the best prompt and LoRA weights for an open-weight model.'],

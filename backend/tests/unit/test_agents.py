@@ -94,13 +94,24 @@ def test_generate_improved_prompt():
 
 
 @pytest.mark.parametrize("call", [
+    lambda llm: agents.create_prompt(llm, "A bike shop's support agent."),
     lambda llm: agents.generate_improved_prompt(llm, "Old.", "c", [{"criterion": "a", "score": 3}]),
     lambda llm: agents.review_round(llm, "Old.", [("a", 3.0)], [("c", 3.0)]),
 ])
-def test_the_prompt_generator_drops_an_echoed_current_prompt_tag(call):
-    # Claude sometimes wraps its answer in the <current_prompt> tag it was given; the tags would reach the model.
-    assert call(FakeLLM({"prompt": "<current_prompt>\nBetter.\n</current_prompt>"})) == "Better."
-    assert call(FakeLLM({"prompt": "Use <current_prompt> nowhere."})) == "Use <current_prompt> nowhere."
+@pytest.mark.parametrize("reply", [
+    "<current_prompt>\nBetter.\n</current_prompt>",  # Claude echoing the tag it was given
+    "<system_prompt>\n<prompt>Better.</prompt>\n</system_prompt>",  # any tag, stacked
+    "  <prompt>\nBetter.",  # an opening tag alone
+    "Better.\n</agent_prompt> ",  # a closing tag alone
+])
+def test_a_prompt_never_starts_or_ends_with_a_tag(call, reply):
+    # The tags would show in every prompt field and reach the model being trained.
+    assert call(FakeLLM({"prompt": reply})) == "Better."
+
+
+def test_tags_inside_a_prompt_are_kept():
+    prompt = "Wrap code in <code> tags.\nNever say <secret>."
+    assert agents.create_prompt(FakeLLM({"prompt": prompt}), "d") == prompt
 
 
 def test_generate_improved_prompt_sees_its_track_record():

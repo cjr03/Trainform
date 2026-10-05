@@ -330,7 +330,7 @@ export default function InspectPage() {
 
   return (
     <div className="flex flex-col gap-3.5" data-testid="inspect-page">
-      <h1 className="m-0 text-[clamp(1.6rem,3vw,2.4rem)]">Inspect</h1>
+      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Inspect</h1>
       <div className="grid items-start gap-4 min-[860px]:grid-cols-3">
         <Column
           title="Trainings"
