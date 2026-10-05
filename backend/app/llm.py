@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import threading
-from functools import cache, partial
+from functools import cache, lru_cache, partial
 
 import anthropic
 from cryptography.fernet import InvalidToken
@@ -26,14 +26,20 @@ class BadReply(LLMError):
     """The model answered, but not in the shape asked for; unlike a refusal or a bad key, asking again can fix it."""
 
 
+@lru_cache(maxsize=32)
+def _client(api_key: str) -> anthropic.Anthropic:
+    """One client per key, so its calls reuse open connections instead of each paying a new TLS handshake."""
+    # Five retries with the SDK's backoff ride out the 429s, 5xx and overloads an hours-long training will meet.
+    return anthropic.Anthropic(api_key=api_key, max_retries=5)
+
+
 def call_claude(api_key: str, system: str, message: str, schema: dict | None = None, effort: str = "medium"):
     """One Claude call. Returns the text, or the parsed JSON object when `schema` (a JSON Schema) is given."""
     output_config = {"effort": effort}
     if schema:
         output_config["format"] = {"type": "json_schema", "schema": schema}
     try:
-        # Five retries with the SDK's backoff ride out the 429s, 5xx and overloads an hours-long training will meet.
-        response = anthropic.Anthropic(api_key=api_key, max_retries=5).beta.messages.create(
+        response = _client(api_key).beta.messages.create(
             model=MODEL,
             max_tokens=16000,
             system=system,
