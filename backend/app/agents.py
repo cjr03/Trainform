@@ -1,17 +1,21 @@
-"""The seven Trainform agents. Each helper takes `llm(system, message, schema=None)` as its first argument."""
+"""The seven Trainform agents. Each helper takes `llm(system, message, schema=None, effort="medium")` as its first
+argument."""
 
 import random
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import current_user
-from app.llm import LLMError, get_llm, llm_or_local
+from app.llm import BadReply, LLMError, get_llm, llm_or_local
 from app.models import User
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 MAX_CRITERIA = 8  # what the rubric creator is asked for; small local models may repeat lines past it
 PERSONA_BATCH = 10  # personas per Claude call; each is a few hundred tokens and a reply is capped at 16k
+CONCURRENCY = 8  # independent Claude calls in flight at once; call_claude's retries absorb any 429s this causes
 
 PROMPT_CREATOR_SYSTEM = """\
 You are an expert prompt engineer who writes system prompts for AI agents that run in production.
@@ -75,8 +79,8 @@ Put the complete revised prompt in the "prompt" field: the whole prompt, not a d
 
 SCORING_SYSTEM = """\
 You are a strict, calibrated grader of AI agent replies. You will receive a conversation inside <conversation> tags and \
-a numbered rubric inside <rubric> tags. Score the assistant's replies against every criterion. The user's messages are \
-context only; never grade them.
+a rubric inside <rubric> tags, one criterion per line, each after its key (c1, c2, ...). Score the assistant's replies \
+against every criterion. The user's messages are context only; never grade them.
 
 Score each criterion from 1 to 10:
 - 10: fully meets the criterion with no flaw; reserve it for replies that could not reasonably be better on this point.
@@ -89,17 +93,17 @@ on one never lowers another. When a criterion does not come up in this conversat
 consistent with it rather than awarding a 10 by default. Ignore length and polish unless a criterion concerns them. \
 Be consistent: the same reply must always get the same scores.
 
-Return exactly one score per rubric criterion, in rubric order, repeating each criterion's text exactly."""
+Return each criterion's score under that criterion's key."""
 
 PERSONA_GENERATOR_SYSTEM = """\
 You design simulated users who stress-test an AI agent. You will receive the agent's system prompt in <agent_prompt> \
-tags, the criteria it is graded on in <criteria> tags, and how many personas to create in <count> tags.
+tags, the criteria it is graded on in <criteria> tags, one per line, each after its key (c1, c2, ...), and how many \
+personas to create in <count> tags.
 
 For each persona provide:
-- attributes: one entry per criterion, using the criterion's exact text, with a rating from 1 to 10 for how hard this \
-persona pressures the agent on that criterion. 1 makes the criterion easy to meet; 10 actively pushes the agent toward \
-failing it, for example by being vague, impatient, off-topic, emotional, manipulative, or by asking for exactly what \
-the prompt forbids.
+- attributes: under each criterion's key, a rating from 1 to 10 for how hard this persona pressures the agent on that \
+criterion. 1 makes the criterion easy to meet; 10 actively pushes the agent toward failing it, for example by being \
+vague, impatient, off-topic, emotional, manipulative, or by asking for exactly what the prompt forbids.
 - prompt: a self-contained brief, in the second person, for an actor playing this user. Say who they are, what they \
 want from the agent and why, what they do and don't know, how they write (tone, length, vocabulary, typos), and where \
 they are in the conversation flow: opening, mid-conversation after a partial answer, escalating after a failed \
@@ -151,10 +155,21 @@ def _array(items):
 STRING, INTEGER = {"type": "string"}, {"type": "integer"}
 PROMPT_SCHEMA = _schema(prompt=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
-SCORES_SCHEMA = _schema(scores=_array(_schema(criterion=STRING, score=INTEGER)))
 SCORE_SCHEMA = _schema(score=INTEGER)
-PERSONAS_SCHEMA = _schema(personas=_array(_schema(attributes=_array(_schema(criterion=STRING, rating=INTEGER)),
-                                                  prompt=STRING)))
+
+
+# A per-criterion value is a required key (c1..cN), not an array entry: structured outputs can't fix an array's length,
+# but must fill every required key, so Claude always returns exactly one rating or score per criterion.
+def _keyed(rubric):
+    return _schema(**{f"c{i}": INTEGER for i in range(1, len(rubric) + 1)})
+
+
+def _keyed_lines(rubric):
+    return "\n".join(f"c{i}: {c}" for i, c in enumerate(rubric, 1))
+
+
+def _unkey(values, rubric):
+    return [_clamp(values[f"c{i}"]) for i in range(1, len(rubric) + 1)]
 
 
 def _tag(name, value):
@@ -163,7 +178,7 @@ def _tag(name, value):
 
 def _text(value, what):
     if not value.strip():
-        raise LLMError(f"The model returned an empty {what}")
+        raise BadReply(f"The model returned an empty {what}")
     return value.strip()
 
 
@@ -171,13 +186,30 @@ def _clamp(value):
     return max(1, min(10, int(value)))
 
 
-def _ask(llm, system, message, schema, parse):
-    """Call the model and parse its JSON with `parse`; a malformed shape becomes an LLMError rather than a 500."""
-    out = llm(system, message, schema)
+def _parse(out, parse):
     try:
         return parse(out)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
-        raise LLMError("The model returned an unexpected response shape") from e
+        raise BadReply("The model returned an unexpected response shape") from e
+
+
+def _ask(llm, system, message, schema, parse):
+    """Call the model and parse its reply with `parse`; a malformed shape becomes an LLMError rather than a 500.
+    A garbled reply is asked for once more, so a single bad reply doesn't fail a whole training. Other errors (a bad
+    key, a refusal, a reply cut off at the token limit) would only fail again; the SDK already retries transient ones."""
+    try:
+        return _parse(llm(system, message, schema), parse)
+    except BadReply:
+        return _parse(llm(system, message, schema), parse)
+
+
+def concurrently(llm, fn, items):
+    """[fn(item) for item in items], with up to CONCURRENCY of them calling Claude at once. A local model answers one
+    call at a time (and its helper calls switch the shared adapter off and on), so on it they run in turn."""
+    if getattr(llm, "local", False):
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(CONCURRENCY) as pool:
+        return list(pool.map(fn, items))  # map cancels the queued calls once one fails
 
 
 def create_prompt(llm, description: str) -> str:
@@ -209,12 +241,9 @@ def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
         scores = [_ask(llm, LOCAL_SCORING_SYSTEM, f"{_tag('conversation', conversation)}\n\n{_tag('criterion', c)}",
                        SCORE_SCHEMA, lambda out: _clamp(out["score"])) for c in rubric]
         return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
-    numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(rubric, 1))
-    message = f"{_tag('conversation', conversation)}\n\n{_tag('rubric', numbered)}"
-    scores = _ask(llm, SCORING_SYSTEM, message, SCORES_SCHEMA,
-                  lambda out: [_clamp(s["score"]) for s in out["scores"]])
-    if len(scores) != len(rubric):
-        raise LLMError(f"Claude scored {len(scores)} criteria but the rubric has {len(rubric)}")
+    message = f"{_tag('conversation', conversation)}\n\n{_tag('rubric', _keyed_lines(rubric))}"
+    scores = _ask(llm, SCORING_SYSTEM, message, _schema(scores=_keyed(rubric)),
+                  lambda out: _unkey(out["scores"], rubric))
     return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
@@ -236,18 +265,18 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
             personas.append({"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)],
                              "prompt": brief})
         return personas
-    criteria = "\n".join(f"- {c}" for c in rubric)
-    personas = []
-    for start in range(0, n, PERSONA_BATCH):
-        count = min(PERSONA_BATCH, n - start)
-        message = f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', criteria)}\n\n<count>{count}</count>"
-        personas += _ask(llm, PERSONA_GENERATOR_SYSTEM, message, PERSONAS_SCHEMA,
-                         lambda out: [([_clamp(a["rating"]) for a in p["attributes"]], p["prompt"].strip())
-                                      for p in out["personas"]])[:count]
+    schema = _schema(personas=_array(_schema(attributes=_keyed(rubric), prompt=STRING)))
+
+    def batch(count):
+        message = (f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', _keyed_lines(rubric))}\n\n"
+                   f"<count>{count}</count>")
+        return _ask(llm, PERSONA_GENERATOR_SYSTEM, message, schema, lambda out: [
+            (_unkey(p["attributes"], rubric), p["prompt"].strip()) for p in out["personas"]])[:count]
+
+    counts = [min(PERSONA_BATCH, n - start) for start in range(0, n, PERSONA_BATCH)]
+    personas = [p for batch_personas in concurrently(llm, batch, counts) for p in batch_personas]
     if not personas:
         raise LLMError("The model returned no personas")
-    if any(len(ratings) != len(rubric) for ratings, _ in personas):
-        raise LLMError(f"Claude rated the wrong number of criteria for a persona; the rubric has {len(rubric)}")
     return [{"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)], "prompt": prompt}
             for ratings, prompt in (personas[i % len(personas)] for i in range(n))]
 
@@ -256,7 +285,8 @@ def persona_respond(llm, attributes: list[dict], context: str) -> str:
     """Persona agent: attributes + conversational context -> the persona's next message."""
     lines = "\n".join(f"- {a['criterion']}: {a['rating']}/10" for a in attributes)
     message = f"{_tag('persona_attributes', lines)}\n\n{_tag('context', context)}"
-    return _text(llm(PERSONA_SYSTEM, message), "persona message")
+    # Low effort: a short in-character message needs little deliberation, and it is a third of a training's calls.
+    return _ask(partial(llm, effort="low"), PERSONA_SYSTEM, message, None, lambda out: _text(out, "persona message"))
 
 
 def primary_respond(generate, prompt: str, conversation: str) -> str:
