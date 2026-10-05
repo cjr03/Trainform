@@ -124,3 +124,26 @@ def test_fake_llm_with_real_local_model(db, user, tiny_model_dir, monkeypatch):
         names, config = zip_names(m.weights)
         assert "adapter_config.json" in names and config["peft_type"] == "LORA"
     assert t.best_model_id in {m.id for m in models}
+
+
+def test_fake_mode_pause_and_resume_over_http(client, db, fake_mode, monkeypatch):
+    auth = signup(client)
+    sft = fake.FakeLocalModel.sft
+
+    def pause_during_round_1_sft(self, examples):
+        client.post(f"/api/trainings/{db.query(Training.id).scalar()}/pause", headers=auth)
+        return sft(self, examples)
+
+    monkeypatch.setattr(fake.FakeLocalModel, "sft", pause_during_round_1_sft)
+    body = {"base_model": "demo", "prompt": INITIAL_PROMPT, "rubric": ["Greets the user."], "scenarios": 3, "rounds": 2}
+    tid = client.post("/api/trainings", json=body, headers=auth).json()["id"]
+    d = client.get(f"/api/trainings/{tid}", headers=auth).json()
+    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 3)
+
+    monkeypatch.setattr(fake.FakeLocalModel, "sft", sft)
+    assert client.post(f"/api/trainings/{tid}/resume", headers=auth).status_code == 200
+    d = client.get(f"/api/trainings/{tid}", headers=auth).json()
+    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("completed", 2, 6)
+    # Round 2 ran on the adapter round 1 trained, restored in the resumed run's fresh model.
+    round1, round2 = db.query(TrainedModel).order_by(TrainedModel.round)
+    assert zip_names(round1.weights)[1]["examples_seen"] == 0 < zip_names(round2.weights)[1]["examples_seen"]

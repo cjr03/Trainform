@@ -2,13 +2,13 @@ import threading
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app import training
 from app.db import engine
 from app.main import app
-from app.models import TrainedModel, Training, User
+from app.models import Scenario, TrainedModel, Training, User
 
 BODY = {"base_model": "tiny", "prompt": "Be helpful.", "rubric": ["  Clarity ", "Tone"], "scenarios": 2, "rounds": 2}
 
@@ -26,6 +26,9 @@ class FakeModel:
 
     def adapter_bytes(self):
         return b"PK\x03\x04trained" if self.trained else b"PK\x03\x04"
+
+    def load_adapter(self, data):
+        self.trained = data == b"PK\x03\x04trained"
 
 
 @pytest.fixture
@@ -62,6 +65,19 @@ def other_users_training(db):
     db.add(t)
     db.commit()
     return t
+
+
+def add_training(db, user, status):
+    t = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
+                 rounds=1, status=status, error="Claude rate limit reached" if status == "failed" else None)
+    db.add(t)
+    db.commit()
+    return t
+
+
+def set_status(db, t, status):
+    db.query(Training).filter_by(id=t.id).update({"status": status})
+    db.commit()
 
 
 def test_create_runs_training_in_background(authed_client, fakes):
@@ -185,8 +201,9 @@ def test_one_training_in_progress_per_user(authed_client, fakes, monkeypatch, db
                         rounds=1, status="running"))
         db.commit()
     db.rollback()
-    db.get(Training, first.json()["id"]).status = "failed"
-    db.commit()
+    set_status(db, db.get(Training, first.json()["id"]), "pausing")  # still in progress until it has paused
+    assert authed_client.post("/api/trainings", json=BODY).status_code == 409
+    set_status(db, db.get(Training, first.json()["id"]), "paused")
     assert authed_client.post("/api/trainings", json=BODY).status_code == 201
 
 
@@ -234,6 +251,12 @@ def test_other_users_training_is_404(authed_client, db):
     db.commit()
     for path in ("", "/rounds", "/rounds/1/scenarios", "/download/prompt", "/download/weights"):
         assert authed_client.get(f"/api/trainings/{t.id}{path}").status_code == 404
+    assert authed_client.post(f"/api/trainings/{t.id}/pause").status_code == 404
+    set_status(db, t, "paused")
+    assert authed_client.post(f"/api/trainings/{t.id}/resume").status_code == 404
+    assert authed_client.delete(f"/api/trainings/{t.id}").status_code == 404
+    db.expire_all()
+    assert db.get(Training, t.id).status == "paused"
     assert authed_client.get("/api/trainings/999999").status_code == 404
     assert authed_client.get("/api/trainings").json() == []
 
@@ -242,21 +265,27 @@ def test_routes_require_a_user(client):
     assert client.post("/api/trainings", json=BODY).status_code == 401
     for path in ("", "/1", "/1/rounds", "/1/rounds/1/scenarios", "/1/download/prompt", "/1/download/weights"):
         assert client.get(f"/api/trainings{path}").status_code == 401
+    assert client.post("/api/trainings/1/pause").status_code == 401
+    assert client.post("/api/trainings/1/resume").status_code == 401
+    assert client.delete("/api/trainings/1").status_code == 401
 
 
-def test_restart_fails_orphaned_trainings(db, user):
-    other_users_training(db)  # pending; one active training per user, so the running one is the second user's
-    for status in ("running", "completed", "failed"):
-        db.add(Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["C"], scenarios_per_round=1,
-                        rounds=1, status=status))
+def test_restart_pauses_orphaned_trainings(db, user):
+    other_users_training(db)  # pending; one active training per user, so each active one is a different user's
+    carol = User(email="carol@example.com", username="carol", password_hash="x")
+    db.add(carol)
     db.commit()
+    add_training(db, carol, "pausing")
+    for status in ("running", "completed", "failed"):
+        add_training(db, user, status)
     with TestClient(app):
         pass
     db.expire_all()
     rows = db.query(Training).order_by(Training.id).all()
+    # Their runs died with the last process; their progress is saved, so the user can resume them.
     assert [(t.status, t.error) for t in rows] == [
-        ("failed", "Interrupted by a server restart"), ("failed", "Interrupted by a server restart"),
-        ("completed", None), ("failed", None),
+        ("paused", None), ("paused", None), ("paused", None), ("completed", None),
+        ("failed", "Claude rate limit reached"),
     ]
 
 
@@ -266,3 +295,120 @@ def test_startup_adds_the_one_active_training_index_to_an_existing_database(db):
     with TestClient(app):
         pass
     assert db.scalar(text("SELECT 1 FROM pg_indexes WHERE indexname = 'one_active_training_per_user'"))
+
+
+def test_startup_recreates_the_one_active_training_index_with_pausing(db):
+    db.execute(text("DROP INDEX one_active_training_per_user"))
+    db.execute(text("CREATE UNIQUE INDEX one_active_training_per_user ON trainings (user_id) "
+                    "WHERE status IN ('pending', 'running')"))  # as the first release made it
+    db.commit()
+    with TestClient(app):
+        pass
+    assert "pausing" in db.scalar(text("SELECT indexdef FROM pg_indexes "
+                                       "WHERE indexname = 'one_active_training_per_user'"))
+
+
+def test_startup_adds_the_resume_columns_to_an_existing_database(db):
+    db.execute(text("ALTER TABLE trainings DROP COLUMN next_prompt, DROP COLUMN personas, DROP COLUMN adapter"))
+    db.commit()
+    with TestClient(app):
+        pass
+    columns = db.scalars(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'trainings'"))
+    assert {"next_prompt", "personas", "adapter"} <= set(columns)
+
+
+def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, monkeypatch, db):
+    score = training.agents.score_conversation
+    paused = []
+
+    def press_pause_during_the_first_scenario(llm, conv, rubric):
+        if not paused:
+            paused.append(authed_client.post(f"/api/trainings/{db.scalar(select(Training.id))}/pause"))
+        return score(llm, conv, rubric)
+
+    monkeypatch.setattr(training.agents, "score_conversation", press_pause_during_the_first_scenario)
+    created = authed_client.post("/api/trainings", json=BODY).json()
+    [r] = paused
+    assert r.status_code == 200 and r.json()["status"] == "pausing"
+    assert set(r.json()) == set(created)
+    d = authed_client.get(f"/api/trainings/{created['id']}").json()
+    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 1)
+
+    r = authed_client.post(f"/api/trainings/{d['id']}/resume")
+    assert r.status_code == 200 and r.json()["status"] == "pending"
+    d = authed_client.get(f"/api/trainings/{d['id']}").json()
+    # Exactly the uninterrupted run (see test_create_runs_training_in_background): nothing was redone.
+    assert (d["status"], d["current_round"], d["scenarios_done"], d["latest_prompt"]) == ("completed", 2, 4,
+                                                                                         "Be helpful.!!")
+    assert [w["score"] for w in d["score_windows"]] == [8.0, 8.5, 8.5, 8.5]
+    assert len(fakes) == 6  # 2 persona generations and 4 scorings
+
+
+def test_pause_only_a_pending_or_running_training(authed_client, db, user):
+    t = add_training(db, user, "pending")
+    for status in ("pending", "running"):
+        set_status(db, t, status)
+        r = authed_client.post(f"/api/trainings/{t.id}/pause")
+        assert (r.status_code, r.json()["status"]) == (200, "pausing")
+    for status in ("pausing", "paused", "completed", "failed"):
+        set_status(db, t, status)
+        r = authed_client.post(f"/api/trainings/{t.id}/pause")
+        assert (r.status_code, r.json()) == (409, {"detail": "Only a pending or running training can be paused."})
+        db.expire_all()
+        assert db.get(Training, t.id).status == status
+
+
+def test_retry_a_failed_training_with_the_current_helper(authed_client, fakes, monkeypatch, db, user):
+    t = add_training(db, user, "failed")
+    monkeypatch.delenv("ANTHROPIC_API_KEY")  # the user's helper is now the local model
+    r = authed_client.post(f"/api/trainings/{t.id}/resume")
+    assert (r.status_code, r.json()["status"], r.json()["error"]) == (200, "pending", None)
+    d = authed_client.get(f"/api/trainings/{t.id}").json()
+    assert (d["status"], d["error"], d["scenarios_done"]) == ("completed", None, 1)
+    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+
+
+def test_resume_rules(authed_client, fakes, monkeypatch, db, user):
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    t = add_training(db, user, "paused")
+    for status in ("pending", "running", "pausing", "completed"):
+        set_status(db, t, status)
+        r = authed_client.post(f"/api/trainings/{t.id}/resume")
+        assert (r.status_code, r.json()) == (409, {"detail": "Only a paused or failed training can be resumed."})
+    set_status(db, t, "paused")
+    other = add_training(db, user, "running")
+    r = authed_client.post(f"/api/trainings/{t.id}/resume")
+    assert (r.status_code, r.json()) == (409, {"detail": "You already have a training in progress."})
+    set_status(db, other, "completed")
+    monkeypatch.setattr(training, "_SLOTS", threading.BoundedSemaphore(1))
+    assert training._SLOTS.acquire(blocking=False)
+    r = authed_client.post(f"/api/trainings/{t.id}/resume")
+    assert (r.status_code, r.json()) == (429, {"detail": "The server is busy with other trainings; try again later."})
+    db.expire_all()
+    assert db.get(Training, t.id).status == "paused"
+    training._SLOTS.release()
+    assert authed_client.post(f"/api/trainings/{t.id}/resume").status_code == 200
+    assert authed_client.post(f"/api/trainings/{t.id}/resume").status_code == 409  # never a second run
+    set_status(db, t, "paused")
+    acquire = training._SLOTS.acquire  # a second click resumes it while this request waits for its slot
+    monkeypatch.setattr(training._SLOTS, "acquire", lambda blocking: set_status(db, t, "pending") or acquire(blocking))
+    r = authed_client.post(f"/api/trainings/{t.id}/resume")
+    assert (r.status_code, r.json()) == (409, {"detail": "Only a paused or failed training can be resumed."})
+    assert acquire(blocking=False)  # every request gave its slot back
+
+
+def test_delete_a_training(authed_client, fakes, db, user):
+    t = authed_client.post("/api/trainings", json=BODY).json()
+    assert authed_client.delete(f"/api/trainings/{t['id']}").status_code == 204
+    assert (db.query(Training).count(), db.query(Scenario).count(), db.query(TrainedModel).count()) == (0, 0, 0)
+    assert authed_client.get(f"/api/trainings/{t['id']}").status_code == 404
+
+    t = add_training(db, user, "pending")
+    for status in ("pending", "running", "pausing"):
+        set_status(db, t, status)
+        r = authed_client.delete(f"/api/trainings/{t.id}")
+        assert (r.status_code, r.json()) == (409, {"detail": "Pause the training before deleting it."})
+    for status in ("paused", "failed"):
+        set_status(db, t, status)
+        assert authed_client.delete(f"/api/trainings/{t.id}").status_code == 204
+        t = add_training(db, user, "pending")

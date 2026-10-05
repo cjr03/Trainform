@@ -82,5 +82,10 @@ class FakeLocalModel:
     def adapter_bytes(self) -> bytes:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("adapter_config.json", json.dumps({"peft_type": "LORA", "base_model_name_or_path": self.name}))
+            zf.writestr("adapter_config.json", json.dumps({"peft_type": "LORA", "base_model_name_or_path": self.name,
+                                                           "examples_seen": self.examples_seen}))
         return buf.getvalue()
+
+    def load_adapter(self, data: bytes) -> None:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            self.examples_seen = json.loads(zf.read("adapter_config.json"))["examples_seen"]
