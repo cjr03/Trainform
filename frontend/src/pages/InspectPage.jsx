@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, saveBlob } from '../api'
 import './InspectPage.css'
 
+const ACTIVE = ['pending', 'running', 'pausing'] // in progress: can't be resumed or deleted
 const fmt = (score) => (score == null ? '—' : String(Math.round(score * 10) / 10))
-// Below 860px the panels stack, so a newly opened one can start below the fold.
-const reveal = (el) => el?.scrollIntoView({ block: 'nearest' })
+// Below 860px the panels stack, so a newly opened one can start below the fold. Returns nothing: effects call it,
+// and current Chromium's scrollIntoView returns a promise, which React would take for the effect's cleanup.
+const reveal = (el) => {
+  el?.scrollIntoView({ block: 'nearest' })
+}
 
 // Loads data for `key`, reloading when `version` changes; results for a previous key are ignored, so fast
 // clicking never shows stale lists, and a reload keeps showing the current data until the new data arrives.
@@ -168,7 +172,9 @@ export default function InspectPage() {
   const [round, setRound] = useState(null)
   const [scenarioId, setScenarioId] = useState(null)
   const [version, setVersion] = useState(0)
-  const [downloadError, setDownloadError] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
   const roundsRef = useRef(null)
   const scenariosRef = useRef(null)
 
@@ -182,9 +188,10 @@ export default function InspectPage() {
   )
   const scenario = scenarios.data?.find((s) => s.id === scenarioId)
   const selected = trainings.data?.find((t) => t.id === trainingId)
+  const status = selected?.status
 
   // While any training is in progress, reload everything 2 s after each trainings list arrives.
-  const active = trainings.data?.some((t) => t.status === 'pending' || t.status === 'running')
+  const active = trainings.data?.some((t) => ACTIVE.includes(t.status))
   useEffect(() => {
     if (!active) return
     const timer = setTimeout(() => setVersion((v) => v + 1), 2000)
@@ -195,17 +202,47 @@ export default function InspectPage() {
   useEffect(() => reveal(scenariosRef.current), [round])
 
   const save = (fetchBlob, filename) => {
-    setDownloadError('')
+    setActionError('')
     fetchBlob(trainingId).then(
       (blob) => saveBlob(blob, filename),
-      (e) => setDownloadError(e.message),
+      (e) => setActionError(e.message),
     )
   }
   const pickTraining = (id) => {
     setTrainingId(id)
     setRound(null)
     setScenarioId(null)
-    setDownloadError('')
+    setActionError('')
+  }
+  const act = async (fn) => {
+    setActionError('')
+    setBusy(true)
+    try {
+      await fn()
+    } catch (e) {
+      setActionError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const pause = () =>
+    act(async () => {
+      await api.pauseTraining(trainingId)
+      setVersion((v) => v + 1)
+    })
+  // The Train page opens the training in progress, so the resumed one is shown there.
+  const resume = () =>
+    act(async () => {
+      await api.resumeTraining(trainingId)
+      navigate('/train')
+    })
+  const remove = () => {
+    if (!window.confirm(`Delete training #${trainingId} with all its rounds and scenarios?`)) return
+    act(async () => {
+      await api.deleteTraining(trainingId)
+      pickTraining(null)
+      setVersion((v) => v + 1)
+    })
   }
   const pickRound = (r) => {
     setRound(r)
@@ -269,27 +306,51 @@ export default function InspectPage() {
 
       {trainingId != null && <Prompts state={detail} />}
 
-      {selected?.status === 'completed' && (
+      {status === 'failed' && detail.data && (
+        <p className="error" role="alert">
+          {detail.data.error || 'Training stopped without an error message.'}
+        </p>
+      )}
+      {selected && (
         <div className="row">
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}
-          >
-            Download prompt
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}
-          >
-            Download weights
-          </button>
+          {(status === 'pending' || status === 'running') && (
+            <button type="button" className="btn" disabled={busy} onClick={pause}>
+              Pause training
+            </button>
+          )}
+          {(status === 'paused' || status === 'failed') && (
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={resume}>
+              {status === 'paused' ? 'Resume training' : 'Retry training'}
+            </button>
+          )}
+          {status === 'completed' && (
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}
+              >
+                Download prompt
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}
+              >
+                Download weights
+              </button>
+            </>
+          )}
+          {!ACTIVE.includes(status) && (
+            <button type="button" className="btn btn-ghost btn-danger" disabled={busy} onClick={remove}>
+              Delete training
+            </button>
+          )}
         </div>
       )}
-      {downloadError && (
+      {actionError && (
         <p className="error" role="alert">
-          {downloadError}
+          {actionError}
         </p>
       )}
 

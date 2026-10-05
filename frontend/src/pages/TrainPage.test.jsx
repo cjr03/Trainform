@@ -16,6 +16,8 @@ vi.mock('../api', () => ({
     generateRubric: vi.fn(),
     startTraining: vi.fn(),
     getTraining: vi.fn(),
+    pauseTraining: vi.fn(),
+    resumeTraining: vi.fn(),
     downloadPrompt: vi.fn(),
     downloadWeights: vi.fn(),
   },
@@ -551,6 +553,160 @@ it('still works when session storage is unavailable', async () => {
   await reachScenarios(user)
   expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
   for (const spy of [get, set, del]) spy.mockRestore()
+})
+
+it('retries a failed prompt generation without asking again', async () => {
+  const user = userEvent.setup()
+  api.generatePrompt.mockRejectedValueOnce(new Error('Claude is overloaded')).mockResolvedValue({ prompt: 'You are a support bot.' })
+  render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
+  await user.type(prompt, 'My own prompt.')
+  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
+  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Claude is overloaded')
+  expect(prompt).toHaveValue('My own prompt.')
+
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
+  expect(api.generatePrompt).toHaveBeenCalledTimes(2)
+  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b')
+  expect(confirm).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  confirm.mockRestore()
+})
+
+it('retries a failed rubric generation', async () => {
+  const user = userEvent.setup()
+  api.generateRubric.mockRejectedValueOnce(new Error('Claude is overloaded')).mockResolvedValue({ criteria: ['Clarity'] })
+  render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(nextButton())
+  await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Claude is overloaded')
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(await screen.findByRole('textbox', { name: 'Criterion 1' })).toHaveValue('Clarity')
+  expect(api.generateRubric).toHaveBeenCalledTimes(2)
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('pauses a running training, polls until it is paused, then resumes it to completion', async () => {
+  const user = polling()
+  await startTraining(user, detail({ current_round: 1, scenarios_done: 2 }))
+  api.pauseTraining.mockResolvedValue(detail({ status: 'pausing', current_round: 1, scenarios_done: 2 }))
+  await user.click(screen.getByRole('button', { name: 'Pause' }))
+  expect(api.pauseTraining).toHaveBeenCalledWith(7)
+  expect(await screen.findByRole('button', { name: 'Pausing…' })).toBeDisabled()
+  expect(screen.getByRole('status')).toHaveTextContent('pausing')
+
+  api.getTraining.mockResolvedValue(detail({ status: 'paused', current_round: 1, scenarios_done: 3 }))
+  await tick()
+  expect(screen.getByRole('status')).toHaveTextContent('paused')
+  expect(screen.getByText(/progress is saved/i)).toBeInTheDocument()
+  expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '3')
+  expect(screen.queryByRole('button', { name: /Paus/ })).not.toBeInTheDocument()
+  const calls = api.getTraining.mock.calls.length
+  await tick(6000)
+  expect(api.getTraining).toHaveBeenCalledTimes(calls)
+
+  api.resumeTraining.mockResolvedValue(detail({ status: 'pending', current_round: 1, scenarios_done: 3 }))
+  api.getTraining.mockResolvedValue(completed)
+  await user.click(screen.getByRole('button', { name: 'Resume' }))
+  expect(api.resumeTraining).toHaveBeenCalledWith(7)
+  await tick()
+  expect(step('Complete')).toHaveAttribute('aria-current', 'step')
+})
+
+it('pauses a pending training too, and shows a failed pause', async () => {
+  const user = polling()
+  await startTraining(user, detail({ status: 'pending' }))
+  api.pauseTraining.mockRejectedValue(new Error('Only a pending or running training can be paused.'))
+  await user.click(screen.getByRole('button', { name: 'Pause' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Only a pending or running training can be paused.')
+})
+
+it('retries a failed training from its saved progress', async () => {
+  const user = polling()
+  await startTraining(user, detail({ status: 'failed', error: 'Claude API error: overloaded', scenarios_done: 4 }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Claude API error: overloaded')
+  api.resumeTraining.mockResolvedValue(detail({ status: 'pending', scenarios_done: 4 }))
+  api.getTraining.mockResolvedValue(detail({ scenarios_done: 5 }))
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(api.resumeTraining).toHaveBeenCalledWith(7)
+  expect(await screen.findByRole('button', { name: 'Pause' })).toBeEnabled()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  await tick()
+  expect(screen.getByRole('status')).toHaveTextContent('running')
+  expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '5')
+})
+
+it('shows why a retry was refused', async () => {
+  const user = polling()
+  await startTraining(user, detail({ status: 'failed', error: 'Claude API error: overloaded' }))
+  api.resumeTraining.mockRejectedValue(new Error('The server is busy with other trainings; try again later.'))
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(await screen.findByText('The server is busy with other trainings; try again later.')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+})
+
+it('reopens a training that is pausing', async () => {
+  api.listTrainings.mockResolvedValue([{ id: 7, status: 'pausing' }])
+  api.getTraining.mockResolvedValue(detail({ status: 'pausing' }))
+  render(<TrainPage />)
+  expect(await screen.findByRole('button', { name: 'Pausing…' })).toBeDisabled()
+  expect(step('Training')).toHaveAttribute('aria-current', 'step')
+})
+
+it('reopens the active training even when a newer one has finished', async () => {
+  api.listTrainings.mockResolvedValue([{ id: 8, status: 'completed' }, { id: 7, status: 'running' }])
+  api.getTraining.mockResolvedValue(detail())
+  render(<TrainPage />)
+  await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
+  expect(api.getTraining).toHaveBeenCalledWith(7)
+  expect(api.getTraining).not.toHaveBeenCalledWith(8)
+})
+
+it('refreshes the saved training from the server when the page opens', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: detail() }))
+  api.listTrainings.mockResolvedValue([{ id: 7, status: 'paused' }])
+  api.getTraining.mockResolvedValue(detail({ status: 'paused', scenarios_done: 3 }))
+  render(<TrainPage />)
+  expect(await screen.findByRole('button', { name: 'Resume' })).toBeInTheDocument()
+  expect(api.getTraining).toHaveBeenCalledWith(7)
+  expect(screen.getByRole('status')).toHaveTextContent('paused')
+  expect(step('Training')).toHaveAttribute('aria-current', 'step')
+})
+
+it('shows the Complete step when the saved training finished elsewhere', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: detail({ status: 'paused' }) }))
+  api.listTrainings.mockResolvedValue([{ id: 7, status: 'completed' }])
+  api.getTraining.mockResolvedValue(completed)
+  render(<TrainPage />)
+  await waitFor(() => expect(step('Complete')).toHaveAttribute('aria-current', 'step'))
+})
+
+it('starts a fresh setup when the saved training was deleted', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, baseModel: 'qwen-0.5b', training: completed }))
+  api.getTraining.mockRejectedValue(Object.assign(new Error('Training not found'), { status: 404 }))
+  render(<TrainPage />)
+  await waitFor(() => expect(step('Model')).toHaveAttribute('aria-current', 'step'))
+  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).not.toBeChecked()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('keeps the saved training when refreshing it fails for another reason', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
+  api.getTraining.mockRejectedValue(Object.assign(new Error('Server down'), { status: 500 }))
+  render(<TrainPage />)
+  await waitFor(() => expect(api.getTraining).toHaveBeenCalledWith(7))
+  expect(step('Complete')).toHaveAttribute('aria-current', 'step')
+  expect(screen.getByTestId('best-prompt')).toHaveTextContent('Be kind.')
 })
 
 it('defines no CSS classes that another page stylesheet also defines', () => {

@@ -72,6 +72,10 @@ export const api = {
   startTraining: (config) => post('/trainings', config),
   listTrainings: () => request('/trainings'),
   getTraining: (id) => request(`/trainings/${id}`),
+  pauseTraining: (id) => post(`/trainings/${id}/pause`),
+  // Continues a paused or failed training from its saved progress (also the Retry after a failure).
+  resumeTraining: (id) => post(`/trainings/${id}/resume`),
+  deleteTraining: (id) => request(`/trainings/${id}`, { method: 'DELETE' }),
   listRounds: (id) => request(`/trainings/${id}/rounds`),
   listScenarios: (id, round) => request(`/trainings/${id}/rounds/${round}/scenarios`),
   downloadPrompt: (id) => request(`/trainings/${id}/download/prompt`),

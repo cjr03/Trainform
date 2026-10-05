@@ -22,6 +22,8 @@ export default defineConfig({
         DATABASE_URL: process.env.E2E_DATABASE_URL || 'postgresql+psycopg://localhost/trainform_e2e',
         TRAINFORM_SECRET: 'e2e-secret-0123456789abcdef0123456789',
         TRAINFORM_FAKE_LLM: '1',
+        TRAINFORM_FAKE_DELAY: '0.25', // seconds per primary reply, so the pause spec can pause a run before it ends
+        TRAINFORM_MAX_TRAININGS: '10', // the delay keeps runs going, and parallel workers each start some
         MODELS_DIR: process.env.E2E_MODELS_DIR,
       },
     },

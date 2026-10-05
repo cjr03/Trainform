@@ -89,6 +89,9 @@ describe('api', () => {
     ['listRounds', [3], 'GET', '/trainings/3/rounds'],
     ['downloadPrompt', [3], 'GET', '/trainings/3/download/prompt'],
     ['downloadWeights', [3], 'GET', '/trainings/3/download/weights'],
+    ['pauseTraining', [3], 'POST', '/trainings/3/pause'],
+    ['resumeTraining', [3], 'POST', '/trainings/3/resume'],
+    ['deleteTraining', [3], 'DELETE', '/trainings/3'],
   ])('%s sends %s %s', async (name, args, method, path, body) => {
     const fetch = respond(200, {})
     vi.stubGlobal('fetch', fetch)

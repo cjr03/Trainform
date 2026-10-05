@@ -456,6 +456,15 @@ textarea.prompt-input {
   background: var(--danger);
 }
 
+.train-status[data-status='paused']::before,
+.train-status[data-status='pausing']::before {
+  background: var(--accent-2);
+}
+
+.train-status[data-status='pausing']::before {
+  animation: blink 1.4s ease-in-out infinite;
+}
+
 @keyframes blink {
   50% {
     opacity: 0.3;
