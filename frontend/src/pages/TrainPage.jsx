@@ -1,4 +1,15 @@
+import { CircleAlert, Download, FlaskConical, Loader2, Pause, Play, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { api, saveBlob } from '../api'
 import './TrainPage.css'
 
@@ -57,13 +68,59 @@ function useAction() {
   return [run, busy, error]
 }
 
-const Spinner = () => <span className="spinner" aria-hidden="true" />
-const Alert = ({ children }) =>
+const Spinner = () => <Loader2 className="animate-spin" />
+const ErrorAlert = ({ children }) =>
   children ? (
-    <p className="error" role="alert">
-      {children}
-    </p>
+    <Alert variant="destructive">
+      <CircleAlert />
+      <AlertDescription className="text-destructive">{children}</AlertDescription>
+    </Alert>
   ) : null
+
+// Pill-shaped choices: one radio group with a visible radio in each pill.
+function Choice({ options, ...props }) {
+  return (
+    <RadioGroup className="flex flex-wrap gap-2" {...props}>
+      {options.map(([key, text, props]) => (
+        <label
+          key={key}
+          className="flex cursor-pointer items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors has-disabled:cursor-not-allowed has-disabled:opacity-50 has-data-[state=checked]:border-primary has-data-[state=checked]:bg-primary/10 has-data-[state=checked]:text-primary"
+        >
+          <RadioGroupItem value={key} {...props} />
+          {text}
+        </label>
+      ))}
+    </RadioGroup>
+  )
+}
+
+const HOW = [
+  [Sparkles, 'Set the goal', 'A system prompt and a rubric of what every good reply does. Write them or have them drafted.'],
+  [FlaskConical, 'Simulate', 'Realistic customers talk to your agent, and every reply is scored against the rubric.'],
+  [RotateCcw, 'Improve', 'The prompt is rewritten after each conversation and a local model is fine-tuned on the best replies.'],
+  [Download, 'Take it with you', 'Download the best prompt and LoRA weights. Every conversation and score stays in Inspect.'],
+]
+
+function HowItWorks() {
+  return (
+    <section aria-labelledby="train-how" className="mx-auto w-full max-w-5xl">
+      <h2 id="train-how" className="sr-only">
+        How it works
+      </h2>
+      <ol className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">
+        {HOW.map(([Icon, title, text]) => (
+          <li key={title} className="flex gap-3 rounded-lg border bg-card/60 p-4">
+            <Icon className="mt-0.5 size-5 shrink-0 text-brand" />
+            <div className="grid gap-1">
+              <span className="font-display text-sm font-semibold">{title}</span>
+              <span className="text-sm text-muted-foreground">{text}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
 
 function ModelStep({ value, onChange }) {
   const [tab, setTab] = useState('hub')
@@ -109,66 +166,70 @@ function ModelStep({ value, onChange }) {
   }
 
   return (
-    <div className="model-step">
-      <div className="stack">
-        <fieldset className="train-toggle">
-          <legend className="sr-only">Model source</legend>
-          {[
+    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="grid gap-4">
+        <Choice
+          aria-label="Model source"
+          value={tab}
+          onValueChange={setTab}
+          options={[
             ['hub', 'Hugging Face Hub'],
             ['upload', 'Upload'],
-          ].map(([key, label]) => (
-            <label key={key}>
-              <input type="radio" name="train-model-source" checked={tab === key} onChange={() => setTab(key)} />
-              <span>{label}</span>
-            </label>
-          ))}
-        </fieldset>
+          ]}
+        />
 
-        <div hidden={tab !== 'hub'} className="stack">
-          <form role="search" className="hub-search" onSubmit={onSearch}>
-            <input
+        <div hidden={tab !== 'hub'} className="grid gap-4">
+          <form role="search" className="grid gap-2 sm:grid-cols-[1fr_auto_auto]" onSubmit={onSearch}>
+            <Input
               type="search"
-              className="input"
               aria-label="Search models"
               placeholder="Search models, e.g. Qwen"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <select className="input" aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value)}>
+            <select
+              aria-label="Sort by"
+              className="h-9 rounded-md border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [&_option]:bg-background"
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+            >
               <option value="downloads">Most downloaded</option>
               <option value="lastModified">Latest</option>
             </select>
-            <button className="btn btn-primary" disabled={hubBusy}>
+            <Button disabled={hubBusy}>
               {hubBusy && !downloading && <Spinner />}Search
-            </button>
+            </Button>
           </form>
-          <Alert>{hubError}</Alert>
+          <ErrorAlert>{hubError}</ErrorAlert>
           {results === null ? (
-            <p className="muted">Search the Hub to find a base model. Small instruct models train fastest.</p>
+            <p className="m-0 text-sm text-muted-foreground">
+              Search the Hub to find a base model. Small instruct models train fastest.
+            </p>
           ) : results.length === 0 ? (
-            <p className="muted">No models match that search. Try a broader name.</p>
+            <p className="m-0 text-sm text-muted-foreground">No models match that search. Try a broader name.</p>
           ) : (
-            <ul className="hub-results">
+            <ul className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(min(230px,100%),1fr))] gap-3 p-0">
               {results.map((m) => (
-                <li key={m.id} className="hub-card">
-                  <h3 className="hub-id">{m.id}</h3>
-                  <dl className="hub-stats">
-                    <div>
-                      <dt>Downloads</dt>
-                      <dd>{compact.format(m.downloads ?? 0)}</dd>
-                    </div>
-                    <div>
-                      <dt>Likes</dt>
-                      <dd>{compact.format(m.likes ?? 0)}</dd>
-                    </div>
-                    <div>
-                      <dt>Updated</dt>
-                      <dd>{m.last_modified ? new Date(m.last_modified).toLocaleDateString() : '—'}</dd>
-                    </div>
+                <li key={m.id} className="flex flex-col gap-3 rounded-lg border bg-background/40 p-4">
+                  <h3 className="m-0 font-sans text-sm font-semibold tracking-normal [overflow-wrap:anywhere]">
+                    {m.id}
+                  </h3>
+                  <dl className="m-0 grid grid-cols-3 gap-2 text-sm tabular-nums">
+                    {[
+                      ['Downloads', compact.format(m.downloads ?? 0)],
+                      ['Likes', compact.format(m.likes ?? 0)],
+                      ['Updated', m.last_modified ? new Date(m.last_modified).toLocaleDateString() : '—'],
+                    ].map(([term, detail]) => (
+                      <div key={term}>
+                        <dt className="text-xs text-muted-foreground">{term}</dt>
+                        <dd className="m-0">{detail}</dd>
+                      </div>
+                    ))}
                   </dl>
-                  <button
+                  <Button
                     type="button"
-                    className="btn"
+                    variant="outline"
+                    className="mt-auto"
                     aria-label={`Download ${m.id}`}
                     disabled={Boolean(downloading)}
                     onClick={() => download(m.id)}
@@ -179,59 +240,68 @@ function ModelStep({ value, onChange }) {
                         Downloading…
                       </>
                     ) : (
-                      'Download'
+                      <>
+                        <Download />
+                        Download
+                      </>
                     )}
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <form hidden={tab !== 'upload'} className="stack" onSubmit={upload}>
-          <p className="muted">Zip a Hugging Face model folder (config, tokenizer and weights) and upload it.</p>
-          <div className="field">
-            <label className="label" htmlFor="train-upload-file">
-              Model archive (.zip)
-            </label>
-            <input
+        <form hidden={tab !== 'upload'} className="grid gap-4" onSubmit={upload}>
+          <p className="m-0 text-sm text-muted-foreground">
+            Zip a Hugging Face model folder (config, tokenizer and weights) and upload it.
+          </p>
+          <div className="grid gap-2">
+            <Label htmlFor="train-upload-file">Model archive (.zip)</Label>
+            <Input
               id="train-upload-file"
               type="file"
               accept=".zip,application/zip"
-              className="input"
               onChange={(e) => setFile(e.target.files[0] ?? null)}
             />
           </div>
-          <div className="field">
-            <label className="label" htmlFor="train-upload-name">
-              Model name
-            </label>
-            <input id="train-upload-name" className="input" value={name} onChange={(e) => setName(e.target.value)} />
+          <div className="grid gap-2">
+            <Label htmlFor="train-upload-name">Model name</Label>
+            <Input id="train-upload-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
-          <Alert>{uploadError}</Alert>
-          <div className="row">
-            <button className="btn btn-primary" disabled={!file || !name.trim() || uploading}>
-              {uploading && <Spinner />}Upload model
-            </button>
+          <ErrorAlert>{uploadError}</ErrorAlert>
+          <div>
+            <Button disabled={!file || !name.trim() || uploading}>
+              {uploading ? <Spinner /> : <Upload />}Upload model
+            </Button>
           </div>
         </form>
       </div>
 
-      <fieldset className="model-list">
-        <legend className="label">Local models</legend>
+      <div className="grid gap-3 rounded-lg border bg-background/40 p-4">
+        <span id="train-local-models" className="text-sm font-medium">
+          Local models
+        </span>
         {!models && !listError && <Spinner />}
-        <Alert>{listError}</Alert>
+        <ErrorAlert>{listError}</ErrorAlert>
         {models?.length === 0 && (
-          <p className="muted">No local models yet. Download one from the Hub or upload a zip.</p>
+          <p className="m-0 text-sm text-muted-foreground">
+            No local models yet. Download one from the Hub or upload a zip.
+          </p>
         )}
-        {models?.map((m) => (
-          <label key={m.name} className="model-option">
-            <input type="radio" name="train-base-model" checked={value === m.name} onChange={() => onChange(m.name)} />
-            <span className="model-name">{m.name}</span>
-            {m.source && <span className="badge">{m.source}</span>}
-          </label>
-        ))}
-      </fieldset>
+        <RadioGroup aria-labelledby="train-local-models" value={value} onValueChange={onChange} className="gap-1">
+          {models?.map((m) => (
+            <label
+              key={m.name}
+              className="flex cursor-pointer items-center gap-3 rounded-md border border-transparent px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
+            >
+              <RadioGroupItem value={m.name} />
+              <span className="mr-auto [overflow-wrap:anywhere]">{m.name}</span>
+              {m.source && <Badge variant="outline">{m.source}</Badge>}
+            </label>
+          ))}
+        </RadioGroup>
+      </div>
     </div>
   )
 }
@@ -247,51 +317,43 @@ function PromptStep({ model, helper, prompt, onChange }) {
   }
 
   return (
-    <div className="stack">
-      <fieldset className="train-toggle">
-        <legend className="sr-only">How to create the prompt</legend>
-        {[
+    <div className="grid gap-4">
+      <Choice
+        aria-label="How to create the prompt"
+        value={mode}
+        onValueChange={setMode}
+        options={[
           ['write', 'Write my own'],
           ['describe', 'Describe my agent'],
-        ].map(([key, label]) => (
-          <label key={key}>
-            <input type="radio" name="train-prompt-mode" checked={mode === key} onChange={() => setMode(key)} />
-            <span>{label}</span>
-          </label>
-        ))}
-      </fieldset>
+        ]}
+      />
       {mode === 'describe' && (
-        <div className="field">
-          <label className="label" htmlFor="train-description">
-            Agent description
-          </label>
-          <textarea
+        <div className="grid gap-2">
+          <Label htmlFor="train-description">Agent description</Label>
+          <Textarea
             id="train-description"
-            className="input"
             placeholder="A support agent for a bike shop that handles returns and repair bookings."
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
-          <Alert>{error}</Alert>
-          <div className="row">
-            <button type="button" className="btn" disabled={!description.trim() || busy} onClick={generate}>
-              {busy && <Spinner />}Generate prompt
-            </button>
+          <ErrorAlert>{error}</ErrorAlert>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" disabled={!description.trim() || busy} onClick={generate}>
+              {busy ? <Spinner /> : <Sparkles />}Generate prompt
+            </Button>
             {error && (
-              <button type="button" className="btn btn-ghost" disabled={!description.trim() || busy} onClick={request}>
+              <Button type="button" variant="ghost" disabled={!description.trim() || busy} onClick={request}>
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         </div>
       )}
-      <div className="field">
-        <label className="label" htmlFor="train-prompt">
-          Agent prompt
-        </label>
-        <textarea
+      <div className="grid gap-2">
+        <Label htmlFor="train-prompt">Agent prompt</Label>
+        <Textarea
           id="train-prompt"
-          className="input prompt-input"
+          className="min-h-60 font-mono"
           placeholder="You are a friendly support agent for…"
           value={prompt}
           onChange={(e) => onChange(e.target.value)}
@@ -317,52 +379,56 @@ function RubricStep({ model, helper, prompt, criteria, onChange }) {
   }
 
   return (
-    <div className="stack">
-      <div className="row">
-        <button type="button" className="btn" disabled={!prompt.trim() || busy} onClick={generate}>
-          {busy && <Spinner />}
+    <div className="grid gap-4">
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" disabled={!prompt.trim() || busy} onClick={generate}>
+          {busy ? <Spinner /> : <Sparkles />}
           {criteria.length ? 'Regenerate' : 'Generate from prompt'}
-        </button>
+        </Button>
         {error && (
-          <button type="button" className="btn btn-ghost" disabled={!prompt.trim() || busy} onClick={request}>
+          <Button type="button" variant="ghost" disabled={!prompt.trim() || busy} onClick={request}>
             Retry
-          </button>
+          </Button>
         )}
       </div>
-      <Alert>{error}</Alert>
+      <ErrorAlert>{error}</ErrorAlert>
       {criteria.length > 0 && (
-        <ol className="rubric-list">
+        <ol className="m-0 grid list-none gap-2 p-0">
           {criteria.map((c, i) => (
-            <li key={i} className="rubric-item">
-              <input
-                className="input"
+            <li key={i} className="grid grid-cols-[2rem_1fr_auto] items-center gap-2">
+              <span className="text-center font-display text-sm text-brand" aria-hidden="true">
+                {i + 1}
+              </span>
+              <Input
                 aria-label={`Criterion ${i + 1}`}
                 value={c}
                 onChange={(e) => onChange(criteria.map((x, j) => (j === i ? e.target.value : x)))}
               />
-              <button
+              <Button
                 type="button"
-                className="btn btn-ghost btn-danger"
+                variant="ghost"
+                size="icon"
+                className="text-destructive hover:text-destructive"
                 aria-label={`Delete criterion ${i + 1}`}
                 onClick={() => onChange(criteria.filter((_, j) => j !== i))}
               >
-                Delete
-              </button>
+                <Trash2 />
+              </Button>
             </li>
           ))}
         </ol>
       )}
-      <form className="rubric-add" onSubmit={add}>
-        <input
-          className="input"
+      <form className="grid gap-2 sm:grid-cols-[1fr_auto] sm:pl-10" onSubmit={add}>
+        <Input
           aria-label="New criterion"
           placeholder="Add a criterion, e.g. Resolves the issue in one reply"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <button className="btn" disabled={!draft.trim()}>
+        <Button variant="outline" disabled={!draft.trim()}>
+          <Plus />
           Add criterion
-        </button>
+        </Button>
       </form>
     </div>
   )
@@ -370,25 +436,31 @@ function RubricStep({ model, helper, prompt, criteria, onChange }) {
 
 function Meter({ label, value, max }) {
   return (
-    <div className="meter">
-      <div className="meter-head">
+    <div className="grid gap-2">
+      <div className="flex justify-between text-sm">
         <span>{label}</span>
-        <span className="meter-count">
+        <span className="font-display text-brand tabular-nums">
           {value} / {max}
         </span>
       </div>
-      <div
-        className="progress"
-        role="progressbar"
+      {/* The ui Progress keeps `value` for the bar, so the counts go on the progressbar directly. */}
+      <Progress
         aria-label={label}
-        aria-valuemin={0}
         aria-valuemax={max}
         aria-valuenow={value}
-      >
-        <div className="progress-bar" style={{ width: `${max ? (value / max) * 100 : 0}%` }} />
-      </div>
+        value={max ? (value / max) * 100 : 0}
+        className="h-2.5"
+      />
     </div>
   )
+}
+
+const STATUS_DOT = {
+  running: 'bg-brand animate-pulse',
+  pausing: 'bg-brand-2 animate-pulse',
+  paused: 'bg-brand-2',
+  completed: 'bg-success',
+  failed: 'bg-destructive',
 }
 
 // `busy` and `error` belong to the pause/resume request; resuming (Retry, after a failure) continues from saved progress.
@@ -396,40 +468,45 @@ function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, e
   if (!training) return null
   const { status } = training
   return (
-    <div className="stack">
-      <p role="status" className="train-status" data-status={status}>
+    <div className="grid gap-5">
+      <p role="status" className="m-0 inline-flex w-fit items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold capitalize">
+        <span className={cn('size-2 rounded-full bg-muted-foreground', STATUS_DOT[status])} />
         {status}
       </p>
-      {status === 'failed' && <Alert>{training.error || 'Training stopped without an error message.'}</Alert>}
-      {status === 'paused' && <p className="muted">Paused. Its progress is saved, so it resumes where it stopped.</p>}
-      <Alert>{error}</Alert>
+      {status === 'failed' && <ErrorAlert>{training.error || 'Training stopped without an error message.'}</ErrorAlert>}
+      {status === 'paused' && (
+        <p className="m-0 text-sm text-muted-foreground">Paused. Its progress is saved, so it resumes where it stopped.</p>
+      )}
+      <ErrorAlert>{error}</ErrorAlert>
       {status !== 'completed' && (
-        <div className="row">
+        <div className="flex flex-wrap gap-2">
           {(status === 'pending' || status === 'running') && (
-            <button type="button" className="btn" disabled={busy} onClick={onPause}>
+            <Button type="button" variant="outline" disabled={busy} onClick={onPause}>
+              <Pause />
               Pause
-            </button>
+            </Button>
           )}
           {status === 'pausing' && (
-            <button type="button" className="btn" disabled>
+            <Button type="button" variant="outline" disabled>
+              <Spinner />
               Pausing…
-            </button>
+            </Button>
           )}
           {(status === 'paused' || status === 'failed') && (
             <>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={onResume}>
-                {busy && <Spinner />}
+              <Button type="button" disabled={busy} onClick={onResume}>
+                {busy ? <Spinner /> : status === 'paused' ? <Play /> : <RotateCcw />}
                 {status === 'paused' ? 'Resume' : 'Retry'}
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={onReset}>
+              </Button>
+              <Button type="button" variant="ghost" onClick={onReset}>
                 Start a new training
-              </button>
+              </Button>
             </>
           )}
         </div>
       )}
-      <Alert>{pollError && `Lost contact with the server (${pollError}). Retrying…`}</Alert>
-      <div className="meters">
+      <ErrorAlert>{pollError && `Lost contact with the server (${pollError}). Retrying…`}</ErrorAlert>
+      <div className="grid gap-5 sm:grid-cols-2">
         <Meter label="Scenarios tested" value={training.scenarios_done} max={training.total_scenarios} />
         <Meter
           label="Rounds completed"
@@ -437,20 +514,27 @@ function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, e
           max={training.rounds}
         />
       </div>
-      <h3 className="section-title">Latest model scores</h3>
-      <div className="score-grid">
+      <h3 className="m-0 text-base">Latest model scores</h3>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {WINDOWS.map(([key, title]) => {
           const w = training.score_windows.find((x) => x.label === key)
           return (
-            <div key={key} role="group" aria-labelledby={`train-window-${key}`} className="score-card">
-              <span id={`train-window-${key}`} className="score-title">
+            <div
+              key={key}
+              role="group"
+              aria-labelledby={`train-window-${key}`}
+              className="flex flex-col gap-1 rounded-lg border bg-background/40 p-4"
+            >
+              <span id={`train-window-${key}`} className="text-sm text-muted-foreground">
                 {title}
               </span>
-              <span className="score-value">
+              <span className="font-display text-3xl leading-tight tabular-nums">
                 {score(w?.score)}
-                <small>/ 10</small>
+                <small className="ml-1.5 text-sm text-muted-foreground">/ 10</small>
               </span>
-              <span className="muted">{w ? `${w.runs} ${w.runs === 1 ? 'run' : 'runs'}` : 'No runs yet'}</span>
+              <span className="text-sm text-muted-foreground">
+                {w ? `${w.runs} ${w.runs === 1 ? 'run' : 'runs'}` : 'No runs yet'}
+              </span>
             </div>
           )
         })}
@@ -466,39 +550,37 @@ function CompleteStep({ training, onReset }) {
   const save = (fetchBlob, filename) => run(async () => saveBlob(await fetchBlob(id), filename))
 
   return (
-    <div className="stack">
-      <div className="best">
-        <span className="label">Best score</span>
-        <span className="best-score" data-testid="best-score">
+    <div className="grid gap-4">
+      <div className="flex flex-col items-center gap-1 pt-3 pb-2">
+        <span className="text-sm text-muted-foreground">Best score</span>
+        <span
+          className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
+          data-testid="best-score"
+        >
           {score(training.best_score)}
-          <small>/ 10</small>
+          <small className="ml-2 text-lg text-muted-foreground">/ 10</small>
         </span>
       </div>
-      <h3 className="section-title">Best prompt</h3>
-      <pre className="prompt-preview" data-testid="best-prompt">
+      <h3 className="m-0 text-base">Best prompt</h3>
+      <pre
+        className="m-0 max-h-80 overflow-auto rounded-lg border bg-background/60 p-4 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]"
+        data-testid="best-prompt"
+      >
         {training.best_prompt}
       </pre>
-      <Alert>{error}</Alert>
-      <div className="row">
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy}
-          onClick={() => save(api.downloadPrompt, `training-${id}-prompt.txt`)}
-        >
+      <ErrorAlert>{error}</ErrorAlert>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" disabled={busy} onClick={() => save(api.downloadPrompt, `training-${id}-prompt.txt`)}>
+          <Download />
           Download prompt
-        </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy}
-          onClick={() => save(api.downloadWeights, `training-${id}-lora.zip`)}
-        >
+        </Button>
+        <Button type="button" disabled={busy} onClick={() => save(api.downloadWeights, `training-${id}-lora.zip`)}>
+          <Download />
           Download weights
-        </button>
-        <button type="button" className="btn btn-ghost" onClick={onReset}>
+        </Button>
+        <Button type="button" variant="ghost" onClick={onReset}>
           Start a new training
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -632,32 +714,34 @@ function Dashboard({ onReset }) {
     })
 
   const content = [
-    <div key="model" className="stack">
-      <div className="field">
-        <span className="label" id="train-helper">
+    <div key="model" className="grid gap-6">
+      <div className="grid gap-2">
+        <span className="text-sm font-medium" id="train-helper">
           Train with
         </span>
-        <fieldset className="train-toggle" aria-labelledby="train-helper">
-          {[
-            ['claude', 'Claude'],
+        <Choice
+          aria-labelledby="train-helper"
+          value={helper ?? ''}
+          onValueChange={setHelper}
+          options={[
+            [
+              'claude',
+              'Claude',
+              {
+                disabled: !claudeAvailable,
+                'aria-describedby': claudeAvailable === false ? 'train-helper-hint' : undefined,
+              },
+            ],
             ['local', 'Local model'],
-          ].map(([key, label]) => (
-            <label key={key}>
-              <input
-                type="radio"
-                name="train-helper"
-                checked={helper === key}
-                disabled={key === 'claude' && !claudeAvailable}
-                aria-describedby={key === 'claude' && claudeAvailable === false ? 'train-helper-hint' : undefined}
-                onChange={() => setHelper(key)}
-              />
-              <span>{label}</span>
-            </label>
-          ))}
-        </fieldset>
+          ]}
+        />
         {claudeAvailable === false && (
-          <p id="train-helper-hint" className="muted">
-            Link your Claude API key on the <a href="/account">Account</a> page to train with Claude.
+          <p id="train-helper-hint" className="m-0 text-sm text-muted-foreground">
+            Link your Claude API key on the{' '}
+            <a href="/account" className="text-primary underline-offset-4 hover:underline">
+              Account
+            </a>{' '}
+            page to train with Claude.
           </p>
         )}
       </div>
@@ -665,55 +749,49 @@ function Dashboard({ onReset }) {
     </div>,
     <PromptStep key="prompt" model={baseModel} helper={helper} prompt={prompt} onChange={setPrompt} />,
     <RubricStep key="rubric" model={baseModel} helper={helper} prompt={prompt} criteria={rubric} onChange={setRubric} />,
-    <div key="scenarios" className="stack">
-      <div className="grid-2">
-        <div className="field">
-          <label className="label" htmlFor="train-scenarios">
-            Simulated scenarios per round
-          </label>
-          <input
+    <div key="scenarios" className="grid gap-4">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-2">
+          <Label htmlFor="train-scenarios">Simulated scenarios per round</Label>
+          <Input
             id="train-scenarios"
             type="number"
             min="1"
             max="100"
             step="1"
-            className="input"
             value={scenarios}
             onChange={(e) => setScenarios(e.target.value)}
           />
         </div>
-        <div className="field">
-          <label className="label" htmlFor="train-rounds">
-            Training rounds
-          </label>
-          <input
+        <div className="grid gap-2">
+          <Label htmlFor="train-rounds">Training rounds</Label>
+          <Input
             id="train-rounds"
             type="number"
             min="1"
             max="50"
             step="1"
-            className="input"
             value={rounds}
             onChange={(e) => setRounds(e.target.value)}
           />
         </div>
       </div>
-      {!valid[3] && <p className="muted">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
-      <dl className="summary">
-        <div>
-          <dt>Base model</dt>
-          <dd>{baseModel || '—'}</dd>
-        </div>
-        <div>
-          <dt>Criteria</dt>
-          <dd>{criteria.length}</dd>
-        </div>
-        <div>
-          <dt>Total runs</dt>
-          <dd data-testid="total-runs">{valid[3] ? Number(scenarios) * Number(rounds) : '—'}</dd>
-        </div>
+      {!valid[3] && <p className="m-0 text-sm text-muted-foreground">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
+      <dl className="m-0 grid grid-cols-3 gap-2 rounded-lg border p-4">
+        {[
+          ['Base model', baseModel || '—'],
+          ['Criteria', criteria.length],
+          ['Total runs', valid[3] ? Number(scenarios) * Number(rounds) : '—', 'total-runs'],
+        ].map(([term, detail, testId]) => (
+          <div key={term}>
+            <dt className="text-xs text-muted-foreground">{term}</dt>
+            <dd className="m-0 text-lg tabular-nums [overflow-wrap:anywhere]" data-testid={testId}>
+              {detail}
+            </dd>
+          </div>
+        ))}
       </dl>
-      <Alert>{startError}</Alert>
+      <ErrorAlert>{startError}</ErrorAlert>
     </div>,
     <TrainingStep
       key="training"
@@ -730,7 +808,8 @@ function Dashboard({ onReset }) {
 
   return (
     <div className="train-page" data-testid="train-page">
-      <h1 className="page-title">Train an agent</h1>
+      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
+      {!training && <HowItWorks />}
 
       <ol className="stepper" aria-label="Training workflow" style={{ '--progress': step / (STEPS.length - 1) }}>
         {STEPS.map(([name], i) => (
@@ -766,36 +845,33 @@ function Dashboard({ onReset }) {
               inert={i !== step}
               aria-labelledby={`train-slide-${i}`}
             >
-              <div className="slide-card glass card">
-                <h2 id={`train-slide-${i}`} className="slide-title">
-                  {name}
-                </h2>
-                <p className="muted slide-blurb">{blurb}</p>
-                {content[i]}
-              </div>
+              <Card className="gap-5 max-sm:py-5">
+                <CardHeader className="max-sm:px-5">
+                  <h2 id={`train-slide-${i}`} className="m-0 text-xl">
+                    {name}
+                  </h2>
+                  <CardDescription className="max-w-prose">{blurb}</CardDescription>
+                </CardHeader>
+                <CardContent className="max-sm:px-5">{content[i]}</CardContent>
+              </Card>
             </section>
           ))}
         </div>
       </div>
 
       {step < 4 && (
-        <div className="train-footer">
-          <button type="button" className="btn btn-ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>
+        <div className="flex justify-between">
+          <Button type="button" variant="ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>
             Back
-          </button>
+          </Button>
           {step < 3 ? (
-            <button type="button" className="btn btn-primary" disabled={!valid[step]} onClick={() => setStep(step + 1)}>
+            <Button type="button" disabled={!valid[step]} onClick={() => setStep(step + 1)}>
               Next
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!valid.every(Boolean) || starting}
-              onClick={start}
-            >
-              {starting && <Spinner />}Start training
-            </button>
+            <Button type="button" disabled={!valid.every(Boolean) || starting} onClick={start}>
+              {starting ? <Spinner /> : <Play />}Start training
+            </Button>
           )}
         </div>
       )}

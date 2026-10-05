@@ -11,15 +11,15 @@ test('train an agent from model upload to downloads', async ({ page, request }) 
   const stepButton = (name) => page.getByRole('list', { name: 'Training workflow' }).getByRole('button', { name })
   await expect(stepButton(/^Prompt/)).toHaveCSS('opacity', '0.4') // locked
 
-  await expect(page.getByRole('group', { name: 'Train with' }).getByRole('radio', { name: 'Claude' })).toBeChecked()
+  await expect(page.getByRole('radiogroup', { name: 'Train with' }).getByRole('radio', { name: 'Claude' })).toBeChecked()
 
   // Model: upload a zip through the UI and select it.
   const model = uid('model')
-  await page.getByRole('group', { name: 'Model source' }).getByRole('radio', { name: 'Upload' }).check()
+  await page.getByRole('radiogroup', { name: 'Model source' }).getByRole('radio', { name: 'Upload' }).check()
   await page.getByLabel('Model archive (.zip)').setInputFiles({ name: 'model.zip', mimeType: 'application/zip', buffer: modelZip() })
   await page.getByLabel('Model name').fill(model)
   await page.getByRole('button', { name: 'Upload model' }).click()
-  const option = page.getByRole('group', { name: 'Local models' }).getByRole('radio', { name: model })
+  const option = page.getByRole('radiogroup', { name: 'Local models' }).getByRole('radio', { name: model })
   await option.check()
   await expect(option).toBeChecked()
   await next.click()

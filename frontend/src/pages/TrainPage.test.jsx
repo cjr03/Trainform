@@ -216,7 +216,7 @@ it('uploads a zipped model and selects it', async () => {
   expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
 })
 
-const helper = () => within(screen.getByRole('group', { name: 'Train with' }))
+const helper = () => within(screen.getByRole('radiogroup', { name: 'Train with' }))
 
 it('trains with Claude by default when it is linked, or with the chosen local model', async () => {
   const user = userEvent.setup()
@@ -302,7 +302,7 @@ it('shows no source badge for a model without one', async () => {
   api.listLocalModels.mockResolvedValue([{ name: 'demo', source: null }])
   render(<TrainPage />)
   const option = (await screen.findByRole('radio', { name: 'demo' })).closest('label')
-  expect(option.querySelector('.badge')).toBeNull()
+  expect(option.querySelector('[data-slot="badge"]')).toBeNull()
 })
 
 it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
@@ -765,4 +765,16 @@ it('defines no CSS classes that another page stylesheet also defines', () => {
     const theirs = classes(file)
     expect(own.filter((c) => theirs.has(c)), file).toEqual([])
   }
+})
+
+it('explains the pipeline and its output during setup, not once training has started', async () => {
+  const view = render(<TrainPage />)
+  const how = screen.getByRole('region', { name: 'How it works' })
+  expect(within(how).getByText(/LoRA weights/)).toBeInTheDocument()
+  view.unmount()
+
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
+  api.getTraining.mockResolvedValue(completed)
+  render(<TrainPage />)
+  expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
 })
