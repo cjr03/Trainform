@@ -113,6 +113,29 @@ def test_without_claude_a_listed_local_model_is_required(authed_client, no_claud
     assert no_claude == []
 
 
+@pytest.mark.parametrize("path, body", [("/api/agents/prompt", {"description": "x"}),
+                                        ("/api/agents/rubric", {"agent_prompt": "x"})])
+def test_the_chosen_helper_is_used(authed_client, no_claude, path, body):
+    fake = use_llm(FakeLLM({"prompt": "p", "criteria": ["c"]}))
+    assert authed_client.post(path, json=body | {"helper": "claude", "model": "tiny"}).status_code == 200
+    assert len(fake.calls) == 1 and no_claude == []
+    # "local" uses the local model even though Claude is linked.
+    assert authed_client.post(path, json=body | {"helper": "local", "model": "tiny"}).status_code == 200
+    assert len(fake.calls) == 1 and no_claude == ["tiny"]
+    r = authed_client.post(path, json=body | {"helper": "local"})
+    assert (r.status_code, r.json()) == (400, {"detail": "Link your Claude API key on the Account page, or pick a "
+                                                         "local model first."})
+    assert authed_client.post(path, json=body | {"helper": "gpt", "model": "tiny"}).status_code == 422
+
+
+@pytest.mark.parametrize("path, body", [("/api/agents/prompt", {"description": "x"}),
+                                        ("/api/agents/rubric", {"agent_prompt": "x"})])
+def test_claude_without_a_key_is_400(authed_client, no_claude, path, body):
+    r = authed_client.post(path, json=body | {"helper": "claude", "model": "tiny"})
+    assert (r.status_code, r.json()) == (400, {"detail": "Link your Claude API key on the Account page first."})
+    assert no_claude == []
+
+
 def test_a_local_model_that_fails_to_load_is_400(authed_client, no_claude, monkeypatch):
     def broken(key):
         raise OSError("bad safetensors header")

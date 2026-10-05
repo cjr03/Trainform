@@ -269,7 +269,10 @@ export default function InspectPage() {
                 #{t.id} · {t.base_model}
               </span>
               <span className={`badge badge-${t.status}`}>{t.status}</span>
-              <span className="option-meta">{new Date(t.created_at).toLocaleDateString()}</span>
+              <span className="option-meta">
+                {new Date(t.created_at).toLocaleDateString()}
+                {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
+              </span>
               <span className="option-score" title="Best score">
                 {fmt(t.best_score)}
               </span>

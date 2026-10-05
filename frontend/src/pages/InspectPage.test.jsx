@@ -22,8 +22,8 @@ vi.mock('../api', () => ({
 Element.prototype.scrollIntoView = vi.fn() // jsdom has no layout
 
 const trainings = [
-  { id: 2, base_model: 'qwen-0.5b', status: 'completed', best_score: 8.25, created_at: '2026-09-30T10:00:00Z' },
-  { id: 1, base_model: 'llama-1b', status: 'running', best_score: null, created_at: '2026-09-29T10:00:00Z' },
+  { id: 2, base_model: 'qwen-0.5b', status: 'completed', best_score: 8.25, created_at: '2026-09-30T10:00:00Z', helper: 'claude' },
+  { id: 1, base_model: 'llama-1b', status: 'running', best_score: null, created_at: '2026-09-29T10:00:00Z', helper: 'local' },
 ]
 const rounds = {
   2: [
@@ -78,7 +78,7 @@ async function openScenario(user) {
   await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
 }
 
-it('lists trainings with id, status, best score and date', async () => {
+it('lists trainings with id, status, best score, date and helper', async () => {
   renderPage()
   expect(screen.getByTestId('inspect-page')).toBeInTheDocument()
   expect(screen.getByText(/Loading trainings/)).toBeInTheDocument()
@@ -90,6 +90,8 @@ it('lists trainings with id, status, best score and date', async () => {
   expect(within(buttons[0]).getByText('8.3')).toBeInTheDocument()
   expect(within(buttons[1]).getByText('running')).toBeInTheDocument()
   expect(within(buttons[1]).getByText('—')).toBeInTheDocument()
+  expect(buttons[0]).toHaveTextContent('· Claude')
+  expect(buttons[1]).toHaveTextContent('· Local model')
 })
 
 it('selecting a training loads its rounds', async () => {

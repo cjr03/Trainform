@@ -3,8 +3,8 @@ import { api, saveBlob } from '../api'
 import './TrainPage.css'
 
 const STEPS = [
-  ['Model', 'Pick the base model to fine-tune. Download one from Hugging Face or upload your own.'],
-  ['Prompt', 'Write the system prompt your agent starts from, or describe the agent and let Claude (or, without a Claude key, your model) draft it.'],
+  ['Model', 'Choose whether Claude or your local model runs the helper agents, then pick the base model to fine-tune. Download one from Hugging Face or upload your own.'],
+  ['Prompt', 'Write the system prompt your agent starts from, or describe the agent and let the helper draft it.'],
   ['Rubric', 'List the criteria every simulated conversation is scored against, 1 to 10.'],
   ['Scenarios', 'Choose how many simulated personas each round tests, and how many rounds to train.'],
   ['Training', 'Each round tests the agent against new personas, scores it and trains a better version.'],
@@ -236,11 +236,11 @@ function ModelStep({ value, onChange }) {
   )
 }
 
-function PromptStep({ model, prompt, onChange }) {
+function PromptStep({ model, helper, prompt, onChange }) {
   const [mode, setMode] = useState('write')
   const [description, setDescription] = useState('')
   const [run, busy, error] = useAction()
-  const request = () => run(async () => onChange((await api.generatePrompt(description.trim(), model)).prompt))
+  const request = () => run(async () => onChange((await api.generatePrompt(description.trim(), model, helper)).prompt))
   const generate = () => {
     if (prompt.trim() && !window.confirm('Replace your prompt with a generated one?')) return
     request()
@@ -301,10 +301,10 @@ function PromptStep({ model, prompt, onChange }) {
   )
 }
 
-function RubricStep({ model, prompt, criteria, onChange }) {
+function RubricStep({ model, helper, prompt, criteria, onChange }) {
   const [draft, setDraft] = useState('')
   const [run, busy, error] = useAction()
-  const request = () => run(async () => onChange((await api.generateRubric(prompt.trim(), model)).criteria))
+  const request = () => run(async () => onChange((await api.generateRubric(prompt.trim(), model, helper)).criteria))
   const generate = () => {
     if (criteria.length && !window.confirm('Replace your criteria with a newly generated set?')) return
     request()
@@ -508,6 +508,8 @@ function Dashboard({ onReset }) {
   const [draft] = useState(loadDraft)
   const [step, setStep] = useState(draft.step ?? 0)
   const [baseModel, setBaseModel] = useState(draft.baseModel ?? '')
+  const [helper, setHelper] = useState(draft.helper ?? null) // 'claude' | 'local'; null: the server picks
+  const [claudeLinked, setClaudeLinked] = useState(null)
   const [prompt, setPrompt] = useState(draft.prompt ?? '')
   const [rubric, setRubric] = useState(draft.rubric ?? [])
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
@@ -534,9 +536,20 @@ function Dashboard({ onReset }) {
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
 
   useEffect(
-    () => storeDraft({ step, baseModel, prompt, rubric, scenarios, rounds, training }),
-    [step, baseModel, prompt, rubric, scenarios, rounds, training],
+    () => storeDraft({ step, baseModel, helper, prompt, rubric, scenarios, rounds, training }),
+    [step, baseModel, helper, prompt, rubric, scenarios, rounds, training],
   )
+
+  // Claude by default when linked; only the local model when not.
+  useEffect(() => {
+    api.me().then(
+      (me) => {
+        setClaudeLinked(me.claude_linked)
+        setHelper((h) => (me.claude_linked ? (h ?? 'claude') : 'local'))
+      },
+      () => {}, // unknown: the choice stays unset, so the server's default (Claude if linked) applies
+    )
+  }, [])
 
   // Show the training as the server has it: the one in progress (e.g. after navigating away, reloading or resuming it
   // from Inspect), else the draft's, which may have been paused, resumed or deleted elsewhere since.
@@ -604,6 +617,7 @@ function Dashboard({ onReset }) {
         rubric: criteria,
         scenarios: Number(scenarios),
         rounds: Number(rounds),
+        helper,
       }
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
       const t = await api.startTraining(config).catch(async (e) => {
@@ -616,9 +630,39 @@ function Dashboard({ onReset }) {
     })
 
   const content = [
-    <ModelStep key="model" value={baseModel} onChange={setBaseModel} />,
-    <PromptStep key="prompt" model={baseModel} prompt={prompt} onChange={setPrompt} />,
-    <RubricStep key="rubric" model={baseModel} prompt={prompt} criteria={rubric} onChange={setRubric} />,
+    <div key="model" className="stack">
+      <div className="field">
+        <span className="label" id="train-helper">
+          Train with
+        </span>
+        <fieldset className="train-toggle" aria-labelledby="train-helper">
+          {[
+            ['claude', 'Claude'],
+            ['local', 'Local model'],
+          ].map(([key, label]) => (
+            <label key={key}>
+              <input
+                type="radio"
+                name="train-helper"
+                checked={helper === key}
+                disabled={key === 'claude' && !claudeLinked}
+                aria-describedby={key === 'claude' && claudeLinked === false ? 'train-helper-hint' : undefined}
+                onChange={() => setHelper(key)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </fieldset>
+        {claudeLinked === false && (
+          <p id="train-helper-hint" className="muted">
+            Link your Claude API key on the <a href="/account">Account</a> page to train with Claude.
+          </p>
+        )}
+      </div>
+      <ModelStep value={baseModel} onChange={setBaseModel} />
+    </div>,
+    <PromptStep key="prompt" model={baseModel} helper={helper} prompt={prompt} onChange={setPrompt} />,
+    <RubricStep key="rubric" model={baseModel} helper={helper} prompt={prompt} criteria={rubric} onChange={setRubric} />,
     <div key="scenarios" className="stack">
       <div className="grid-2">
         <div className="field">

@@ -4,6 +4,7 @@ import os
 import re
 import threading
 from functools import cache, partial
+from typing import Literal
 
 import anthropic
 from cryptography.fernet import InvalidToken
@@ -87,6 +88,16 @@ def get_llm(user: User = Depends(current_user)):
         shared = {u.strip() for u in os.environ.get("TRAINFORM_SHARED_KEY_USERS", "").split(",")}
         key = os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
     return partial(call_claude, key) if key else None
+
+
+Helper = Literal["claude", "local"]  # who runs the helper agents; omitted (None) means Claude when linked, else local
+
+
+def chosen_llm(helper: Helper | None, llm):
+    """`llm` from get_llm, or None (run the helpers on a local model) when the user chose "local"."""
+    if helper == "claude" and not llm:
+        raise HTTPException(400, "Link your Claude API key on the Account page first.")
+    return None if helper == "local" else llm
 
 
 LOCAL_WAIT = 60  # seconds an agent request waits for the shared local model before giving up

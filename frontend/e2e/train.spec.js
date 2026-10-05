@@ -3,10 +3,15 @@ import { expect, test } from '@playwright/test'
 import { createUser, modelZip, signIn, uid, uploadModel } from './helpers'
 
 test('train an agent from model upload to downloads', async ({ page, request }) => {
-  await signIn(page, await createUser(request))
+  const user = await createUser(request)
+  // Fake mode never calls Claude, so any key links it; a linked key makes Claude the default helper.
+  expect((await request.put('/api/me/claude-key', { headers: user.auth, data: { api_key: 'fake-key' } })).status()).toBe(200)
+  await signIn(page, user)
   const next = page.getByRole('button', { name: 'Next' })
   const stepButton = (name) => page.getByRole('list', { name: 'Training workflow' }).getByRole('button', { name })
   await expect(stepButton(/^Prompt/)).toHaveCSS('opacity', '0.4') // locked
+
+  await expect(page.getByRole('group', { name: 'Train with' }).getByRole('radio', { name: 'Claude' })).toBeChecked()
 
   // Model: upload a zip through the UI and select it.
   const model = uid('model')

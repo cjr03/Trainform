@@ -55,9 +55,9 @@ export const api = {
   setClaudeKey: (api_key) => request('/me/claude-key', { method: 'PUT', body: { api_key } }),
   removeClaudeKey: () => request('/me/claude-key', { method: 'DELETE' }),
 
-  // `model` is the local model the agents run on when Claude isn't linked.
-  generatePrompt: (description, model) => post('/agents/prompt', { description, model }),
-  generateRubric: (agent_prompt, model) => post('/agents/rubric', { agent_prompt, model }),
+  // `helper` ('claude' or 'local'; null: Claude if linked) runs the agents; `model` is the local model they'd use.
+  generatePrompt: (description, model, helper) => post('/agents/prompt', { description, model, helper }),
+  generateRubric: (agent_prompt, model, helper) => post('/agents/rubric', { agent_prompt, model, helper }),
 
   searchHubModels: (search = '', sort = 'downloads') => request(`/hub/models?${new URLSearchParams({ search, sort })}`),
   downloadHubModel: (repo_id) => post('/hub/download', { repo_id }),

@@ -91,9 +91,9 @@ def test_create_runs_training_in_background(authed_client, fakes):
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
     assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
                       "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
-                      "score_windows", "best_model_id", "best_score", "best_prompt", "created_at"}
-    progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"])
-    assert progress == ("completed", None, 2, 4, 4)
+                      "score_windows", "best_model_id", "best_score", "best_prompt", "created_at", "helper"}
+    progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"], d["helper"])
+    assert progress == ("completed", None, 2, 4, 4, None)
     assert d["latest_prompt"] == "Be helpful.!!"
     # Scenario means: 7.0, 8.0, 8.5, 8.5 -> rounds 7.5 and 8.5.
     assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 8.0}, {"label": "n/2", "runs": 2, "score": 8.5},
@@ -126,7 +126,7 @@ def test_list_newest_first(authed_client, fakes, db, user):
     listed = authed_client.get("/api/trainings").json()
     assert [t["id"] for t in listed] == [first["id"] + 1, first["id"]]
     assert set(listed[0]) == {"id", "base_model", "status", "rounds", "scenarios_per_round", "current_round",
-                              "scenarios_done", "created_at", "best_score"}
+                              "scenarios_done", "created_at", "best_score", "helper"}
     assert (listed[0]["status"], listed[0]["best_score"]) == ("pending", None)
     assert (listed[1]["status"], listed[1]["best_score"]) == ("completed", 8.5)
 
@@ -243,6 +243,41 @@ def test_create_without_claude_key_uses_the_local_model(authed_client, fakes, mo
     assert fakes and all(getattr(llm, "local", False) for llm in fakes)
 
 
+def test_create_with_the_chosen_helper(authed_client, fakes, monkeypatch, db):
+    r = authed_client.post("/api/trainings", json=BODY | {"helper": "local"})  # even though Claude is linked
+    assert (r.status_code, r.json()["helper"]) == (201, "local")
+    assert authed_client.get(f"/api/trainings/{r.json()['id']}").json()["status"] == "completed"
+    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+    assert authed_client.get("/api/trainings").json()[0]["helper"] == "local"
+    fakes.clear()
+    r = authed_client.post("/api/trainings", json=BODY | {"helper": "claude"})
+    assert (r.status_code, r.json()["helper"]) == (201, "claude")
+    assert fakes and all(llm.args == ("server-key",) for llm in fakes)
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    r = authed_client.post("/api/trainings", json=BODY | {"helper": "claude"})
+    assert (r.status_code, r.json()) == (400, {"detail": "Link your Claude API key on the Account page first."})
+    assert authed_client.post("/api/trainings", json=BODY | {"helper": "gpt"}).status_code == 422
+    assert db.query(Training).count() == 2
+
+
+def test_resume_with_the_stored_helper(authed_client, fakes, monkeypatch, db, user):
+    t = add_training(db, user, "paused")
+    t.helper = "local"
+    db.commit()
+    assert authed_client.post(f"/api/trainings/{t.id}/resume").status_code == 200  # Claude is linked
+    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+
+    t = add_training(db, user, "paused")
+    t.helper = "claude"
+    db.commit()
+    monkeypatch.delenv("ANTHROPIC_API_KEY")  # unlinked since it started
+    r = authed_client.post(f"/api/trainings/{t.id}/resume")
+    assert (r.status_code, r.json()) == (400, {"detail": "Link your Claude API key on the Account page first."})
+    db.expire_all()
+    assert db.get(Training, t.id).status == "paused"
+
+
 def test_other_users_training_is_404(authed_client, db):
     t = other_users_training(db)
     db.add(TrainedModel(training_id=t.id, round=1, prompt="Secret.", weights=b"PK", mean_score=9.0))
@@ -309,12 +344,13 @@ def test_startup_recreates_the_one_active_training_index_with_pausing(db):
 
 
 def test_startup_adds_the_resume_columns_to_an_existing_database(db):
-    db.execute(text("ALTER TABLE trainings DROP COLUMN next_prompt, DROP COLUMN personas, DROP COLUMN adapter"))
+    db.execute(text("ALTER TABLE trainings DROP COLUMN next_prompt, DROP COLUMN personas, DROP COLUMN adapter, "
+                    "DROP COLUMN helper"))
     db.commit()
     with TestClient(app):
         pass
     columns = db.scalars(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'trainings'"))
-    assert {"next_prompt", "personas", "adapter"} <= set(columns)
+    assert {"next_prompt", "personas", "adapter", "helper"} <= set(columns)
 
 
 def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, monkeypatch, db):

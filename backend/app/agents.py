@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import current_user
-from app.llm import BadReply, LLMError, get_llm, llm_or_local
+from app.llm import BadReply, Helper, LLMError, chosen_llm, get_llm, llm_or_local
 from app.models import User
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -296,17 +296,19 @@ def primary_respond(generate, prompt: str, conversation: str) -> str:
 
 class PromptRequest(BaseModel):
     description: str = Field(min_length=1, max_length=4000)
-    model: str | None = None  # the local model to use when Claude isn't linked
+    model: str | None = None  # the local model to use without Claude
+    helper: Helper | None = None
 
 
 class RubricRequest(BaseModel):
     agent_prompt: str = Field(min_length=1, max_length=20000)
     model: str | None = None
+    helper: Helper | None = None
 
 
 @router.post("/prompt")
 def prompt_route(body: PromptRequest, user: User = Depends(current_user), llm=Depends(get_llm)):
-    llm = llm_or_local(llm, user, body.model)
+    llm = llm_or_local(chosen_llm(body.helper, llm), user, body.model)
     try:
         return {"prompt": create_prompt(llm, body.description)}
     except LLMError as e:
@@ -315,7 +317,7 @@ def prompt_route(body: PromptRequest, user: User = Depends(current_user), llm=De
 
 @router.post("/rubric")
 def rubric_route(body: RubricRequest, user: User = Depends(current_user), llm=Depends(get_llm)):
-    llm = llm_or_local(llm, user, body.model)
+    llm = llm_or_local(chosen_llm(body.helper, llm), user, body.model)
     try:
         return {"criteria": create_rubric(llm, body.agent_prompt)}
     except LLMError as e:
