@@ -281,7 +281,8 @@ class LocalModel:
         """Restore an adapter from adapter_bytes, e.g. to resume a training on the weights it had trained."""
         with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(io.BytesIO(data)) as zf:
             zf.extractall(tmp)  # our own adapter_bytes, read back from the database
-            set_peft_model_state_dict(self.model, load_peft_weights(tmp, device=self.device))
+            # Read on the CPU; set_peft_model_state_dict copies into the parameters on whatever device they live.
+            set_peft_model_state_dict(self.model, load_peft_weights(tmp, device="cpu"))
 
 
 class DownloadIn(BaseModel):
