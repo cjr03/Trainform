@@ -73,7 +73,8 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
     """Run a training's remaining rounds, continuing from its saved progress (models.Training.next_prompt, personas
     and adapter, the round's saved scenarios and its finished rounds' TrainedModels). `load_model(name)` returns a
     LocalModel-like object. The API writes status too ("pausing"), so this only changes it with targeted UPDATEs."""
-    with session_factory() as db, ThreadPoolExecutor(1) as pool:
+    pool = ThreadPoolExecutor(1)
+    with session_factory() as db:
         try:
             t = db.get(Training, training_id)
             _set_status(db, t, ("pending",), "running")  # left alone if the user already asked to pause
@@ -156,6 +157,9 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                 db.commit()
             except Exception:
                 log.exception("Could not mark training %s failed", training_id)
+        finally:
+            # Don't hold the slot and the model for a next round that won't run; a resume prepares it again.
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def score_windows(scores: list[float]) -> list[dict]:

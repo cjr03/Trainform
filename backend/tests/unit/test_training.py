@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -407,6 +408,23 @@ def test_the_next_round_is_prepared_while_the_model_trains(db, user, fake_agents
     t, [model] = run(db, make_training(db, user, rounds=2, scenarios=1))
     assert (t.status, t.error) == ("completed", None)
     assert model.generate_calls == ["P", "PR"]
+
+
+def test_a_failed_sft_does_not_wait_for_the_next_rounds_preparation(db, user, fake_agents, monkeypatch):
+    # The training is marked failed and its slot freed now; the stray preparation just finishes and is dropped.
+    fake_agents.scores = [8, 8]
+    release = threading.Event()
+    monkeypatch.setattr(training.agents, "review_round", lambda *a: release.wait(10) and "R")
+
+    def sft(self, ex):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(FakeModel, "sft", sft)
+    start = time.monotonic()
+    t, _ = run(db, make_training(db, user, rounds=2, scenarios=1))
+    assert (t.status, t.error) == ("failed", "out of memory")
+    assert time.monotonic() - start < 5
+    release.set()
 
 
 def test_local_helpers_prepare_the_next_round_after_training(db, user, fake_agents, monkeypatch):
