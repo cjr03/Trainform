@@ -246,8 +246,8 @@ def _tag(name, value):
 
 
 def _prompt(out):
-    """The prompt generator's reply, without any tags around it, such as the <current_prompt> it was given."""
-    return _text(re.sub(r"\A\s*(?:<[^<>\n]+>\s*)+|(?:\s*<[^<>\n]+>)+\s*\Z", "", out["prompt"]), "prompt")
+    """The prompt generator's reply, without any tags or colons around it, such as the <current_prompt> it was given."""
+    return _text(re.sub(r"\A(?:[\s:]|<[^<>\n]+>)+|(?:[\s:]|<[^<>\n]+>)+\Z", "", out["prompt"]), "prompt")
 
 
 def _text(value, what):

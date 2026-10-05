@@ -91,6 +91,15 @@ def test_local_llm_string_field_is_the_whole_reply():
     assert system.startswith("sys") and system != "sys" and (message, digits) == ("msg", False)
 
 
+@pytest.mark.parametrize("reply", [
+    "You are Acme support.\n\n<conversation>:\nuser: hi\n\n<current_prompt>\nYou are someone else.",
+    "<prompt>:\nYou are Acme support.\n<prompt>:\nYou are Acme help.",  # a small model drafting twice
+])
+def test_local_llm_string_field_stops_where_the_model_starts_echoing_tagged_sections(reply):
+    assert llm.local_llm(StubModel(reply))("sys", "msg", agents.PROMPT_SCHEMA)["prompt"].strip(" \n:") == (
+        "You are Acme support.")
+
+
 def test_local_llm_list_field_is_one_item_per_line():
     model = StubModel("1. Greets the user.\n- Is concise.\n\n* Never invents prices.\n2) Asks first.")
     assert llm.local_llm(model)("sys", "msg", agents.RUBRIC_SCHEMA) == {

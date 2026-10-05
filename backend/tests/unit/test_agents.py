@@ -103,6 +103,7 @@ def test_generate_improved_prompt():
     "<system_prompt>\n<prompt>Better.</prompt>\n</system_prompt>",  # any tag, stacked
     "  <prompt>\nBetter.",  # an opening tag alone
     "Better.\n</agent_prompt> ",  # a closing tag alone
+    "<prompt>:\n:  \nBetter.\n:",  # a small model's colons after a tag
 ])
 def test_a_prompt_never_starts_or_ends_with_a_tag(call, reply):
     # The tags would show in every prompt field and reach the model being trained.
