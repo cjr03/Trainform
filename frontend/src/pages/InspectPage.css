@@ -150,22 +150,25 @@
 }
 
 .bubble-persona {
-  align-self: flex-start;
-  border-bottom-left-radius: 4px;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
   background: rgba(155, 107, 255, 0.12);
   border-color: rgba(155, 107, 255, 0.35);
 }
 
+.bubble-persona .bubble-who {
+  display: block;
+  text-align: right;
+}
+
 .bubble-agent {
-  align-self: flex-end;
-  border-bottom-right-radius: 4px;
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
   background: rgba(61, 245, 255, 0.08);
   border-color: var(--border-strong);
 }
 
 .bubble-agent .bubble-who {
-  display: block;
-  text-align: right;
   color: var(--accent);
 }
 

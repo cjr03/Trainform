@@ -240,9 +240,8 @@ def test_personas_are_aimed_at_the_last_rounds_weakest_criteria():
 
 def test_local_personas_press_harder_on_the_weakest_criteria():
     rubric = ["Weak.", "Strong."]
-    plain = agents.generate_personas(LocalLLM(*({"prompt": "b"} for _ in range(30))), "p", 30, rubric=rubric)
-    aimed = agents.generate_personas(LocalLLM(*({"prompt": "b"} for _ in range(30))), "p", 30, rubric=rubric,
-                                     last_scores=[3.0, 9.0])
+    plain = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 30, rubric=rubric)
+    aimed = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 30, rubric=rubric, last_scores=[3.0, 9.0])
     rating = lambda ps, i: [p["attributes"][i]["rating"] for p in ps]  # noqa: E731
     assert rating(aimed, 1) == rating(plain, 1)  # the strong criterion is pressed as before
     assert all(a >= b for a, b in zip(rating(aimed, 0), rating(plain, 0)))
@@ -304,20 +303,38 @@ def test_generate_personas_rejects_none():
         agents.generate_personas(FakeLLM({"criteria": ["x"]}, {"personas": []}), "p", 3)
 
 
-def test_local_personas_get_a_spread_of_ratings_and_a_written_brief():
-    llm = LocalLLM(*({"prompt": f" brief {i} "} for i in range(4)))
-    personas = agents.generate_personas(llm, "You are Acme support.", 4, rubric=RUBRIC)
-    assert [p["prompt"] for p in personas] == ["brief 0", "brief 1", "brief 2", "brief 3"]
+def test_local_personas_are_real_people_with_the_needs_the_model_lists():
+    llm = LocalLLM({"problems": [" My chain slips ", "", "Do you fix e-bikes?", "My chain slips"]})
+    personas = agents.generate_personas(llm, "You are Acme bike support.", 4, rubric=RUBRIC)
+    [(system, message, schema)] = llm.calls  # one call lists the needs; code picks who has each
+    assert system == agents.LOCAL_PROBLEMS_SYSTEM and "You are Acme bike support." in message
+    assert [p["prompt"] for p in personas] == [
+        f"Customer: {agents.CUSTOMERS[i]}. Need: {need}"
+        for i, need in enumerate(["My chain slips", "Do you fix e-bikes?"] * 2)]
     assert all([a["criterion"] for a in p["attributes"]] == RUBRIC for p in personas)
     ratings = [tuple(a["rating"] for a in p["attributes"]) for p in personas]
     assert all(1 <= r <= 10 for rs in ratings for r in rs) and len(set(ratings)) == 4
-    for (system, message, schema), rs in zip(llm.calls, ratings):
-        assert system == agents.LOCAL_PERSONA_SYSTEM and schema == agents.PROMPT_SCHEMA
-        assert "You are Acme support." in message and f"- Is concise.: {rs[1]}/10" in message
+
+
+def test_local_personas_need_at_least_one_problem():
+    with pytest.raises(BadReply, match="no problems"):
+        agents.generate_personas(LocalLLM({"problems": [" "]}, {"problems": []}), "p", 2, rubric=RUBRIC)
+
+
+@pytest.mark.parametrize("reply, sent", [
+    (" my chain keeps slipping on hills, can u fix it today? ", "my chain keeps slipping on hills, can u fix it today?"),
+    ("I'm here to help! Could you please describe the issue?", "My chain slips"),  # slipped into the agent's voice
+])
+def test_local_persona_voices_the_customers_need(reply, sent):
+    llm = LocalLLM(reply)
+    context = f"Customer: {agents.CUSTOMERS[0]}. Need: My chain slips"
+    assert agents.persona_respond(llm, [{"criterion": "a", "rating": 5}], context) == sent
+    assert llm.calls == [(agents.LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None)]
 
 
 def test_local_system_prompts_are_distinct():
-    assert len({*SYSTEMS, agents.LOCAL_SCORING_SYSTEM, agents.LOCAL_PERSONA_SYSTEM}) == len(SYSTEMS) + 2
+    local = {agents.LOCAL_SCORING_SYSTEM, agents.LOCAL_PERSONA_SYSTEM, agents.LOCAL_PROBLEMS_SYSTEM}
+    assert len({*SYSTEMS, *local}) == len(SYSTEMS) + 3
 
 
 def test_persona_respond():
@@ -329,6 +346,7 @@ def test_persona_respond():
     assert schema is None and llm.kwargs == [{"effort": "low"}]  # a short in-character message needs little thought
     assert "Stays calm.: 9/10" in message and "Is concise.: 2/10" in message
     assert "<context>\nYou are an angry customer. Opening message.\n</context>" in message
+    assert "not an assistant" in system and "never offer help" in system  # a person with a need, not another bot
 
 
 def test_persona_respond_rejects_empty():
@@ -350,8 +368,7 @@ def test_primary_respond_uses_local_generate():
 def test_local_personas_do_not_repeat():
     # Generation is greedy, so equal ratings would give equal briefs and the same simulated user again.
     rubric = [f"Rule {j}." for j in range(10)]
-    llm = LocalLLM(*({"prompt": "brief"} for _ in range(20)))
-    personas = agents.generate_personas(llm, "p", 20, rubric=rubric)
+    personas = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 20, rubric=rubric)
     assert len({tuple(a["rating"] for a in p["attributes"]) for p in personas}) == 20
 
 
