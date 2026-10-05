@@ -155,10 +155,12 @@
 }
 
 /* ---------- Slides ---------- */
+/* Glow room around the active card. Bleeding one gutter sideways but padding 12px less leaves each 100%-wide
+   slide with its 12px side padding, so the card lines up with the page edges and the neighbours stay clipped. */
 .slides {
   overflow: hidden;
-  margin: -12px;
-  padding: 12px;
+  margin: -12px calc(-1 * var(--gutter));
+  padding: 12px calc(var(--gutter) - 12px);
 }
 
 .slides-track {
@@ -188,11 +190,6 @@
     max-height 0s var(--slide-time);
 }
 
-.slide-card {
-  max-width: 980px;
-  margin: 0 auto;
-}
-
 .slide-title {
   font-size: 1.35rem;
   margin-bottom: 4px;
@@ -211,8 +208,6 @@
 .train-footer {
   display: flex;
   justify-content: space-between;
-  width: min(980px, 100%);
-  margin: 0 auto;
 }
 
 /* ---------- 1 Model ---------- */
