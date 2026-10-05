@@ -93,6 +93,16 @@ def test_generate_improved_prompt():
     assert_strict(schema)
 
 
+@pytest.mark.parametrize("call", [
+    lambda llm: agents.generate_improved_prompt(llm, "Old.", "c", [{"criterion": "a", "score": 3}]),
+    lambda llm: agents.review_round(llm, "Old.", [("a", 3.0)], [("c", 3.0)]),
+])
+def test_the_prompt_generator_drops_an_echoed_current_prompt_tag(call):
+    # Claude sometimes wraps its answer in the <current_prompt> tag it was given; the tags would reach the model.
+    assert call(FakeLLM({"prompt": "<current_prompt>\nBetter.\n</current_prompt>"})) == "Better."
+    assert call(FakeLLM({"prompt": "Use <current_prompt> nowhere."})) == "Use <current_prompt> nowhere."
+
+
 def test_generate_improved_prompt_sees_its_track_record():
     # So it can build on the best version so far and tell whether its last edit helped.
     llm = FakeLLM({"prompt": "Better."})

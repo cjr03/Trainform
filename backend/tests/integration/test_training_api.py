@@ -355,6 +355,23 @@ def test_startup_adds_the_resume_columns_to_an_existing_database(db):
     assert {"next_prompt", "personas", "adapter", "helper"} <= set(columns)
 
 
+def test_startup_drops_echoed_current_prompt_tags_from_saved_prompts(db, user):
+    tagged = "<current_prompt>\nBe kind.\n</current_prompt>"
+    t = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["a"], scenarios_per_round=1,
+                 rounds=1, status="paused", next_prompt=tagged)
+    db.add(t)
+    db.flush()
+    db.add(Scenario(training_id=t.id, round=1, scenario_number=1, persona={}, prompt=tagged, input="i", output="o",
+                    scores=[], score=5.0))
+    db.add(TrainedModel(training_id=t.id, round=1, prompt=tagged, weights=b"", mean_score=5.0))
+    db.commit()
+    with TestClient(app):
+        pass
+    db.expire_all()
+    assert db.get(Training, t.id).next_prompt == "Be kind."
+    assert db.scalar(select(Scenario.prompt)) == db.scalar(select(TrainedModel.prompt)) == "Be kind."
+
+
 def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, monkeypatch, db):
     score = training.agents.score_conversation
     paused = []
