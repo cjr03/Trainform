@@ -1,15 +1,43 @@
+import { CircleAlert, Download, Loader2, Pause, Play, RotateCcw, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 import { api, saveBlob } from '../api'
 import './InspectPage.css'
 
 const ACTIVE = ['pending', 'running', 'pausing'] // in progress: can't be resumed or deleted
+const HARD = 7 // a persona rating at or above this pushes the agent hard on that criterion
 const fmt = (score) => (score == null ? '—' : String(Math.round(score * 10) / 10))
 // Below 860px the panels stack, so a newly opened one can start below the fold. Returns nothing: effects call it,
 // and current Chromium's scrollIntoView returns a promise, which React would take for the effect's cleanup.
 const reveal = (el) => {
   el?.scrollIntoView({ block: 'nearest' })
 }
+
+const TITLE = 'm-0 text-sm tracking-wider text-muted-foreground'
+const PRE = 'm-0 rounded-md border bg-[rgb(5_6_15/0.6)] px-3.5 py-3 text-[0.85rem] whitespace-pre-wrap wrap-anywhere'
+const PROMPT_PRE = cn(PRE, 'max-h-[360px] overflow-y-auto')
+const OPTION_MAIN = 'font-semibold wrap-anywhere'
+const OPTION_META = 'text-[0.8rem] text-muted-foreground'
+const OPTION_SCORE = 'col-start-2 row-span-2 row-start-1 font-display text-lg text-brand'
+const BUBBLE = 'max-w-[min(72ch,85%)] rounded-[18px] border px-4 py-3 max-[860px]:max-w-[92%]'
+const SAID = 'mt-1 mb-0 whitespace-pre-wrap wrap-anywhere'
+const DETAILS = 'border-t pt-3 [&[open]>summary]:mb-3'
 
 // Loads data for `key`, reloading when `version` changes; results for a previous key are ignored, so fast
 // clicking never shows stale lists, and a reload keeps showing the current data until the new data arrives.
@@ -31,30 +59,40 @@ function useLoad(load, key, version) {
   return state.key === key ? state : { loading: key != null }
 }
 
+function ErrorAlert({ children }) {
+  return (
+    <Alert variant="destructive">
+      <CircleAlert aria-hidden="true" />
+      <AlertDescription>{children}</AlertDescription>
+    </Alert>
+  )
+}
+
 function LoadStatus({ state, loadingText }) {
   return (
     <>
       {state.loading && (
-        <p className="row muted" role="status">
-          <span className="spinner" /> {loadingText}
+        <p className="m-0 flex items-center gap-2 text-muted-foreground" role="status">
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" /> {loadingText}
         </p>
       )}
-      {state.error && (
-        <p className="error" role="alert">
-          {state.error.message}
-        </p>
-      )}
+      {state.error && <ErrorAlert>{state.error.message}</ErrorAlert>}
     </>
   )
 }
 
 function Column({ ref, title, state, loadingText, emptyText, children }) {
   return (
-    <section ref={ref} className="inspect-col glass" aria-label={title}>
-      <h2 className="inspect-col-title">{title}</h2>
+    <Card ref={ref} role="region" aria-label={title} className="min-h-30 gap-3 p-4">
+      <h2 className={TITLE}>{title}</h2>
       <LoadStatus state={state} loadingText={loadingText} />
-      {state.data && (state.data.length ? <ul className="inspect-list">{children}</ul> : <p className="muted">{emptyText}</p>)}
-    </section>
+      {state.data &&
+        (state.data.length ? (
+          <ul className="m-0 flex max-h-[420px] list-none flex-col gap-1.5 overflow-y-auto p-0">{children}</ul>
+        ) : (
+          <p className="m-0 text-muted-foreground">{emptyText}</p>
+        ))}
+    </Card>
   )
 }
 
@@ -62,57 +100,97 @@ function Column({ ref, title, state, loadingText, emptyText, children }) {
 function Prompts({ state }) {
   const t = state.data
   return (
-    <section className="inspect-prompts glass" aria-label="Prompts">
-      <h2 className="inspect-col-title">Prompts</h2>
+    <Card role="region" aria-label="Prompts" className="gap-3 p-4">
+      <h2 className={TITLE}>Prompts</h2>
       <LoadStatus state={state} loadingText="Loading prompts…" />
       {t && (
-        <div className="prompt-pair">
-          <section className="prompt-block" aria-label="Original prompt">
-            <h3>Original prompt</h3>
-            <pre tabIndex={0}>{t.initial_prompt}</pre>
+        <div className="grid gap-4 min-[860px]:grid-cols-2">
+          <section aria-label="Original prompt" className="min-w-0">
+            <h3 className="mb-2 text-[0.95rem]">Original prompt</h3>
+            <pre tabIndex={0} className={PROMPT_PRE}>
+              {t.initial_prompt}
+            </pre>
           </section>
-          <section className="prompt-block prompt-best" aria-label="Highest-scoring prompt">
-            <h3>
+          <section aria-label="Highest-scoring prompt" className="min-w-0">
+            <h3 className="mb-2 flex items-baseline justify-between gap-3 text-[0.95rem]">
               Highest-scoring prompt{' '}
-              {t.best_prompt != null && <span className="prompt-score">Score {fmt(t.best_score)}/10</span>}
+              {t.best_prompt != null && <span className="font-display text-brand">Score {fmt(t.best_score)}/10</span>}
             </h3>
-            {t.best_prompt != null ? <pre tabIndex={0}>{t.best_prompt}</pre> : <p className="muted">No finished round yet</p>}
+            {t.best_prompt != null ? (
+              <pre tabIndex={0} className={cn(PROMPT_PRE, 'border-border-strong shadow-glow')}>
+                {t.best_prompt}
+              </pre>
+            ) : (
+              <p className="m-0 text-muted-foreground">No finished round yet</p>
+            )}
           </section>
         </div>
       )}
-    </section>
+    </Card>
   )
 }
 
 function Option({ selected, onSelect, children }) {
   return (
     <li>
-      <button type="button" className="inspect-option" aria-pressed={selected} onClick={onSelect}>
+      <button
+        type="button"
+        className="grid w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 rounded-md border border-l-3 border-transparent bg-white/3 px-3 py-2.5 text-left transition-colors hover:bg-white/6 aria-pressed:border-border-strong aria-pressed:border-l-brand aria-pressed:bg-brand/8 aria-pressed:shadow-glow"
+        aria-pressed={selected}
+        onClick={onSelect}
+      >
         {children}
       </button>
     </li>
   )
 }
 
-function Bar({ value }) {
+function Bar({ value, className }) {
   return (
-    <span className="inspect-bar" aria-hidden="true">
-      <span style={{ width: `${value * 10}%` }} />
+    <span className={cn('block h-1.5 overflow-hidden rounded-full bg-white/7', className)} aria-hidden="true">
+      <span className="block h-full bg-(image:--gradient)" style={{ width: `${value * 10}%` }} />
     </span>
   )
 }
 
 function Ratings({ label, items }) {
   return (
-    <ul className="criteria" aria-label={label}>
+    <ul className="m-0 flex list-none flex-col gap-2.5 p-0" aria-label={label}>
       {items.map(([name, value]) => (
-        <li key={name}>
-          <span>{name}</span>
-          <Bar value={value} />
-          <span className="criteria-value">{value}/10</span>
+        // Name and score share a row on narrow screens, with the bar spanning the row below.
+        <li
+          key={name}
+          className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 min-[860px]:grid-cols-[minmax(90px,1fr)_2fr_auto]"
+        >
+          <span className="wrap-anywhere">{name}</span>
+          <Bar value={value} className="max-[860px]:col-span-full max-[860px]:row-start-2" />
+          <span className="text-muted-foreground tabular-nums">{value}/10</span>
         </li>
       ))}
     </ul>
+  )
+}
+
+// The criteria this persona pushes hardest, strongest first: what the scenario is really testing.
+function Targets({ attributes }) {
+  const hard = attributes.filter((a) => a.rating >= HARD).sort((a, b) => b.rating - a.rating)
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="text-muted-foreground">Tests</span>
+      {hard.length ? (
+        <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0" aria-label="Criteria this persona tests">
+          {hard.map((a) => (
+            <li key={a.criterion}>
+              <Badge variant="outline" className="border-brand-2/45 whitespace-normal text-brand-2">
+                {a.criterion}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span>This persona keeps every criterion easy.</span>
+      )}
+    </div>
   )
 }
 
@@ -123,27 +201,29 @@ function Transcript({ scenario }) {
     ref.current.focus({ preventScroll: true })
   }, [scenario.id])
   return (
-    <section
+    <Card
       ref={ref}
       tabIndex={-1}
-      className="inspect-transcript glass card"
+      role="region"
+      className="gap-4 p-6"
       aria-label={`Scenario ${scenario.scenario_number}`}
     >
-      <h2 className="inspect-col-title">Scenario {scenario.scenario_number}</h2>
-      <div className="chat">
-        <article className="bubble bubble-persona" aria-label="Persona">
-          <span className="bubble-who">Persona</span>
-          <p>{scenario.input}</p>
+      <h2 className={TITLE}>Scenario {scenario.scenario_number}</h2>
+      <Targets attributes={scenario.persona.attributes} />
+      <div className="mb-3 flex flex-col gap-3.5">
+        <article className={cn(BUBBLE, 'self-end rounded-br-sm border-brand-2/35 bg-brand-2/12')} aria-label="Persona">
+          <span className="block text-right text-xs font-semibold text-muted-foreground">Persona</span>
+          <p className={SAID}>{scenario.input}</p>
         </article>
-        <article className="bubble bubble-agent" aria-label="Agent">
-          <span className="bubble-who">Agent</span>
-          <p>{scenario.output}</p>
+        <article className={cn(BUBBLE, 'self-start rounded-bl-sm border-border-strong bg-brand/8')} aria-label="Agent">
+          <span className="block text-xs font-semibold text-brand">Agent</span>
+          <p className={SAID}>{scenario.output}</p>
         </article>
       </div>
 
-      <div className="inspect-score">
+      <div className="grid items-center gap-7 border-t py-5 min-[860px]:grid-cols-[auto_1fr]">
         <p
-          className="score-ring"
+          className="score-ring justify-self-center min-[860px]:justify-self-auto"
           style={{ '--pct': scenario.score * 10 }}
           role="img"
           aria-label={`Overall score ${fmt(scenario.score)} out of 10`}
@@ -154,16 +234,16 @@ function Transcript({ scenario }) {
         <Ratings label="Criterion scores" items={scenario.scores.map((s) => [s.criterion, s.score])} />
       </div>
 
-      <details className="inspect-details">
-        <summary>Persona profile</summary>
+      <details className={DETAILS}>
+        <summary className="cursor-pointer font-semibold">Persona profile</summary>
         <Ratings label="Persona ratings" items={scenario.persona.attributes.map((a) => [a.criterion, a.rating])} />
-        <pre>{scenario.persona.prompt}</pre>
+        <pre className={cn(PRE, 'mt-3')}>{scenario.persona.prompt}</pre>
       </details>
-      <details className="inspect-details">
-        <summary>Agent prompt</summary>
-        <pre>{scenario.prompt}</pre>
+      <details className={DETAILS}>
+        <summary className="cursor-pointer font-semibold">Agent prompt</summary>
+        <pre className={PRE}>{scenario.prompt}</pre>
       </details>
-    </section>
+    </Card>
   )
 }
 
@@ -236,23 +316,22 @@ export default function InspectPage() {
       await api.resumeTraining(trainingId)
       navigate('/train')
     })
-  const remove = () => {
-    if (!window.confirm(`Delete training #${trainingId} with all its rounds and scenarios?`)) return
+  // Runs from the confirmation dialog's Delete button.
+  const remove = () =>
     act(async () => {
       await api.deleteTraining(trainingId)
       pickTraining(null)
       setVersion((v) => v + 1)
     })
-  }
   const pickRound = (r) => {
     setRound(r)
     setScenarioId(null)
   }
 
   return (
-    <div className="stack" data-testid="inspect-page">
-      <h1 className="page-title">Inspect</h1>
-      <div className="inspect-cols">
+    <div className="flex flex-col gap-3.5" data-testid="inspect-page">
+      <h1 className="m-0 text-[clamp(1.6rem,3vw,2.4rem)]">Inspect</h1>
+      <div className="grid items-start gap-4 min-[860px]:grid-cols-3">
         <Column
           title="Trainings"
           state={trainings}
@@ -265,15 +344,17 @@ export default function InspectPage() {
         >
           {trainings.data?.map((t) => (
             <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
-              <span className="option-main">
+              <span className={OPTION_MAIN}>
                 #{t.id} · {t.base_model}
               </span>
-              <span className={`badge badge-${t.status}`}>{t.status}</span>
-              <span className="option-meta">
+              <Badge variant="outline" className={`badge-${t.status} justify-self-start tracking-wider uppercase`}>
+                {t.status}
+              </Badge>
+              <span className={OPTION_META}>
                 {new Date(t.created_at).toLocaleDateString()}
                 {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
               </span>
-              <span className="option-score" title="Best score">
+              <span className={OPTION_SCORE} title="Best score">
                 {fmt(t.best_score)}
               </span>
             </Option>
@@ -284,9 +365,9 @@ export default function InspectPage() {
           <Column ref={roundsRef} title="Rounds" state={rounds} loadingText="Loading rounds…" emptyText="No rounds finished yet.">
             {rounds.data?.map((r) => (
               <Option key={r.round} selected={r.round === round} onSelect={() => pickRound(r.round)}>
-                <span className="option-main">Round {r.round}</span>
-                <span className="option-meta">{r.scenarios} scenarios</span>
-                <span className="option-score" title="Mean score">
+                <span className={OPTION_MAIN}>Round {r.round}</span>
+                <span className={OPTION_META}>{r.scenarios} scenarios</span>
+                <span className={OPTION_SCORE} title="Mean score">
                   {fmt(r.mean_score)}
                 </span>
               </Option>
@@ -298,9 +379,9 @@ export default function InspectPage() {
           <Column ref={scenariosRef} title="Scenarios" state={scenarios} loadingText="Loading scenarios…" emptyText="No scenarios in this round.">
             {scenarios.data?.map((s) => (
               <Option key={s.id} selected={s.id === scenarioId} onSelect={() => setScenarioId(s.id)}>
-                <span className="option-main">Scenario {s.scenario_number}</span>
+                <span className={OPTION_MAIN}>Scenario {s.scenario_number}</span>
                 <Bar value={s.score} />
-                <span className="option-score">{fmt(s.score)}</span>
+                <span className={OPTION_SCORE}>{fmt(s.score)}</span>
               </Option>
             ))}
           </Column>
@@ -310,52 +391,61 @@ export default function InspectPage() {
       {trainingId != null && <Prompts state={detail} />}
 
       {status === 'failed' && detail.data && (
-        <p className="error" role="alert">
-          {detail.data.error || 'Training stopped without an error message.'}
-        </p>
+        <ErrorAlert>{detail.data.error || 'Training stopped without an error message.'}</ErrorAlert>
       )}
       {selected && (
-        <div className="row">
+        <div className="flex flex-wrap items-center gap-3">
           {(status === 'pending' || status === 'running') && (
-            <button type="button" className="btn" disabled={busy} onClick={pause}>
-              Pause training
-            </button>
+            <Button variant="outline" disabled={busy} onClick={pause}>
+              <Pause aria-hidden="true" /> Pause training
+            </Button>
           )}
-          {(status === 'paused' || status === 'failed') && (
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={resume}>
-              {status === 'paused' ? 'Resume training' : 'Retry training'}
-            </button>
+          {status === 'paused' && (
+            <Button disabled={busy} onClick={resume}>
+              <Play aria-hidden="true" /> Resume training
+            </Button>
+          )}
+          {status === 'failed' && (
+            <Button disabled={busy} onClick={resume}>
+              <RotateCcw aria-hidden="true" /> Retry training
+            </Button>
           )}
           {status === 'completed' && (
             <>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}
-              >
-                Download prompt
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}
-              >
-                Download weights
-              </button>
+              <Button onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}>
+                <Download aria-hidden="true" /> Download prompt
+              </Button>
+              <Button onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}>
+                <Download aria-hidden="true" /> Download weights
+              </Button>
             </>
           )}
           {!ACTIVE.includes(status) && (
-            <button type="button" className="btn btn-ghost btn-danger" disabled={busy} onClick={remove}>
-              Delete training
-            </button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" className="border-destructive/50 text-destructive" disabled={busy}>
+                  <Trash2 aria-hidden="true" /> Delete training
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete training #{trainingId}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently deletes all its rounds and scenarios, its prompts and its trained weights.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction variant="destructive" onClick={remove}>
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )}
         </div>
       )}
-      {actionError && (
-        <p className="error" role="alert">
-          {actionError}
-        </p>
-      )}
+      {actionError && <ErrorAlert>{actionError}</ErrorAlert>}
 
       {scenario && <Transcript scenario={scenario} />}
     </div>

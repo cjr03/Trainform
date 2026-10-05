@@ -1,184 +1,32 @@
-.inspect-cols {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
-}
-
-.inspect-col {
-  padding: 16px;
-  min-height: 120px;
-}
-
-.inspect-col-title {
-  font-size: 0.85rem;
-  color: var(--muted-foreground);
-  letter-spacing: 0.08em;
-}
-
-.inspect-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 420px;
-  overflow-y: auto;
-}
-
-.inspect-option {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 12px;
-  align-items: center;
-  text-align: left;
-  font: inherit;
-  color: var(--foreground);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid transparent;
-  border-left: 3px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
-}
-
-.inspect-option:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.inspect-option[aria-pressed='true'] {
-  background: rgba(61, 245, 255, 0.08);
-  border-color: var(--border-strong);
-  border-left-color: var(--brand);
-  box-shadow: var(--glow);
-}
-
-.option-main {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.option-meta {
-  font-size: 0.8rem;
-  color: var(--muted-foreground);
-}
-
-.option-score {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  font-family: var(--font-display);
-  font-size: 1.1rem;
-  color: var(--brand);
-}
-
-.inspect-option .badge {
-  justify-self: start;
-}
-
-.badge.badge-running {
+/* Training status colours on the shadcn Badge. Unlayered, so they win over its utility classes. */
+.badge-running {
   color: var(--brand);
   border-color: var(--border-strong);
 }
 
-.badge.badge-completed {
+.badge-completed {
   color: var(--success);
   border-color: rgba(77, 255, 181, 0.4);
 }
 
-.badge.badge-failed {
+.badge-failed {
   color: var(--danger);
   border-color: rgba(255, 92, 122, 0.4);
 }
 
-.badge.badge-pending {
+.badge-pending {
   color: var(--warning);
   border-color: rgba(255, 209, 102, 0.4);
 }
 
-.badge.badge-paused,
-.badge.badge-pausing {
+.badge-paused,
+.badge-pausing {
   color: var(--brand-2);
   border-color: rgba(155, 107, 255, 0.45);
 }
 
-.badge.badge-pausing {
+.badge-pausing {
   border-style: dashed;
-}
-
-.inspect-bar {
-  display: block;
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  overflow: hidden;
-}
-
-.inspect-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--gradient);
-}
-
-/* ---------- Transcript ---------- */
-.chat {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-bottom: 28px;
-}
-
-.bubble {
-  max-width: min(72ch, 85%);
-  padding: 12px 16px;
-  border-radius: 18px;
-  border: 1px solid var(--border);
-}
-
-.bubble p {
-  margin: 4px 0 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.bubble-who {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--muted-foreground);
-}
-
-.bubble-persona {
-  align-self: flex-end;
-  border-bottom-right-radius: 4px;
-  background: rgba(155, 107, 255, 0.12);
-  border-color: rgba(155, 107, 255, 0.35);
-}
-
-.bubble-persona .bubble-who {
-  display: block;
-  text-align: right;
-}
-
-.bubble-agent {
-  align-self: flex-start;
-  border-bottom-left-radius: 4px;
-  background: rgba(61, 245, 255, 0.08);
-  border-color: var(--border-strong);
-}
-
-.bubble-agent .bubble-who {
-  color: var(--brand);
-}
-
-.inspect-score {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 28px;
-  align-items: center;
-  padding: 20px 0;
-  border-top: 1px solid var(--border);
 }
 
 /* The page's one bold element: a conic ring filled to the overall score. */
@@ -204,117 +52,4 @@
 
 .score-ring span {
   color: var(--muted-foreground);
-}
-
-.criteria {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.criteria li {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) 2fr auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.criteria li > span:first-child {
-  overflow-wrap: anywhere;
-}
-
-.criteria-value {
-  font-variant-numeric: tabular-nums;
-  color: var(--muted-foreground);
-}
-
-.inspect-details {
-  border-top: 1px solid var(--border);
-  padding: 12px 0;
-}
-
-.inspect-details summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.inspect-details[open] summary {
-  margin-bottom: 12px;
-}
-
-/* ---------- Prompts ---------- */
-.inspect-prompts {
-  padding: 16px;
-}
-
-.prompt-pair {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.prompt-block h3 {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin: 0 0 8px;
-  font-size: 0.95rem;
-}
-
-.prompt-score {
-  font-family: var(--font-display);
-  color: var(--brand);
-}
-
-.prompt-block pre,
-.inspect-details pre {
-  margin: 12px 0 0;
-  padding: 12px 14px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 0.85rem;
-  background: rgba(5, 6, 15, 0.6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.prompt-block pre {
-  margin: 0;
-  max-height: 360px;
-  overflow-y: auto;
-}
-
-.prompt-best pre {
-  border-color: var(--border-strong);
-  box-shadow: var(--glow);
-}
-
-@media (max-width: 860px) {
-  .inspect-cols,
-  .prompt-pair,
-  .inspect-score {
-    grid-template-columns: 1fr;
-  }
-
-  .score-ring {
-    justify-self: center;
-  }
-
-  .bubble {
-    max-width: 92%;
-  }
-
-  /* Name and score share the first row; the bar spans the row below. */
-  .criteria li {
-    grid-template-columns: 1fr auto;
-  }
-
-  .criteria li > .inspect-bar {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
 }
