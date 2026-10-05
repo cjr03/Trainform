@@ -5,7 +5,11 @@ export const setToken = (token) => localStorage.setItem(TOKEN_KEY, token)
 // Signing out also forgets what this tab kept for the user, such as the Train page's draft.
 export const clearToken = () => {
   localStorage.removeItem(TOKEN_KEY)
-  sessionStorage.clear()
+  try {
+    sessionStorage.clear()
+  } catch {
+    // Storage blocked: nothing was kept.
+  }
 }
 
 export class ApiError extends Error {

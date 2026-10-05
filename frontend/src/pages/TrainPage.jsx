@@ -21,7 +21,7 @@ const inRange = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
 const score = (s) => (s == null ? '—' : s.toFixed(1))
 
 // The setup and the training on screen, kept for this tab so leaving the page or reloading loses neither.
-// Signing out clears it (clearToken). Storage can be unavailable (e.g. blocked); the page then just forgets.
+// Signing in or out clears it (clearToken). Storage can be unavailable (e.g. blocked); the page then just forgets.
 const DRAFT_KEY = 'trainform_train_draft'
 const loadDraft = () => {
   try {

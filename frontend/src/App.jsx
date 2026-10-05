@@ -17,6 +17,7 @@ export default function App() {
   }, [])
 
   const onAuth = ({ token }) => {
+    clearToken() // a draft left in this tab by whoever signed in before (e.g. signed out from another tab)
     setToken(token)
     setAuthed(true)
     navigate('/train')
