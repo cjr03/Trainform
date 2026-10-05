@@ -1,6 +1,7 @@
 import io
 import json
 import math
+import shutil
 import stat
 import zipfile
 from datetime import datetime, timezone
@@ -328,6 +329,13 @@ def test_generate_without_chat_template(tiny, monkeypatch):
     assert isinstance(tiny.generate("be helpful", "hi"), str)
 
 
+def test_reasoning_models_answer_without_thinking_first(tiny, monkeypatch):
+    # Qwen3 and similar think aloud by default: a reply 3x slower, its reasoning shown to the user, graded and trained on.
+    monkeypatch.setattr(tiny.tokenizer, "chat_template", tiny.tokenizer.chat_template.replace(
+        "assistant: ", "assistant: {% if enable_thinking is not defined or enable_thinking %}<think>{% endif %}"))
+    assert tiny.tokenizer.unk_token_id not in tiny._prompt_ids("be helpful", "hi")  # "<think>" is not in its vocab
+
+
 def test_generate_decodes_only_new_tokens(tiny, monkeypatch):
     hello, eos = tiny.tokenizer.convert_tokens_to_ids("hello"), tiny.tokenizer.eos_token_id
     monkeypatch.setattr(tiny.model, "generate", lambda input_ids, **kw: torch.cat(
@@ -435,3 +443,22 @@ def test_digits_stop_on_any_end_of_turn_token(tiny_model_dir, monkeypatch):
     assert model._end_ids() == [2]
     model.model.generation_config.eos_token_id = [4, 2]
     assert model._end_ids() == [2, 4]
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("mps", marks=pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="needs Apple silicon"))])
+def test_base_weights_are_bfloat16_on_a_gpu_and_float32_on_cpu(tiny_model_dir, tmp_path, monkeypatch, device):
+    # bfloat16 halves the base model's memory and speeds a GPU up; CPUs are slow at it. The LoRA adapter stays float32.
+    path = tmp_path / "tiny"
+    shutil.copytree(tiny_model_dir, path)
+    local_model.AutoModelForCausalLM.from_pretrained(path).to(torch.bfloat16).save_pretrained(path)  # a bf16 checkpoint
+    monkeypatch.setattr(local_model, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: device == "mps")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    model = LocalModel("tiny")
+    params = dict(model.model.named_parameters())
+    base = torch.float32 if device == "cpu" else torch.bfloat16
+    assert {p.dtype for n, p in params.items() if "lora_" not in n} == {base}
+    assert {p.dtype for n, p in params.items() if "lora_" in n} == {torch.float32}
+    assert math.isfinite(model.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}] * 2))
+    assert isinstance(model.generate("be helpful", "hi", max_new_tokens=3), str)

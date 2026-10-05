@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from statistics import fmean
 from typing import Annotated
 
@@ -24,6 +25,8 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/trainings", tags=["training"])
 
 HIGH_SCORE = 7.0  # scenarios scoring at least this are used as SFT examples
+RECENT_SCORES = 5  # latest scenario scores the prompt generator sees, to tell whether its edits help
+WEAKEST = 3  # lowest-scoring conversations a round review sees
 INTERNAL_ERROR = "Training failed; see the server logs."
 # Each run holds a loaded model and one of the 40 worker threads the sync routes share, so cap them process-wide.
 _SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
@@ -37,32 +40,68 @@ def _set_status(db: Session, t: Training, old: tuple, new: str, **values) -> boo
     return bool(changed)
 
 
+def _conversation(s: Scenario) -> str:
+    return f"User: {s.input}\nAssistant: {s.output}"
+
+
+def _review(rubric: list[str], last: list[Scenario]) -> tuple:
+    """A finished round's results for agents.review_round: its best-scoring prompt (earliest on a tie), its mean score
+    per criterion and its lowest-scoring conversations. Plain values, so another thread can use them."""
+    means = [fmean(s.scores[i]["score"] for s in last) for i in range(len(rubric))]
+    weakest = [(_conversation(s), s.score) for s in sorted(last, key=lambda s: s.score)[:WEAKEST]]
+    return max(last, key=lambda s: s.score).prompt, list(zip(rubric, means)), weakest
+
+
+def _prepare_round(llm, rubric: list[str], n: int, prompt: str, review: tuple | None) -> tuple[str, list[dict]]:
+    """A round's starting prompt and its personas with their messages ([{"persona", "message"}]). After the first
+    round, `review` (see _review) has the last round's results: the prompt generator revises its best prompt from them,
+    and the personas press hardest on its weakest criteria."""
+    last_scores = None
+    if review:
+        prompt, last_scores = review[0], [mean for _, mean in review[1]]
+    tasks = [lambda: agents.review_round(llm, *review) if review else prompt,
+             lambda: agents.generate_personas(llm, prompt, n, rubric=rubric, last_scores=last_scores)]
+    # Personas need only the agent's role, which the review keeps, so with Claude both are written at once.
+    start, personas = agents.concurrently(llm, lambda task: task(), tasks)
+    # A persona's message depends only on the persona, so the round's messages are written at once. The rest of each
+    # scenario waits for the prompt the one before it produced, so it runs in order.
+    messages = agents.concurrently(llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]), personas)
+    return start, [{"persona": p, "message": m} for p, m in zip(personas, messages)]
+
+
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal) -> None:
     """Run a training's remaining rounds, continuing from its saved progress (models.Training.next_prompt, personas
     and adapter, the round's saved scenarios and its finished rounds' TrainedModels). `load_model(name)` returns a
     LocalModel-like object. The API writes status too ("pausing"), so this only changes it with targeted UPDATEs."""
+    pool = ThreadPoolExecutor(1)
     with session_factory() as db:
         try:
             t = db.get(Training, training_id)
             _set_status(db, t, ("pending",), "running")  # left alone if the user already asked to pause
             model = load_model(t.base_model)
-            if t.adapter:
-                model.load_adapter(t.adapter)
+            weights = t.adapter  # what the next round's scenarios run with, before its SFT
+            if weights:
+                model.load_adapter(weights)
+            else:
+                weights = model.adapter_bytes()
             llm = llm or local_llm(model)  # no Claude: the helpers share the loaded model, with its adapter off
             prompt = t.next_prompt or t.initial_prompt
             finished = db.scalar(select(func.count()).where(TrainedModel.training_id == t.id))
+            ahead = None  # with Claude, the next round's prompt and personas, prepared while the model trains
             for r in range(finished + 1, t.rounds + 1):
+                if ahead:
+                    prompt, t.personas = ahead.result()
+                    t.next_prompt = prompt
+                    db.commit()
                 if _set_status(db, t, ("pausing",), "paused"):  # a safe point: progress is saved
                     return
                 t.current_round = r
-                weights = model.adapter_bytes()  # what this round's scenarios run with, before its SFT
                 if t.personas is None:
-                    personas = agents.generate_personas(llm, prompt, t.scenarios_per_round, rubric=t.rubric)
-                    # A persona's message depends only on the persona, so the round's messages are written at once.
-                    # The rest of each scenario waits for the prompt the one before it produced, so it runs in order.
-                    messages = agents.concurrently(
-                        llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]), personas)
-                    t.personas = [{"persona": p, "message": m} for p, m in zip(personas, messages)]
+                    last = db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r - 1)
+                                      .order_by(Scenario.scenario_number)).all()
+                    prompt, t.personas = _prepare_round(llm, t.rubric, t.scenarios_per_round, prompt,
+                                                        _review(t.rubric, last) if last else None)
+                    t.next_prompt = prompt
                 db.commit()
                 done = list(db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r)
                                        .order_by(Scenario.scenario_number)))
@@ -75,25 +114,36 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                     scores = agents.score_conversation(llm, conversation, t.rubric)
                     s = Scenario(training_id=t.id, round=r, scenario_number=number, persona=p["persona"], prompt=prompt,
                                  input=message, output=reply, scores=scores, score=fmean(x["score"] for x in scores))
-                    if r < t.rounds or number < len(t.personas):  # the very last improved prompt would go unused
-                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores)
+                    if number < len(t.personas):  # the next round starts from a review instead
+                        # Its track record, from the round's saved scenarios: the best earlier prompt, if it beat
+                        # this one, and the latest scores, so it builds on what worked and backs out what didn't.
+                        top = max(done, key=lambda x: x.score, default=None)
+                        best = (top.prompt, top.score) if top and top.score > s.score else None
+                        recent = [x.score for x in done[-(RECENT_SCORES - 1):]] + [s.score]
+                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores, best, recent)
                     # Saved together with the prompt it produced: a failure before this just redoes the scenario.
                     db.add(s)
                     t.scenarios_done += 1
                     t.next_prompt = prompt
                     db.commit()
                     done.append(s)
+                # A local model can't answer while it trains, so it prepares the next round at its start instead.
+                ahead = None
+                if r < t.rounds and not getattr(llm, "local", False):
+                    ahead = pool.submit(_prepare_round, llm, t.rubric, t.scenarios_per_round, prompt,
+                                        _review(t.rubric, done))
+                # Store what earned the score: the round's weights and its best-scoring scenario's prompt.
+                db.add(TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
+                                    weights=weights, mean_score=fmean(s.score for s in done)))
                 examples = [{"prompt": s.prompt, "input": s.input, "output": s.output}
                             for s in done if s.score >= HIGH_SCORE]
                 if examples:
                     model.sft(examples)
-                # Store what earned the score: the round's weights and its best-scoring scenario's prompt.
-                db.add(TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
-                                    weights=weights, mean_score=fmean(s.score for s in done)))
+                    weights = model.adapter_bytes()
                 t.best_model_id = db.scalar(select(TrainedModel.id).where(TrainedModel.training_id == t.id)
                                             .order_by(TrainedModel.mean_score.desc(), TrainedModel.round).limit(1))
                 # Committed with the round's model, so a resume starts the next round on the trained adapter.
-                t.adapter, t.personas = model.adapter_bytes(), None
+                t.adapter, t.personas = weights, None
                 db.commit()
             t.status = "completed"
             db.commit()
@@ -107,6 +157,9 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                 db.commit()
             except Exception:
                 log.exception("Could not mark training %s failed", training_id)
+        finally:
+            # Don't hold the slot and the model for a next round that won't run; a resume prepares it again.
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def score_windows(scores: list[float]) -> list[dict]:
