@@ -24,7 +24,7 @@ from huggingface_hub.utils import filter_repo_objects
 from peft import LoraConfig, get_peft_model
 from peft.utils import load_peft_weights, set_peft_model_state_dict
 from pydantic import BaseModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, NoRepeatNGramLogitsProcessor
 
 from app.auth import current_user
 from app.models import User
@@ -229,12 +229,16 @@ class LocalModel:
         """Helper-agent generation (used when Claude isn't linked). Runs on the base weights with the LoRA adapter off,
         so fine-tuning never changes the agents that grade and coach the model. `digits` restricts the reply to a
         number of at most two tokens."""
+        start = len(self._prompt_ids(system_prompt, message))
         with self.model.disable_adapter():
             if not digits:
                 # Greedy decoding makes small models loop on one line until the token limit. A repetition penalty
-                # would also penalise the end-of-turn token (it is in the prompt), so block repeated 4-grams instead.
-                return self.generate(system_prompt, message, max_new_tokens=512, no_repeat_ngram_size=4)
-            start, ends = len(self._prompt_ids(system_prompt, message)), self._end_ids()
+                # would also penalise the end-of-turn token (it is in the prompt), so block repeated 4-grams instead,
+                # within the reply only: a reply must be free to keep the wording of a prompt it revises.
+                block = NoRepeatNGramLogitsProcessor(4)
+                return self.generate(system_prompt, message, max_new_tokens=512,
+                                     logits_processor=[lambda ids, scores: block(ids[:, start:], scores)])
+            ends = self._end_ids()
             return self.generate(system_prompt, message, max_new_tokens=2, prefix_allowed_tokens_fn=lambda _, ids: (
                 self._digit_ids if len(ids) == start else self._digit_ids + ends))
 

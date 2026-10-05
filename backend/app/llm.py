@@ -118,7 +118,11 @@ def _local_reply(model, system, message, schema):
     if spec["type"] == "array":
         reply = model.complete(f"{system}\n\nWrite one item per line and nothing else.", message)
         return {field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
-    return {field: model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)}
+    reply = model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)
+    # A small model carries on past its answer, echoing the input's tagged sections or drafting again after a tag
+    # line, so keep its first stretch of text between such lines.
+    sections = re.split(r"^[ \t]*</?[^<>\n]+>[ \t:]*$", reply, flags=re.M)
+    return {field: next((s for s in sections if re.search(r"\w", s)), reply)}
 
 
 def local_llm(model, lock=None):

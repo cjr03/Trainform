@@ -426,6 +426,20 @@ def test_complete_with_digits_replies_with_only_a_number(tiny):
         assert 1 <= len(words) <= 2 and set(words) <= {"1", "7", "10"}
 
 
+def test_complete_blocks_repeats_within_its_reply_but_may_quote_its_input(tiny, monkeypatch):
+    # Blocking 4-grams from the input too forced misspellings ("approachate") whenever a reply kept the wording of the
+    # prompt it was revising.
+    calls = []
+    monkeypatch.setattr(tiny, "generate", lambda *args, **kwargs: calls.append(kwargs) or "reply")
+    tiny.complete("system", "keep this")
+    (block,) = calls[0]["logits_processor"]
+    start = len(tiny._prompt_ids("system", "keep this"))
+    quoting = torch.tensor([[5] * (start - 4) + [7, 8, 9, 10] + [7, 8, 9]])
+    looping = torch.tensor([[5] * start + [7, 8, 9, 10] + [7, 8, 9]])
+    assert block(quoting, torch.zeros(1, 20))[0, 10] == 0
+    assert block(looping, torch.zeros(1, 20))[0, 10] == float("-inf")
+
+
 def test_complete_ignores_the_fine_tuned_adapter(tiny_model_dir, monkeypatch):
     # The helper agents grade and coach the model being trained, so its fine-tuning must never change them.
     monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)

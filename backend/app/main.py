@@ -23,8 +23,8 @@ async def lifespan(_app: FastAPI):
         # progress is saved, so they wait, paused, for the user to resume them.
         conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))
                      .values(status="paused", error=None))
-        # Prompts saved before agents._prompt dropped the tags the prompt generator put around them.
-        edge_tags = r"^\s*(<[^<>\n]+>\s*)+|(\s*<[^<>\n]+>)+\s*$"
+        # Prompts saved before agents._prompt dropped the tags and colons the prompt generator put around them.
+        edge_tags = r"^([\s:]|<[^<>\n]+>)+|([\s:]|<[^<>\n]+>)+$"
         for table, column in (("trainings", "next_prompt"), ("scenarios", "prompt"), ("trained_models", "prompt")):
             conn.execute(text(f"UPDATE {table} SET {column} = regexp_replace({column}, :tags, '', 'g') "
                               f"WHERE {column} ~ :tags"), {"tags": edge_tags})

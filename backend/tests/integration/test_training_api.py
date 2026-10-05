@@ -356,7 +356,7 @@ def test_startup_adds_the_resume_columns_to_an_existing_database(db):
 
 
 def test_startup_drops_tags_around_saved_prompts(db, user):
-    tagged = "<system_prompt>\n<current_prompt>\nBe kind.\n</current_prompt>\n</system_prompt>"
+    tagged = ":\n<system_prompt>\n<prompt>:\nBe kind.\n</current_prompt>\n</system_prompt>"
     t = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["a"], scenarios_per_round=1,
                  rounds=1, status="paused", next_prompt=tagged)
     db.add(t)
