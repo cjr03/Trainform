@@ -198,7 +198,10 @@ class LocalModel:
         self.tokenizer = AutoTokenizer.from_pretrained(path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        base = AutoModelForCausalLM.from_pretrained(path, use_safetensors=True)
+        # bfloat16 halves a GPU's memory traffic, so it generates and trains faster; CPUs are slow at it. PEFT keeps the
+        # LoRA adapter in float32, so SFT updates are not lost to rounding.
+        dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
+        base = AutoModelForCausalLM.from_pretrained(path, use_safetensors=True, dtype=dtype)
         lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, target_modules="all-linear", task_type="CAUSAL_LM")
         self.model = get_peft_model(base, lora).to(self.device)
         self.model.eval()
@@ -206,7 +209,10 @@ class LocalModel:
     def _prompt_ids(self, system_prompt: str, conversation: str) -> list[int]:
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": conversation}]
         if self.tokenizer.chat_template:
-            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            # Reasoning models (e.g. Qwen3) would otherwise think aloud first: a reply 3x slower, with its reasoning
+            # shown to the user, graded and trained on. Templates that don't know the flag ignore it.
+            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
+                                                      enable_thinking=False)
         else:
             text = f"{system_prompt}\n\nUser: {conversation}\nAssistant:"
         return self.tokenizer(text, add_special_tokens=False)["input_ids"]
