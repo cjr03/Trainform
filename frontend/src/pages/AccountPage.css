@@ -23,7 +23,7 @@
 }
 
 .facts dt {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .facts dd {

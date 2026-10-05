@@ -12,7 +12,7 @@
 
 .inspect-col-title {
   font-size: 0.85rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
   letter-spacing: 0.08em;
 }
 
@@ -35,7 +35,7 @@
   align-items: center;
   text-align: left;
   font: inherit;
-  color: var(--text);
+  color: var(--foreground);
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid transparent;
   border-left: 3px solid transparent;
@@ -52,7 +52,7 @@
 .inspect-option[aria-pressed='true'] {
   background: rgba(61, 245, 255, 0.08);
   border-color: var(--border-strong);
-  border-left-color: var(--accent);
+  border-left-color: var(--brand);
   box-shadow: var(--glow);
 }
 
@@ -63,7 +63,7 @@
 
 .option-meta {
   font-size: 0.8rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .option-score {
@@ -71,7 +71,7 @@
   grid-row: 1 / span 2;
   font-family: var(--font-display);
   font-size: 1.1rem;
-  color: var(--accent);
+  color: var(--brand);
 }
 
 .inspect-option .badge {
@@ -79,7 +79,7 @@
 }
 
 .badge.badge-running {
-  color: var(--accent);
+  color: var(--brand);
   border-color: var(--border-strong);
 }
 
@@ -100,7 +100,7 @@
 
 .badge.badge-paused,
 .badge.badge-pausing {
-  color: var(--accent-2);
+  color: var(--brand-2);
   border-color: rgba(155, 107, 255, 0.45);
 }
 
@@ -146,7 +146,7 @@
 .bubble-who {
   font-size: 0.78rem;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .bubble-persona {
@@ -169,7 +169,7 @@
 }
 
 .bubble-agent .bubble-who {
-  color: var(--accent);
+  color: var(--brand);
 }
 
 .inspect-score {
@@ -192,8 +192,8 @@
   grid-auto-flow: column;
   align-items: baseline;
   background:
-    radial-gradient(closest-side, var(--bg) 82%, transparent 83%),
-    conic-gradient(var(--accent), var(--accent-2), var(--accent-3) calc(var(--pct) * 1%), rgba(255, 255, 255, 0.07) 0);
+    radial-gradient(closest-side, var(--background) 82%, transparent 83%),
+    conic-gradient(var(--brand), var(--brand-2), var(--brand-3) calc(var(--pct) * 1%), rgba(255, 255, 255, 0.07) 0);
   box-shadow: var(--glow);
 }
 
@@ -203,7 +203,7 @@
 }
 
 .score-ring span {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .criteria {
@@ -228,7 +228,7 @@
 
 .criteria-value {
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .inspect-details {
@@ -267,7 +267,7 @@
 
 .prompt-score {
   font-family: var(--font-display);
-  color: var(--accent);
+  color: var(--brand);
 }
 
 .prompt-block pre,

@@ -74,7 +74,7 @@
   padding: 0 4px;
   border: none;
   background: none;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font: inherit;
   cursor: pointer;
 }
@@ -94,7 +94,7 @@
   height: 44px;
   border-radius: 50%;
   border: 1px solid var(--border-strong);
-  background: var(--bg);
+  background: var(--background);
   font-family: var(--font-display);
   font-size: 0.9rem;
   font-weight: 700;
@@ -123,12 +123,12 @@
 .stepper-item[data-state='done'] .stepper-dot {
   border-color: transparent;
   background: var(--gradient);
-  color: var(--bg);
+  color: var(--background);
 }
 
 .stepper-item[data-state='current'] .stepper-dot {
-  border: 2px solid var(--accent);
-  color: var(--accent);
+  border: 2px solid var(--brand);
+  color: var(--brand);
   box-shadow:
     0 0 0 6px rgba(61, 245, 255, 0.1),
     var(--glow);
@@ -137,7 +137,7 @@
 
 .stepper-item[data-state='current'] .stepper-name,
 .stepper-item[data-state='done'] .stepper-name {
-  color: var(--text);
+  color: var(--foreground);
 }
 
 @keyframes beacon {
@@ -243,7 +243,7 @@
   border-radius: 999px;
   padding: 7px 16px;
   background: none;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -253,7 +253,7 @@
 }
 
 .train-toggle input:checked + span {
-  color: var(--bg);
+  color: var(--background);
   background: var(--gradient);
 }
 
@@ -263,7 +263,7 @@
 }
 
 .train-toggle input:focus-visible + span {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
@@ -301,7 +301,7 @@
 }
 
 .hub-id {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-size: 0.95rem;
   letter-spacing: 0;
   margin: 0;
@@ -319,7 +319,7 @@
 .hub-stats dt,
 .summary dt {
   font-size: 0.75rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .hub-stats dd,
@@ -374,11 +374,11 @@
 .model-option:has(input:checked) {
   border-color: var(--border-strong);
   background: rgba(61, 245, 255, 0.06);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--brand);
 }
 
 .model-option input {
-  accent-color: var(--accent);
+  accent-color: var(--brand);
 }
 
 .model-name {
@@ -414,7 +414,7 @@ textarea.prompt-input {
   content: counter(rubric);
   font-family: var(--font-display);
   font-size: 0.8rem;
-  color: var(--accent);
+  color: var(--brand);
   text-align: center;
 }
 
@@ -444,12 +444,12 @@ textarea.prompt-input {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--muted);
+  background: var(--muted-foreground);
 }
 
 .train-status[data-status='running']::before {
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
+  background: var(--brand);
+  box-shadow: 0 0 10px var(--brand);
   animation: blink 1.4s ease-in-out infinite;
 }
 
@@ -463,7 +463,7 @@ textarea.prompt-input {
 
 .train-status[data-status='paused']::before,
 .train-status[data-status='pausing']::before {
-  background: var(--accent-2);
+  background: var(--brand-2);
 }
 
 .train-status[data-status='pausing']::before {
@@ -492,7 +492,7 @@ textarea.prompt-input {
   font-family: var(--font-display);
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--brand);
 }
 
 .score-grid {
@@ -513,7 +513,7 @@ textarea.prompt-input {
 
 .score-title {
   font-size: 0.85rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .score-value,
@@ -531,7 +531,7 @@ textarea.prompt-input {
 .best-score small {
   margin-left: 6px;
   font-size: 0.4em;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 /* ---------- 6 Complete ---------- */
@@ -553,7 +553,7 @@ textarea.prompt-input {
 }
 
 .best-score small {
-  -webkit-text-fill-color: var(--muted);
+  -webkit-text-fill-color: var(--muted-foreground);
 }
 
 .prompt-preview {

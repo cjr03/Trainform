@@ -1,12 +1,43 @@
+import { CircleAlert, Download, Eye, Laptop, Loader2 } from 'lucide-react'
 import { useState } from 'react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { cn } from '@/lib/utils'
 import { api } from '../api'
-import './AuthPage.css'
 
 const MODES = [
   ['login', 'Sign in'],
   ['signup', 'Create account'],
 ]
 const STEPS = ['Identity', 'Security', 'Link Claude']
+
+const HOW = [
+  ['Describe your agent', 'In plain language: who it serves and what a good answer looks like.'],
+  ['Get a prompt and a rubric', 'Trainform drafts the system prompt and the criteria every reply is graded on.'],
+  ['Stress-test it', 'Simulated customers push on the hard cases, and every reply is scored against the rubric.'],
+  [
+    'Improve every round',
+    'The prompt is rewritten after each conversation and a local model is fine-tuned on the best replies.',
+  ],
+]
+const BENEFITS = [
+  [Download, 'Yours to keep', 'Download the best prompt and LoRA weights for an open-weight model.'],
+  [Laptop, 'Local or Claude', 'Run the helper agents on Claude with your API key, or keep everything on your machine.'],
+  [Eye, 'Nothing hidden', 'Inspect every simulated conversation and every score.'],
+]
+
+function Field({ label, ...props }) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={props.id}>{label}</Label>
+      <Input {...props} />
+    </div>
+  )
+}
 
 export default function AuthPage({ onAuth }) {
   const [mode, setMode] = useState('login')
@@ -73,143 +104,212 @@ export default function AuthPage({ onAuth }) {
     } else signup(form.key)
   }
 
-  const onTabKey = (e) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-    const other = mode === 'login' ? 'signup' : 'login'
-    switchMode(other)
-    document.getElementById(`tab-${other}`).focus()
-  }
-
-  const spinner = busy && <span className="spinner" aria-hidden="true" />
+  const spinner = busy && <Loader2 className="animate-spin" aria-hidden="true" />
+  const errorAlert = error && (
+    <Alert variant="destructive">
+      <CircleAlert aria-hidden="true" />
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
+  )
+  const pane = cn('grid gap-4 animate-in fade-in duration-300', dir === 'back' ? 'slide-in-from-left-4' : 'slide-in-from-right-4')
 
   return (
-    <div className="auth" data-testid="auth-page">
-      <header className="auth-head">
-        <h1 className="brand auth-brand">TRAINFORM</h1>
-        <p className="muted">Shape an agent's prompt and weights against simulated users.</p>
+    <div
+      className="mx-auto grid min-h-screen w-full max-w-6xl content-center gap-x-16 gap-y-10 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_420px]"
+      data-testid="auth-page"
+    >
+      <header className="grid gap-5">
+        <span className="font-brand text-lg font-bold tracking-[0.3em] text-gradient">TRAINFORM</span>
+        <h1 className="m-0 text-4xl leading-tight text-balance sm:text-5xl">
+          Describe your agent. <span className="text-gradient">Get back a better one.</span>
+        </h1>
+        <p className="m-0 max-w-xl text-lg text-muted-foreground">
+          Trainform turns a plain-language description into a tuned system prompt and fine-tuned local model weights,
+          tested against simulated customers and graded reply by reply. No test cases to write.
+        </p>
       </header>
 
-      <div className="glass card card-glow auth-card">
-        <div className="segmented" role="tablist" aria-label="Account access" data-mode={mode} onKeyDown={onTabKey}>
-          {MODES.map(([m, label]) => (
-            <button
-              key={m}
-              id={`tab-${m}`}
-              type="button"
-              role="tab"
-              aria-selected={mode === m}
-              aria-controls="auth-panel"
-              tabIndex={mode === m ? 0 : -1}
-              onClick={() => switchMode(m)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div id="auth-panel" role="tabpanel" aria-labelledby={`tab-${mode}`}>
-          {mode === 'signup' && (
-            <ol className="steps" aria-label="Sign-up progress" style={{ '--progress': phase / 2 }}>
-              {STEPS.map((step, i) => (
-                <li key={step} className={i < phase ? 'done' : undefined} aria-current={i === phase ? 'step' : undefined}>
-                  <span className="step-dot">{i + 1}</span>
-                  {step}
-                </li>
+      <Card className="w-full gap-0 border-border-strong py-6 shadow-glow lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-center">
+        <CardContent>
+          <Tabs value={mode} onValueChange={switchMode} className="gap-6">
+            <TabsList aria-label="Account access" className="grid h-10 w-full grid-cols-2">
+              {MODES.map(([m, label]) => (
+                <TabsTrigger key={m} value={m} className="data-[state=active]:text-primary">
+                  {label}
+                </TabsTrigger>
               ))}
-            </ol>
-          )}
+            </TabsList>
 
-          <div key={mode === 'login' ? 'login' : phase} className="auth-pane" data-dir={dir}>
-            {mode === 'login' ? (
-              <form className="stack" onSubmit={login}>
-                <div className="field">
-                  <label className="label" htmlFor="auth-username">Username</label>
-                  <input className="input" {...bind('username')} autoComplete="username" required />
-                </div>
-                <div className="field">
-                  <label className="label" htmlFor="auth-password">Password</label>
-                  <input className="input" {...bind('password')} type="password" autoComplete="current-password" required />
-                </div>
-                {error && <p className="error" role="alert">{error}</p>}
-                <button className="btn btn-primary" disabled={busy}>
+            <TabsContent value="login">
+              <form className={pane} onSubmit={login}>
+                <Field label="Username" {...bind('username')} autoComplete="username" required />
+                <Field
+                  label="Password"
+                  {...bind('password')}
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                />
+                {errorAlert}
+                <Button size="lg" disabled={busy}>
                   {spinner}Sign in
-                </button>
+                </Button>
               </form>
-            ) : (
-              <form className="stack" onSubmit={next} noValidate>
+            </TabsContent>
+
+            <TabsContent value="signup">
+              <ol aria-label="Sign-up progress" className="m-0 mb-6 flex list-none gap-2 p-0">
+                {STEPS.map((step, i) => (
+                  <li
+                    key={step}
+                    aria-current={i === phase ? 'step' : undefined}
+                    className="group flex flex-1 flex-col gap-2 text-xs text-muted-foreground aria-[current=step]:text-foreground"
+                  >
+                    <span
+                      className={cn(
+                        'h-1 rounded-full bg-muted transition-colors duration-300',
+                        i <= phase && 'bg-primary',
+                      )}
+                    />
+                    <span>
+                      <span className="sr-only">Step </span>
+                      {i + 1}. {step}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+
+              <form key={phase} className={pane} onSubmit={next} noValidate>
                 {phase === 0 && (
                   <>
-                    <div className="field">
-                      <label className="label" htmlFor="auth-email">Email</label>
-                      <input className="input" {...bind('email')} type="email" autoComplete="email" required autoFocus={dir === 'back'} />
-                    </div>
-                    <div className="field">
-                      <label className="label" htmlFor="auth-username">Username</label>
-                      <input
-                        className="input"
-                        {...bind('username')}
-                        autoComplete="username"
-                        pattern="[A-Za-z0-9_.\-]{3,32}"
-                        maxLength={32}
-                        required
-                      />
-                    </div>
+                    <Field
+                      label="Email"
+                      {...bind('email')}
+                      type="email"
+                      autoComplete="email"
+                      required
+                      autoFocus={dir === 'back'}
+                    />
+                    <Field
+                      label="Username"
+                      {...bind('username')}
+                      autoComplete="username"
+                      pattern="[A-Za-z0-9_.\-]{3,32}"
+                      maxLength={32}
+                      required
+                    />
                   </>
                 )}
                 {phase === 1 && (
                   <>
-                    <div className="field">
-                      <label className="label" htmlFor="auth-password">Password</label>
-                      <input className="input" {...bind('password')} type="password" autoComplete="new-password" maxLength={128} autoFocus />
-                    </div>
-                    <div className="field">
-                      <label className="label" htmlFor="auth-password_confirm">Confirm password</label>
-                      <input className="input" {...bind('password_confirm')} type="password" autoComplete="new-password" maxLength={128} />
-                    </div>
-                    <p className="muted auth-note">At least 8 characters.</p>
+                    <Field
+                      label="Password"
+                      {...bind('password')}
+                      type="password"
+                      autoComplete="new-password"
+                      maxLength={128}
+                      aria-describedby="auth-password-hint"
+                      autoFocus
+                    />
+                    <Field
+                      label="Confirm password"
+                      {...bind('password_confirm')}
+                      type="password"
+                      autoComplete="new-password"
+                      maxLength={128}
+                    />
+                    <p id="auth-password-hint" className="m-0 text-sm text-muted-foreground">
+                      At least 8 characters.
+                    </p>
                   </>
                 )}
                 {phase === 2 && (
                   <>
-                    <p className="auth-note">
+                    <p className="m-0 text-sm text-muted-foreground">
                       Trainform's helper agents write prompts, build rubrics, play personas and score conversations. They
                       run on your own Claude key, stored encrypted, or without one on the model you train, with much weaker
                       results. You can link a key later from Account.
                     </p>
-                    <div className="field">
-                      <label className="label" htmlFor="auth-key">Anthropic API key</label>
-                      <input className="input" {...bind('key')} type="password" autoComplete="off" placeholder="sk-ant-…" autoFocus />
-                    </div>
-                    <a className="auth-note" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+                    <Field
+                      label="Anthropic API key"
+                      {...bind('key')}
+                      type="password"
+                      autoComplete="off"
+                      placeholder="sk-ant-…"
+                      autoFocus
+                    />
+                    <a
+                      className="text-sm"
+                      href="https://console.anthropic.com/settings/keys"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       Get a key from the Anthropic Console
                     </a>
                   </>
                 )}
-                {error && <p className="error" role="alert">{error}</p>}
-                <div className="auth-actions">
+                {errorAlert}
+                <div className="flex flex-wrap gap-2">
+                  {phase === 2 && (
+                    <Button size="lg" className="w-full" disabled={busy || !form.key.trim()}>
+                      {spinner}Link &amp; create account
+                    </Button>
+                  )}
                   {phase > 0 && (
-                    <button type="button" className="btn btn-ghost" onClick={() => go(phase - 1)} disabled={busy}>
+                    <Button type="button" variant="ghost" onClick={() => go(phase - 1)} disabled={busy}>
                       Back
-                    </button>
+                    </Button>
                   )}
                   {phase < 2 ? (
-                    <button className="btn btn-primary">Continue</button>
+                    <Button size="lg" className="ml-auto min-w-36">
+                      Continue
+                    </Button>
                   ) : (
-                    <>
-                      <button type="button" className="btn" onClick={() => signup(null)} disabled={busy}>
-                        Skip for now
-                      </button>
-                      <button className="btn btn-primary auth-final" disabled={busy || !form.key.trim()}>
-                        {spinner}Link &amp; create account
-                      </button>
-                    </>
+                    <Button type="button" variant="outline" className="ml-auto" onClick={() => signup(null)} disabled={busy}>
+                      Skip for now
+                    </Button>
                   )}
                 </div>
               </form>
-            )}
-          </div>
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      <section aria-labelledby="how-title" className="grid gap-8">
+        <div>
+          <h2 id="how-title" className="mb-4 text-sm font-semibold tracking-[0.2em] text-muted-foreground uppercase">
+            How it works
+          </h2>
+          <ol className="m-0 grid list-none gap-4 p-0 sm:grid-cols-2">
+            {HOW.map(([title, text], i) => (
+              <li key={title} className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="grid size-7 shrink-0 place-items-center rounded-full border border-primary/40 font-display text-sm text-primary"
+                >
+                  {i + 1}
+                </span>
+                <div>
+                  <h3 className="mb-1 text-base">{title}</h3>
+                  <p className="m-0 text-sm text-muted-foreground">{text}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
         </div>
-      </div>
+        <ul aria-label="What you get" className="m-0 grid list-none gap-3 border-t p-0 pt-8 sm:grid-cols-3">
+          {BENEFITS.map(([Icon, title, text]) => (
+            <li key={title} className="grid content-start gap-1">
+              <span className="flex items-center gap-2 font-medium">
+                <Icon className="size-4 text-brand-2" aria-hidden="true" />
+                {title}
+              </span>
+              <span className="text-sm text-muted-foreground">{text}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
     </div>
   )
 }
