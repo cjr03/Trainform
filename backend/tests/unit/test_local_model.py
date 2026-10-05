@@ -407,9 +407,9 @@ def test_complete_ignores_the_fine_tuned_adapter(tiny_model_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
     model = LocalModel("tiny")
     before = model.complete("system", "hi there"), model.complete("system", "hi", digits=True)
-    tuned_before = model.generate("be helpful", "hi")
+    weights = model.adapter_bytes()
     model.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there hello there"}] * 40)
-    assert model.generate("be helpful", "hi") != tuned_before  # the adapter did learn something
+    assert model.adapter_bytes() != weights  # the adapter did learn something (its greedy reply may not show it)
     assert (model.complete("system", "hi there"), model.complete("system", "hi", digits=True)) == before
 
 

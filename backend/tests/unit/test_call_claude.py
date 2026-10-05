@@ -5,7 +5,7 @@ import httpx2
 import pytest
 
 from app import llm
-from app.llm import LLMError, call_claude
+from app.llm import BadReply, LLMError, call_claude
 
 REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
 
@@ -68,9 +68,9 @@ def test_effort_can_be_lowered(monkeypatch):
     assert calls["kwargs"]["output_config"] == {"effort": "low"}
 
 
-def test_bad_json_is_llm_error(monkeypatch):
+def test_bad_json_is_a_bad_reply(monkeypatch):
     fake_anthropic(monkeypatch, reply(block("text", text='{"prompt": "x"')))
-    with pytest.raises(LLMError, match="malformed JSON"):
+    with pytest.raises(BadReply, match="malformed JSON"):
         call_claude("k", "s", "m", {"type": "object"})
 
 

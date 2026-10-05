@@ -22,6 +22,10 @@ class LLMError(Exception):
     """A Claude call failed; the message is safe to show the user."""
 
 
+class BadReply(LLMError):
+    """The model answered, but not in the shape asked for; unlike a refusal or a bad key, asking again can fix it."""
+
+
 def call_claude(api_key: str, system: str, message: str, schema: dict | None = None, effort: str = "medium"):
     """One Claude call. Returns the text, or the parsed JSON object when `schema` (a JSON Schema) is given."""
     output_config = {"effort": effort}
@@ -58,7 +62,7 @@ def call_claude(api_key: str, system: str, message: str, schema: dict | None = N
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        raise LLMError("Claude returned malformed JSON") from e
+        raise BadReply("Claude returned malformed JSON") from e
 
 
 @cache

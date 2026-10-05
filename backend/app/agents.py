@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import current_user
-from app.llm import LLMError, get_llm, llm_or_local
+from app.llm import BadReply, LLMError, get_llm, llm_or_local
 from app.models import User
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -178,7 +178,7 @@ def _tag(name, value):
 
 def _text(value, what):
     if not value.strip():
-        raise LLMError(f"The model returned an empty {what}")
+        raise BadReply(f"The model returned an empty {what}")
     return value.strip()
 
 
@@ -190,15 +190,16 @@ def _parse(out, parse):
     try:
         return parse(out)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
-        raise LLMError("The model returned an unexpected response shape") from e
+        raise BadReply("The model returned an unexpected response shape") from e
 
 
 def _ask(llm, system, message, schema, parse):
     """Call the model and parse its reply with `parse`; a malformed shape becomes an LLMError rather than a 500.
-    One failed call or garbled reply is retried once, so a single bad reply doesn't fail a whole training."""
+    A garbled reply is asked for once more, so a single bad reply doesn't fail a whole training. Other errors (a bad
+    key, a refusal, a reply cut off at the token limit) would only fail again; the SDK already retries transient ones."""
     try:
         return _parse(llm(system, message, schema), parse)
-    except LLMError:
+    except BadReply:
         return _parse(llm(system, message, schema), parse)
 
 
@@ -208,7 +209,7 @@ def concurrently(llm, fn, items):
     if getattr(llm, "local", False):
         return [fn(item) for item in items]
     with ThreadPoolExecutor(CONCURRENCY) as pool:
-        return list(pool.map(fn, items))
+        return list(pool.map(fn, items))  # map cancels the queued calls once one fails
 
 
 def create_prompt(llm, description: str) -> str:

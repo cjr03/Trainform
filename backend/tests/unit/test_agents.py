@@ -1,10 +1,11 @@
 import re
 import threading
+import time
 
 import pytest
 
 from app import agents
-from app.llm import LLMError
+from app.llm import BadReply, LLMError
 
 
 class FakeLLM:
@@ -134,11 +135,20 @@ def test_a_garbled_reply_is_retried_once():
     assert len(llm.calls) == 2 and llm.calls[0] == llm.calls[1]
 
 
-def test_a_failed_call_is_retried_once_then_raised():
-    llm = FakeLLM(LLMError("Claude returned malformed JSON"), {"prompt": "x"})
+def test_malformed_json_is_retried_once_then_raised():
+    llm = FakeLLM(BadReply("Claude returned malformed JSON"), {"prompt": "x"})
     assert agents.create_prompt(llm, "d") == "x"
-    with pytest.raises(LLMError, match="malformed JSON"):
-        agents.create_prompt(FakeLLM(*[LLMError("Claude returned malformed JSON")] * 2), "d")
+    with pytest.raises(BadReply, match="malformed JSON"):
+        agents.create_prompt(FakeLLM(*[BadReply("Claude returned malformed JSON")] * 2), "d")
+
+
+@pytest.mark.parametrize("error", ["Claude rejected the API key", "Claude declined this request",
+                                   "Claude's reply was cut off at the token limit"])
+def test_an_error_asking_again_cant_fix_is_not_retried(error):
+    llm = FakeLLM(LLMError(error), {"prompt": "x"})
+    with pytest.raises(LLMError, match=error):
+        agents.create_prompt(llm, "d")
+    assert len(llm.calls) == 1
 
 
 class LocalLLM(FakeLLM):
@@ -290,6 +300,20 @@ def test_local_personas_do_not_repeat():
 def test_concurrently_keeps_order_and_runs_claude_calls_at_once():
     together = threading.Barrier(3, timeout=10)  # breaks unless all three calls are in flight at once
     assert agents.concurrently(FakeLLM(), lambda x: together.wait() * 0 + x * 2, [1, 2, 3]) == [2, 4, 6]
+
+
+def test_concurrently_stops_starting_calls_once_one_fails():
+    started = []
+
+    def fn(x):
+        started.append(x)
+        if x == 0:
+            raise LLMError("boom")
+        time.sleep(0.05)
+
+    with pytest.raises(LLMError, match="boom"):
+        agents.concurrently(FakeLLM(), fn, range(100))
+    assert len(started) < 100
 
 
 def test_concurrently_runs_local_model_calls_in_turn():

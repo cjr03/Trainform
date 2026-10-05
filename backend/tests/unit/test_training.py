@@ -39,6 +39,7 @@ def fake_agents(monkeypatch):
         progress = []
         rounds = []
         events = []
+        improved = []
 
     state = State()
 
@@ -67,7 +68,8 @@ def fake_agents(monkeypatch):
     monkeypatch.setattr(training.agents, "persona_respond", persona_respond)
     monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
-    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conv, scores: prompt + "+")
+    monkeypatch.setattr(training.agents, "generate_improved_prompt",
+                        lambda llm, prompt, conv, scores: state.improved.append(prompt) or prompt + "+")
     return state
 
 
@@ -149,6 +151,7 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     assert [(s.round, s.scenario_number) for s in scenarios] == [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]
     # Scenario k+1 runs with the prompt improved after scenario k, across rounds too.
     assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P+++", "P++++", "P+++++"]
+    assert fake_agents.improved == [s.prompt for s in scenarios[:-1]]  # nothing would use an improved prompt after the last
     assert model.generate_calls == [s.prompt for s in scenarios]
     assert fake_agents.persona_prompts == ["P", "P+++"]
     assert fake_agents.persona_rubrics == [["Clarity", "Tone"]] * 2  # personas pressure the training's own rubric

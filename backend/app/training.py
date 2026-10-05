@@ -60,7 +60,8 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                     t.scenarios_done += 1
                     db.commit()
                     done.append(s)
-                    prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores)
+                    if r < t.rounds or number < len(personas):  # the very last improved prompt would go unused
+                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores)
                 examples = [{"prompt": s.prompt, "input": s.input, "output": s.output}
                             for s in done if s.score >= HIGH_SCORE]
                 if examples:
