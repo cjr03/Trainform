@@ -129,7 +129,7 @@ export default function AuthPage({ onAuth }) {
         </p>
       </header>
 
-      <Card className="w-full gap-0 border-border-strong py-6 shadow-glow lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-center">
+      <Card className="w-full gap-0 border-border-strong py-6 shadow-glow lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
         <CardContent>
           <Tabs value={mode} onValueChange={switchMode} className="gap-6">
             <TabsList aria-label="Account access" className="grid h-10 w-full grid-cols-2">
@@ -211,6 +211,9 @@ export default function AuthPage({ onAuth }) {
                       aria-describedby="auth-password-hint"
                       autoFocus
                     />
+                    <p id="auth-password-hint" className="m-0 text-sm text-muted-foreground">
+                      At least 8 characters.
+                    </p>
                     <Field
                       label="Confirm password"
                       {...bind('password_confirm')}
@@ -218,9 +221,6 @@ export default function AuthPage({ onAuth }) {
                       autoComplete="new-password"
                       maxLength={128}
                     />
-                    <p id="auth-password-hint" className="m-0 text-sm text-muted-foreground">
-                      At least 8 characters.
-                    </p>
                   </>
                 )}
                 {phase === 2 && (
