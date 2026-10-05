@@ -1,6 +1,41 @@
+import { CircleAlert, Laptop, Loader2, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { cn } from '@/lib/utils'
 import { api } from '../api'
-import './AccountPage.css'
+
+const spinner = <Loader2 className="animate-spin" aria-hidden="true" />
+
+function ErrorAlert({ children }) {
+  return (
+    <Alert variant="destructive">
+      <CircleAlert aria-hidden="true" />
+      <AlertDescription>{children}</AlertDescription>
+    </Alert>
+  )
+}
+
+function Success({ children }) {
+  return (
+    <p className="m-0 text-sm text-success" role="status">
+      {children}
+    </p>
+  )
+}
+
+function Field({ label, ...props }) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={props.id}>{label}</Label>
+      <Input {...props} />
+    </div>
+  )
+}
 
 export default function AccountPage() {
   const [user, setUser] = useState(null)
@@ -11,29 +46,35 @@ export default function AccountPage() {
   }, [])
 
   return (
-    <div className="account" data-testid="account-page">
-      <h1 className="page-title">Account</h1>
+    <div data-testid="account-page">
+      <h1 className="m-0 mb-3.5 text-[clamp(1.6rem,3vw,2.4rem)]">Account</h1>
       {error ? (
-        <p className="error" role="alert">{error}</p>
+        <ErrorAlert>{error}</ErrorAlert>
       ) : !user ? (
-        <p className="row muted" role="status">
-          <span className="spinner" aria-hidden="true" />
+        <p className="flex items-center gap-2 text-muted-foreground" role="status">
+          {spinner}
           Loading account…
         </p>
       ) : (
-        <div className="account-grid">
-          <section className="glass card" aria-labelledby="profile-title">
-            <h2 id="profile-title">Profile</h2>
-            <dl className="facts">
-              <dt>Username</dt>
-              <dd>{user.username}</dd>
-              <dt>Email</dt>
-              <dd>{user.email}</dd>
-              <dt>Password</dt>
-              <dd className="masked">••••••••</dd>
-            </dl>
-            <p className="muted account-note">Passwords are stored hashed, so they can't be displayed.</p>
-          </section>
+        <div className="grid gap-4 min-[880px]:grid-cols-2">
+          <Card aria-labelledby="profile-title" role="region">
+            <CardHeader>
+              <CardTitle>
+                <h2 id="profile-title" className="m-0 text-lg">Profile</h2>
+              </CardTitle>
+              <CardDescription>Passwords are stored hashed, so they can't be displayed.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-5 gap-y-3">
+                <dt className="text-muted-foreground">Username</dt>
+                <dd className="m-0 [overflow-wrap:anywhere]">{user.username}</dd>
+                <dt className="text-muted-foreground">Email</dt>
+                <dd className="m-0 [overflow-wrap:anywhere]">{user.email}</dd>
+                <dt className="text-muted-foreground">Password</dt>
+                <dd className="m-0 tracking-[0.2em]">••••••••</dd>
+              </dl>
+            </CardContent>
+          </Card>
           <PasswordForm />
           <ClaudeLink user={user} setUser={setUser} />
         </div>
@@ -77,29 +118,33 @@ function PasswordForm() {
   }
 
   return (
-    <section className="glass card" aria-labelledby="password-title">
-      <h2 id="password-title">Change password</h2>
-      <form className="stack" onSubmit={submit}>
-        <div className="field">
-          <label className="label" htmlFor="pw-current">Current password</label>
-          <input className="input" {...bind('current')} type="password" autoComplete="current-password" required />
-        </div>
-        <div className="field">
-          <label className="label" htmlFor="pw-next">New password</label>
-          <input className="input" {...bind('next')} type="password" autoComplete="new-password" minLength={8} required />
-        </div>
-        <div className="field">
-          <label className="label" htmlFor="pw-confirm">Confirm new password</label>
-          <input className="input" {...bind('confirm')} type="password" autoComplete="new-password" minLength={8} required />
-        </div>
-        {error && <p className="error" role="alert">{error}</p>}
-        {done && <p className="success" role="status">Password changed.</p>}
-        <button className="btn btn-primary" disabled={busy}>
-          {busy && <span className="spinner" aria-hidden="true" />}
-          Change password
-        </button>
-      </form>
-    </section>
+    <Card aria-labelledby="password-title" role="region">
+      <CardHeader>
+        <CardTitle>
+          <h2 id="password-title" className="m-0 text-lg">Change password</h2>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form className="grid gap-4" onSubmit={submit}>
+          <Field label="Current password" {...bind('current')} type="password" autoComplete="current-password" required />
+          <Field label="New password" {...bind('next')} type="password" autoComplete="new-password" minLength={8} required />
+          <Field
+            label="Confirm new password"
+            {...bind('confirm')}
+            type="password"
+            autoComplete="new-password"
+            minLength={8}
+            required
+          />
+          {error && <ErrorAlert>{error}</ErrorAlert>}
+          {done && <Success>Password changed.</Success>}
+          <Button className="justify-self-start" disabled={busy}>
+            {busy && spinner}
+            Change password
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -126,47 +171,74 @@ function ClaudeLink({ user, setUser }) {
   }
 
   return (
-    <section className={`glass card claude${linked ? ' card-glow' : ''}`} aria-labelledby="claude-title">
-      <div className="claude-head">
-        <h2 id="claude-title">Claude linkage</h2>
-        <span className={`badge${linked ? ' badge-linked' : ''}`}>{linked ? 'Linked' : 'Not linked'}</span>
-      </div>
-      <p className="muted account-note">
-        Trainform's helper agents run on your own Anthropic API key. It is stored encrypted and never shown again.
-        Without a key they run on the model you train, with much weaker results.
-      </p>
-      <form
-        className="stack"
-        onSubmit={(e) => {
-          e.preventDefault()
-          run(() => api.setClaudeKey(key.trim()), 'Key saved.')
-        }}
-      >
-        <div className="field">
-          <label className="label" htmlFor="claude-key">Anthropic API key</label>
-          <input
+    <Card
+      aria-labelledby="claude-title"
+      role="region"
+      className={cn('transition-[border-color,box-shadow] duration-400 min-[880px]:col-span-2', linked && 'border-success/45 shadow-glow')}
+    >
+      <CardHeader>
+        <CardTitle>
+          <h2 id="claude-title" className="m-0 text-lg">Claude linkage</h2>
+        </CardTitle>
+        <CardDescription>Your Anthropic API key is stored encrypted and never shown again.</CardDescription>
+        <CardAction>
+          <Badge variant="outline" className={cn(linked && 'border-success/45 text-success')}>
+            {linked ? 'Linked' : 'Not linked'}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="grid gap-6">
+        <ul className="m-0 grid list-none gap-3 p-0 text-sm sm:grid-cols-2">
+          <li className="flex gap-3">
+            <Sparkles className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden="true" />
+            <span>
+              <strong className="font-medium">With Claude:</strong>{' '}
+              <span className="text-muted-foreground">
+                stronger prompts, rubrics, personas and grading, so each round improves your agent more.
+              </span>
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <Laptop className="mt-0.5 size-4 shrink-0 text-brand-2" aria-hidden="true" />
+            <span>
+              <strong className="font-medium">Without a key:</strong>{' '}
+              <span className="text-muted-foreground">
+                training still works, with the helpers running locally on the model you train. Results are weaker.
+              </span>
+            </span>
+          </li>
+        </ul>
+        <form
+          className="grid max-w-[520px] gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            run(() => api.setClaudeKey(key.trim()), 'Key saved.')
+          }}
+        >
+          <Field
+            label="Anthropic API key"
             id="claude-key"
-            className="input"
             type="password"
             autoComplete="off"
             placeholder="sk-ant-…"
             value={key}
             onChange={(e) => setKey(e.target.value)}
           />
-        </div>
-        {error && <p className="error" role="alert">{error}</p>}
-        {done && <p className="success" role="status">{done}</p>}
-        <div className="row">
-          <button className="btn btn-primary" disabled={busy || !key.trim()}>
-            {linked ? 'Replace key' : 'Link key'}
-          </button>
-          {linked && (
-            <button type="button" className="btn btn-danger" onClick={() => run(api.removeClaudeKey, 'Key removed.')} disabled={busy}>
-              Unlink
-            </button>
-          )}
-        </div>
-      </form>
-    </section>
+          <a className="text-sm" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+            Get a key from the Anthropic Console
+          </a>
+          {error && <ErrorAlert>{error}</ErrorAlert>}
+          {done && <Success>{done}</Success>}
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={busy || !key.trim()}>{linked ? 'Replace key' : 'Link key'}</Button>
+            {linked && (
+              <Button type="button" variant="destructive" onClick={() => run(api.removeClaudeKey, 'Key removed.')} disabled={busy}>
+                Unlink
+              </Button>
+            )}
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   )
 }

@@ -408,25 +408,48 @@ it('shows why an action was refused', async () => {
   expect(screen.queryByText('Train page stub')).not.toBeInTheDocument()
 })
 
-it('deletes a training after confirming, then clears the selection', async () => {
+it('deletes a training after confirming in a dialog, then clears the selection', async () => {
   api.deleteTraining.mockResolvedValue(null)
   const user = userEvent.setup()
   renderPage()
   await user.click(await option(/qwen-0\.5b/))
   await screen.findByRole('button', { name: /Round 2/ })
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
   await user.click(screen.getByRole('button', { name: 'Delete training' }))
-  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('#2'))
+  const dialog = screen.getByRole('alertdialog', { name: 'Delete training #2?' })
+  expect(dialog).toHaveTextContent('all its rounds and scenarios')
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   expect(api.deleteTraining).not.toHaveBeenCalled()
 
   api.listTrainings.mockResolvedValue([trainings[1]])
   await user.click(screen.getByRole('button', { name: 'Delete training' }))
+  await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }))
   expect(api.deleteTraining).toHaveBeenCalledWith(2)
   await waitFor(() => expect(screen.queryByRole('button', { name: /qwen-0\.5b/ })).not.toBeInTheDocument())
   expect(screen.queryByRole('region', { name: 'Rounds' })).not.toBeInTheDocument()
   expect(screen.queryByRole('region', { name: 'Prompts' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Delete training' })).not.toBeInTheDocument()
-  confirm.mockRestore()
+})
+
+it('shows the criteria each persona pushes hardest, strongest first', async () => {
+  const attributes = [
+    { criterion: 'Accuracy', rating: 3 },
+    { criterion: 'Empathy', rating: 7 },
+    { criterion: 'Asks for the order number', rating: 9 },
+  ]
+  api.listScenarios.mockResolvedValue([
+    { ...scenario, persona: { ...scenario.persona, attributes } },
+    { ...scenario, id: 32, scenario_number: 2 },
+  ])
+  const user = userEvent.setup()
+  renderPage()
+  await openScenario(user)
+  const tested = screen.getByRole('list', { name: 'Criteria this persona tests' })
+  expect(within(tested).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Asks for the order number', 'Empathy'])
+
+  await user.click(screen.getByRole('button', { name: /Scenario 2/ }))
+  expect(screen.queryByRole('list', { name: 'Criteria this persona tests' })).not.toBeInTheDocument()
+  expect(screen.getByText('This persona keeps every criterion easy.')).toBeInTheDocument()
 })
 
 it('keeps working where scrollIntoView returns a promise (current Chromium)', async () => {
