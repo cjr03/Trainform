@@ -770,19 +770,8 @@ it('defines no CSS classes that another page stylesheet also defines', () => {
   }
 })
 
-it('explains the pipeline and its output on the first step only', async () => {
-  const view = render(<TrainPage />)
-  const how = screen.getByRole('region', { name: 'How it works' })
-  expect(within(how).getByText(/LoRA weights/)).toBeInTheDocument()
-  view.unmount()
-
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 1 }))
-  const later = render(<TrainPage />)
-  expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
-  later.unmount()
-
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
-  api.getTraining.mockResolvedValue(completed)
+it('leaves how it works to the signed-out landing page', () => {
   render(<TrainPage />)
+  expect(screen.getByRole('heading', { level: 1, name: 'Train an agent' })).toHaveClass('text-center')
   expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
 })

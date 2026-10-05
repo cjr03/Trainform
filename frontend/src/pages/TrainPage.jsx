@@ -1,4 +1,4 @@
-import { CircleAlert, Download, FlaskConical, Loader2, Pause, Play, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react'
+import { CircleAlert, Download, Loader2, Pause, Play, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -92,34 +92,6 @@ function Choice({ options, ...props }) {
         </label>
       ))}
     </RadioGroup>
-  )
-}
-
-const HOW = [
-  [Sparkles, 'Set the goal', 'A system prompt and a rubric of what every good reply does. Write them or have them drafted.'],
-  [FlaskConical, 'Simulate', 'Realistic customers talk to your agent, and every reply is scored against the rubric.'],
-  [RotateCcw, 'Improve', 'The prompt is rewritten after each conversation and a local model is fine-tuned on the best replies.'],
-  [Download, 'Take it with you', 'Download the best prompt and LoRA weights. Every conversation and score stays in Inspect.'],
-]
-
-function HowItWorks() {
-  return (
-    <section aria-labelledby="train-how" className="mx-auto w-full max-w-5xl">
-      <h2 id="train-how" className="sr-only">
-        How it works
-      </h2>
-      <ol className="m-0 grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
-        {HOW.map(([Icon, title, text]) => (
-          <li key={title} className="flex gap-3 rounded-lg border bg-card/60 p-4">
-            <Icon className="mt-0.5 size-5 shrink-0 text-brand" />
-            <div className="grid content-start gap-1">
-              <span className="font-display text-sm font-semibold">{title}</span>
-              <span className="text-sm text-muted-foreground max-sm:hidden">{text}</span>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </section>
   )
 }
 
@@ -809,8 +781,7 @@ function Dashboard({ onReset }) {
 
   return (
     <div className="train-page" data-testid="train-page">
-      <h1 className="m-0 text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
-      {!training && step === 0 && <HowItWorks />}
+      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
 
       <ol className="stepper" aria-label="Training workflow" style={{ '--progress': step / (STEPS.length - 1) }}>
         {STEPS.map(([name], i) => (
