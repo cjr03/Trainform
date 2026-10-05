@@ -1,16 +1,16 @@
 import json
 import logging
-import os
 import re
 import threading
 from functools import cache, lru_cache, partial
+from typing import Literal
 
 import anthropic
 from cryptography.fernet import InvalidToken
 from fastapi import Depends, HTTPException
 
 from app import fake, local_model
-from app.auth import current_user, decrypt_api_key
+from app.auth import current_user, decrypt_api_key, shared_key
 from app.local_model import LocalModel, list_local_models
 from app.models import User
 
@@ -88,11 +88,19 @@ def get_llm(user: User = Depends(current_user)):
         except InvalidToken:
             raise HTTPException(400, "Your linked Claude key can't be read (the server secret changed). "
                                      "Re-link it on the Account page.") from None
-    else:  # the operator's key is opt-in per username, so open sign-up can't spend it
-        # ponytail: no per-user budget; add a daily call counter if allow-listed users need limits.
-        shared = {u.strip() for u in os.environ.get("TRAINFORM_SHARED_KEY_USERS", "").split(",")}
-        key = os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
+    else:
+        key = shared_key(user)
     return partial(call_claude, key) if key else None
+
+
+Helper = Literal["claude", "local"]  # who runs the helper agents; omitted (None) means Claude when linked, else local
+
+
+def chosen_llm(helper: Helper | None, llm):
+    """`llm` from get_llm, or None (run the helpers on a local model) when the user chose "local"."""
+    if helper == "claude" and not llm:
+        raise HTTPException(400, "Link your Claude API key on the Account page first.")
+    return None if helper == "local" else llm
 
 
 LOCAL_WAIT = 60  # seconds an agent request waits for the shared local model before giving up

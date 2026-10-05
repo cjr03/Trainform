@@ -29,6 +29,16 @@ def test_no_key_means_no_claude(monkeypatch):
     assert llm.get_llm(User(anthropic_key_encrypted=None)) is None  # callers fall back to a local model
 
 
+def test_helper_choice():
+    claude = object()
+    assert llm.chosen_llm(None, claude) is claude and llm.chosen_llm(None, None) is None  # Claude if linked
+    assert llm.chosen_llm("claude", claude) is claude
+    assert llm.chosen_llm("local", claude) is None  # None: the caller runs the helpers on a local model
+    with pytest.raises(HTTPException) as e:
+        llm.chosen_llm("claude", None)
+    assert (e.value.status_code, e.value.detail) == (400, "Link your Claude API key on the Account page first.")
+
+
 def test_unreadable_key_after_secret_rotation_is_400(monkeypatch):
     cipher = encrypt_api_key("sk-ant-old")
     monkeypatch.setenv("TRAINFORM_SECRET", "rotated-secret-0123456789abcdef0123")

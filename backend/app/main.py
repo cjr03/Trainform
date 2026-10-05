@@ -17,7 +17,8 @@ async def lifespan(_app: FastAPI):
         # Added after the first release; create_all never alters existing tables.
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
-                          "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea"))
+                          "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea, "
+                          "ADD COLUMN IF NOT EXISTS helper varchar(16)"))
         # Training runs are background threads of this process, so any left active died with the last one. Their
         # progress is saved, so they wait, paused, for the user to resume them.
         conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))

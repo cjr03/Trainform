@@ -47,6 +47,7 @@ class Training(Base):
     personas: Mapped[list[dict] | None] = mapped_column(JSON)  # current round: [{"persona", "message"}]
     # Zipped LoRA adapter after the last finished round's SFT; deferred so listing trainings doesn't load it.
     adapter: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    helper: Mapped[str | None] = mapped_column(String(16))  # llm.Helper the user chose; None: Claude if linked
 
     user: Mapped[User] = relationship(back_populates="trainings")
 

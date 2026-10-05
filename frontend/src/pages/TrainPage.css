@@ -257,6 +257,11 @@
   background: var(--gradient);
 }
 
+.train-toggle input:disabled + span {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .train-toggle input:focus-visible + span {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

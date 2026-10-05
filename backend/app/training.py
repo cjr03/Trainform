@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app import agents, fake
 from app.auth import current_user
 from app.db import SessionLocal, get_db
-from app.llm import get_llm, local_llm
+from app.llm import Helper, chosen_llm, get_llm, local_llm
 from app.local_model import LocalModel, list_local_models
 from app.models import ACTIVE, Scenario, TrainedModel, Training, User
 
@@ -178,6 +178,7 @@ class TrainingIn(BaseModel):
         min_length=1, max_length=30)
     scenarios: int = Field(ge=1, le=100)
     rounds: int = Field(ge=1, le=50)
+    helper: Helper | None = None
 
 
 def owned(db: Session, training_id: int, user: User) -> Training:
@@ -206,7 +207,7 @@ def detail(db: Session, t: Training) -> dict:
         "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round, "scenarios_done": t.scenarios_done,
         "total_scenarios": t.rounds * t.scenarios_per_round, "latest_prompt": latest_prompt or t.initial_prompt,
         "score_windows": score_windows(scores), "best_model_id": t.best_model_id, "best_score": best_score,
-        "best_prompt": best_prompt, "created_at": t.created_at,
+        "best_prompt": best_prompt, "created_at": t.created_at, "helper": t.helper,
     }
 
 
@@ -242,10 +243,11 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
     if body.base_model not in {m["name"] for m in list_local_models(user.id)}:
         raise HTTPException(400, f"Unknown base model: {body.base_model}")
+    llm = chosen_llm(body.helper, llm)
 
     def insert():
         t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
-                     scenarios_per_round=body.scenarios, rounds=body.rounds)
+                     scenarios_per_round=body.scenarios, rounds=body.rounds, helper=body.helper)
         db.add(t)
         db.commit()
         return t
@@ -265,10 +267,12 @@ def pause_training(training_id: int, user: User = Depends(current_user), db: Ses
 @router.post("/{training_id}/resume")
 def resume_training(training_id: int, background: BackgroundTasks, user: User = Depends(current_user),
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
-    """Continue a paused or failed training from its saved progress (the UI's Retry), with the user's current helper."""
+    """Continue a paused or failed training from its saved progress (the UI's Retry), with the helper it was started
+    with (or, if none was chosen, the user's current one)."""
     t = owned(db, training_id, user)
     if t.status not in ("paused", "failed"):
         raise HTTPException(409, "Only a paused or failed training can be resumed.")
+    llm = chosen_llm(t.helper, llm)
 
     def restart():
         # Only one request can make the change, so a training never gets a second run.
@@ -295,7 +299,8 @@ def list_trainings(user: User = Depends(current_user), db: Session = Depends(get
                       .where(Training.user_id == user.id).order_by(Training.id.desc())).all()
     return [{"id": t.id, "base_model": t.base_model, "status": t.status, "rounds": t.rounds,
              "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round,
-             "scenarios_done": t.scenarios_done, "created_at": t.created_at, "best_score": best_score}
+             "scenarios_done": t.scenarios_done, "created_at": t.created_at, "best_score": best_score,
+             "helper": t.helper}
             for t, best_score in rows]
 
 

@@ -7,6 +7,7 @@ import TrainPage from './TrainPage'
 
 vi.mock('../api', () => ({
   api: {
+    me: vi.fn(),
     searchHubModels: vi.fn(),
     downloadHubModel: vi.fn(),
     uploadModel: vi.fn(),
@@ -51,6 +52,7 @@ beforeEach(() => {
   sessionStorage.clear()
   api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
   api.listTrainings.mockResolvedValue([])
+  api.me.mockResolvedValue({ claude_available: false })
 })
 afterEach(() => vi.useRealTimers())
 
@@ -214,6 +216,48 @@ it('uploads a zipped model and selects it', async () => {
   expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
 })
 
+const helper = () => within(screen.getByRole('group', { name: 'Train with' }))
+
+it('trains with Claude by default when it is linked, or with the chosen local model', async () => {
+  const user = userEvent.setup()
+  api.me.mockResolvedValue({ claude_available: true })
+  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
+  const view = render(<TrainPage />)
+  await waitFor(() => expect(helper().getByRole('radio', { name: 'Claude' })).toBeChecked())
+  expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
+  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
+  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
+  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b', 'claude')
+
+  await user.click(step('Model'))
+  await user.click(helper().getByRole('radio', { name: 'Local model' }))
+  view.unmount() // the choice is kept with the rest of the draft
+  render(<TrainPage />)
+  await waitFor(() => expect(api.me).toHaveBeenCalledTimes(2))
+  expect(helper().getByRole('radio', { name: 'Local model' })).toBeChecked()
+})
+
+it('offers only the local model until Claude is linked on the Account page', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ helper: 'claude' })) // unlinked since
+  render(<TrainPage />)
+  await waitFor(() => expect(helper().getByRole('radio', { name: 'Local model' })).toBeChecked())
+  const claude = helper().getByRole('radio', { name: 'Claude' })
+  expect(claude).toBeDisabled()
+  expect(claude).toHaveAccessibleDescription(/Link your Claude API key on the Account page/)
+  expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('href', '/account')
+})
+
+it('leaves the helper to the server when the account cannot be read', async () => {
+  api.me.mockRejectedValue(new Error('Server down'))
+  render(<TrainPage />)
+  await waitFor(() => expect(api.me).toHaveBeenCalled())
+  expect(helper().getByRole('radio', { name: 'Local model' })).not.toBeChecked()
+  expect(helper().getByRole('radio', { name: 'Claude' })).not.toBeChecked()
+})
+
 it('generates a prompt from a description into the editable prompt', async () => {
   const user = userEvent.setup()
   api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
@@ -224,7 +268,7 @@ it('generates a prompt from a description into the editable prompt', async () =>
   await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
   await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
 
-  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot', 'qwen-0.5b') // the local model, if no Claude
+  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot', 'qwen-0.5b', 'local') // no Claude: the local model
   const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
   await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
   await user.type(prompt, ' Be kind.')
@@ -272,7 +316,7 @@ it('generates the rubric and supports add, edit, delete and confirmed regenerate
   await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
   await user.click(nextButton())
   await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
-  expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.', 'qwen-0.5b')
+  expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.', 'qwen-0.5b', 'local')
 
   const first = await screen.findByRole('textbox', { name: 'Criterion 1' })
   expect(first).toHaveValue('Clarity')
@@ -328,6 +372,7 @@ it('starts training with the exact config and locks the setup steps', async () =
     rubric: ['Clarity'],
     scenarios: 8,
     rounds: 4,
+    helper: 'local',
   })
   await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
   for (const name of ['Model', 'Prompt', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
@@ -573,7 +618,7 @@ it('retries a failed prompt generation without asking again', async () => {
   await user.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
   expect(api.generatePrompt).toHaveBeenCalledTimes(2)
-  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b')
+  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b', 'local')
   expect(confirm).toHaveBeenCalledOnce()
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
