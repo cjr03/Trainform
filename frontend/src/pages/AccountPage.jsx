@@ -47,7 +47,7 @@ export default function AccountPage() {
 
   return (
     <div data-testid="account-page">
-      <h1 className="page-title">Account</h1>
+      <h1 className="m-0 mb-3.5 text-[clamp(1.6rem,3vw,2.4rem)]">Account</h1>
       {error ? (
         <ErrorAlert>{error}</ErrorAlert>
       ) : !user ? (
