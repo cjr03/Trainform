@@ -2,6 +2,7 @@
 argument."""
 
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from statistics import fmean
@@ -198,6 +199,12 @@ def _tag(name, value):
     return f"<{name}>\n{value}\n</{name}>"
 
 
+def _prompt(out):
+    """The prompt generator's reply, without the <current_prompt> tag it was given if it echoed that back."""
+    return _text(re.sub(r"\A\s*<current_prompt>(.*)</current_prompt>\s*\Z", r"\1", out["prompt"], flags=re.S),
+                 "prompt")
+
+
 def _text(value, what):
     if not value.strip():
         raise BadReply(f"The model returned an empty {what}")
@@ -262,7 +269,7 @@ def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: 
     if best:
         parts += [_tag("best_prompt", best[0]), _tag("best_score", f"{best[1]:.1f}")]
     return _ask(llm, PROMPT_GENERATOR_SYSTEM, "\n\n".join(parts), PROMPT_SCHEMA,
-                lambda out: _text(out["prompt"], "prompt"))
+                _prompt)
 
 
 def review_round(llm, agent_prompt: str, criterion_means: list[tuple[str, float]],
@@ -274,7 +281,7 @@ def review_round(llm, agent_prompt: str, criterion_means: list[tuple[str, float]
                                  for i, (c, score) in enumerate(weakest, 1))
     message = "\n\n".join([_tag("current_prompt", agent_prompt), _tag("round_scores", means),
                             _tag("weakest_conversations", conversations)])
-    return _ask(llm, PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA, lambda out: _text(out["prompt"], "prompt"))
+    return _ask(llm, PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA, _prompt)
 
 
 def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
