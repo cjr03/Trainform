@@ -16,6 +16,7 @@ class FakeModel:
         self.conversations = []
         self.sft_calls = []
         self.adapter = b"PK-0"
+        self.saves = 0
 
     def generate(self, system_prompt, conversation):
         self.generate_calls.append(system_prompt)
@@ -28,6 +29,7 @@ class FakeModel:
         return 0.5
 
     def adapter_bytes(self):
+        self.saves += 1
         return self.adapter
 
     def load_adapter(self, data):
@@ -45,6 +47,9 @@ def fake_agents(monkeypatch):
         rounds = []
         events = []
         improved = []
+        track = []  # (best, recent) each prompt generator call saw
+        reviews = []
+        last_scores = []
 
     state = State()
 
@@ -52,9 +57,11 @@ def fake_agents(monkeypatch):
         state.events.append(f"message {context}")
         return f"msg from {context}"
 
-    def generate_personas(llm, agent_prompt, n, rubric=None):
+    def generate_personas(llm, agent_prompt, n, rubric=None, last_scores=None):
+        state.events.append("personas")
         state.persona_prompts.append(agent_prompt)
         state.persona_rubrics.append(rubric)
+        state.last_scores.append(last_scores)
         return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"}
                 for k in range(1, n + 1)]
 
@@ -73,8 +80,18 @@ def fake_agents(monkeypatch):
     monkeypatch.setattr(training.agents, "persona_respond", persona_respond)
     monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
-    monkeypatch.setattr(training.agents, "generate_improved_prompt",
-                        lambda llm, prompt, conv, scores: state.improved.append(prompt) or prompt + "+")
+    def generate_improved_prompt(llm, prompt, conv, scores, best=None, recent=()):
+        state.improved.append(prompt)
+        state.track.append((best, list(recent)))
+        return prompt + "+"
+
+    def review_round(llm, prompt, criterion_means, weakest):
+        state.events.append("review")
+        state.reviews.append((prompt, criterion_means, weakest))
+        return prompt + "R"
+
+    monkeypatch.setattr(training.agents, "generate_improved_prompt", generate_improved_prompt)
+    monkeypatch.setattr(training.agents, "review_round", review_round)
     return state
 
 
@@ -119,7 +136,8 @@ def test_persona_messages_are_written_at_once_before_the_chain(db, user, fake_ag
     monkeypatch.setattr(training.agents, "persona_respond", lambda *a: together.wait() * 0 or respond(*a))
     t, _ = run(db, make_training(db, user, rounds=2, scenarios=3))
     assert t.status == "completed"
-    round_events = fake_agents.events[:6], fake_agents.events[6:]
+    events = [e for e in fake_agents.events if e.startswith(("message", "score"))]
+    round_events = events[:6], events[6:]
     for events in round_events:  # every persona's message is written before the first scenario is scored
         assert sorted(events[:3]) == [f"message persona {k}" for k in (1, 2, 3)] and events[3:] == ["score"] * 3
     # Each scenario still gets its own persona's message, in persona order.
@@ -154,12 +172,21 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
     assert (t.status, t.error, t.current_round, t.scenarios_done) == ("completed", None, 2, 6)
     scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
     assert [(s.round, s.scenario_number) for s in scenarios] == [(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]
-    # Scenario k+1 runs with the prompt improved after scenario k, across rounds too.
-    assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P+++", "P++++", "P+++++"]
-    assert fake_agents.improved == [s.prompt for s in scenarios[:-1]]  # nothing would use an improved prompt after the last
+    # Scenario k+1 runs with the prompt improved after scenario k. The next round starts from a review of this
+    # round's best-scoring prompt (scenario 3's), so a round's last improvement would go unused and is not asked for.
+    assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P++R", "P++R+", "P++R++"]
+    assert fake_agents.improved == ["P", "P+", "P++R", "P++R+"]
     assert model.generate_calls == [s.prompt for s in scenarios]
-    assert fake_agents.persona_prompts == ["P", "P+++"]
+    conversation = lambda k: f"User: msg from persona {k}\nAssistant: reply to msg from persona {k}"  # noqa: E731
+    # The review sees the round's mean per criterion and its lowest-scoring conversations, lowest first.
+    assert fake_agents.reviews == [("P++", [("Clarity", pytest.approx(22 / 3)), ("Tone", pytest.approx(22 / 3))],
+                                    [(conversation(2), 5.0), (conversation(1), 8.0), (conversation(3), 9.0)])]
+    # Round 2's personas are written for the same agent and aimed at round 1's weakest criteria.
+    assert fake_agents.persona_prompts == ["P", "P++"]
+    assert fake_agents.last_scores == [None, [pytest.approx(22 / 3)] * 2]
     assert fake_agents.persona_rubrics == [["Clarity", "Tone"]] * 2  # personas pressure the training's own rubric
+    # Each prompt generator call sees the round's best earlier prompt when it beat this one, and the recent scores.
+    assert fake_agents.track == [(None, [8.0]), (("P", 8.0), [8.0, 5.0]), (None, [4.0]), (None, [4.0, 4.0])]
 
     s = scenarios[0]
     assert s.persona == {"attributes": [{"criterion": "Clarity", "rating": 1}], "prompt": "persona 1"}
@@ -175,7 +202,8 @@ def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):
 
     # Each round's model is what was evaluated: the round's starting weights and its best-scoring scenario's prompt.
     trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
-    assert [(m.round, m.prompt, m.weights) for m in trained] == [(1, "P++", b"PK-0"), (2, "P+++", b"PK-1")]
+    assert [(m.round, m.prompt, m.weights) for m in trained] == [(1, "P++", b"PK-0"), (2, "P++R", b"PK-1")]
+    assert model.saves == 2  # zipped at the start and after each SFT (round 2 had none), not twice per round
     assert trained[0].mean_score == pytest.approx(22 / 3)
     assert trained[1].mean_score == 4.0
     assert t.best_model_id == trained[0].id
@@ -288,8 +316,8 @@ def test_failure_mid_round_resumes_from_saved_progress(db, user, fake_agents):
     assert (t.status, t.error, t.current_round, t.scenarios_done) == ("completed", None, 2, 6)
     scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
     # The same chain an uninterrupted run makes: round 1's personas are not regenerated, scenario 3 is redone.
-    assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P+++", "P++++", "P+++++"]
-    assert fake_agents.persona_prompts == ["P", "P+++"]
+    assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P++R", "P++R+", "P++R++"]
+    assert fake_agents.persona_prompts == ["P", "P++"]
     assert fake_agents.events.count("message persona 1") == 2  # once per round
     # Round 1's SFT uses its high scorers from both runs.
     assert model.sft_calls[0] == [{"prompt": x.prompt, "input": x.input, "output": x.output}
@@ -304,24 +332,26 @@ def test_pause_at_a_round_boundary_and_resume(db, user, fake_agents, monkeypatch
     sft = FakeModel.sft
     monkeypatch.setattr(FakeModel, "sft", lambda self, examples: request_pause() or sft(self, examples))
     t, _ = run(db, make_training(db, user, rounds=2, scenarios=1))
-    # The round in flight finishes, with its SFT, and the training stops before the next one.
-    assert (t.status, t.current_round, t.scenarios_done, t.next_prompt, t.personas) == ("paused", 1, 1, "P+", None)
+    # The round in flight finishes, with its SFT, and the training stops before the next one. Round 2's prompt and
+    # personas, prepared while the model trained, are saved for it.
+    assert (t.status, t.current_round, t.scenarios_done, t.next_prompt) == ("paused", 1, 1, "PR")
+    assert [x["message"] for x in t.personas] == ["msg from persona 1"]
     assert t.adapter == b"PK-1"  # the adapter after round 1's SFT
-    assert db.query(TrainedModel).count() == 1 and fake_agents.persona_prompts == ["P"]
+    assert db.query(TrainedModel).count() == 1 and fake_agents.persona_prompts == ["P", "P"]
 
     monkeypatch.setattr(FakeModel, "sft", sft)
     fake_agents.scores = [4]
     t, [model] = resume(db, t)
     assert (t.status, t.current_round, t.scenarios_done) == ("completed", 2, 2)
-    assert fake_agents.persona_prompts == ["P", "P+"]
-    assert model.generate_calls == ["P+"] and model.sft_calls == []
+    assert fake_agents.persona_prompts == ["P", "P"] and len(fake_agents.reviews) == 1  # not prepared again
+    assert model.generate_calls == ["PR"] and model.sft_calls == []
     trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
     assert [(m.round, m.weights) for m in trained] == [(1, b"PK-0"), (2, b"PK-1")]  # round 2 ran on the saved adapter
     assert t.best_model_id == trained[0].id  # best across both runs, not just the resumed one
 
 
 def test_pause_mid_round_stops_before_the_next_scenario(db, user, fake_agents, monkeypatch):
-    fake_agents.scores = [8]
+    fake_agents.scores = [9]
     score = training.agents.score_conversation
     monkeypatch.setattr(training.agents, "score_conversation", lambda *a: request_pause() or score(*a))
     t, _ = run(db, make_training(db, user, rounds=1, scenarios=3))
@@ -330,11 +360,13 @@ def test_pause_mid_round_stops_before_the_next_scenario(db, user, fake_agents, m
     assert db.query(Scenario).count() == 1 and db.query(TrainedModel).count() == 0
 
     monkeypatch.setattr(training.agents, "score_conversation", score)
-    fake_agents.scores = [8, 8]
+    fake_agents.scores = [5, 8]
     t, [model] = resume(db, t)
     assert (t.status, t.scenarios_done) == ("completed", 3)
     assert [s.prompt for s in db.query(Scenario).order_by(Scenario.scenario_number)] == ["P", "P+", "P++"]
     assert model.generate_calls == ["P+", "P++"]
+    # The prompt generator's track record comes from the saved scenarios, so it survives the pause.
+    assert fake_agents.track == [(None, [9.0]), (("P", 9.0), [9.0, 5.0])]
 
 
 def test_pause_before_the_run_starts(db, user, fake_agents):
@@ -349,7 +381,7 @@ def test_a_scenario_is_saved_together_with_the_prompt_it_produced(db, user, fake
     fake_agents.scores = [8, 8]
     improved = []
 
-    def generate_improved_prompt(llm, prompt, conv, scores):
+    def generate_improved_prompt(llm, prompt, conv, scores, best=None, recent=()):
         if len(improved) == 1:
             raise RuntimeError("Claude API error 500")
         improved.append(prompt)
@@ -360,6 +392,65 @@ def test_a_scenario_is_saved_together_with_the_prompt_it_produced(db, user, fake
     # Scenario 2 was scored but its improved prompt failed, so neither is saved and a resume redoes it.
     assert (t.status, t.scenarios_done, t.next_prompt) == ("failed", 1, "P+")
     assert db.query(Scenario).count() == 1
+
+
+def test_the_next_round_is_prepared_while_the_model_trains(db, user, fake_agents, monkeypatch):
+    # With Claude, round 2's review and personas are written during round 1's SFT, the review and the personas at once.
+    fake_agents.scores = [8, 8]
+    together = threading.Barrier(3, timeout=10)  # breaks unless all three are in flight at once
+    sft, review, personas = FakeModel.sft, training.agents.review_round, training.agents.generate_personas
+    monkeypatch.setattr(FakeModel, "sft", lambda self, ex: (together.wait() if not self.sft_calls else 0) * 0 or sft(
+        self, ex))
+    monkeypatch.setattr(training.agents, "review_round", lambda *a: together.wait() * 0 or review(*a))
+    monkeypatch.setattr(training.agents, "generate_personas",
+                        lambda *a, **kw: (together.wait() if kw["last_scores"] else 0) * 0 or personas(*a, **kw))
+    t, [model] = run(db, make_training(db, user, rounds=2, scenarios=1))
+    assert (t.status, t.error) == ("completed", None)
+    assert model.generate_calls == ["P", "PR"]
+
+
+def test_local_helpers_prepare_the_next_round_after_training(db, user, fake_agents, monkeypatch):
+    # A local model answers one call at a time and trains with the same weights, so nothing overlaps its SFT.
+    fake_agents.scores = [8, 8]
+
+    def local(system, message, schema=None, effort=None):
+        pass
+
+    local.local = True
+    monkeypatch.setattr(training, "local_llm", lambda model: local)
+    sft = FakeModel.sft
+    monkeypatch.setattr(FakeModel, "sft", lambda self, ex: fake_agents.events.append("sft") or sft(self, ex))
+    t = make_training(db, user, rounds=2, scenarios=1)
+    training.run_training(t.id, None, FakeModel)
+    db.expire_all()
+    assert db.get(Training, t.id).status == "completed"
+    assert fake_agents.events == ["personas", "message persona 1", "score", "sft",
+                                  "review", "personas", "message persona 1", "score", "sft"]
+
+
+def test_a_failed_round_review_is_redone_on_resume(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8, 6]
+    review = training.agents.review_round
+    def fail(*a):
+        raise RuntimeError("Claude API error 500")
+
+    monkeypatch.setattr(training.agents, "review_round", fail)
+    t, _ = run(db, make_training(db, user, rounds=2, scenarios=2))
+    # Round 1 is saved with its trained adapter; only round 2's preparation is lost.
+    assert (t.status, t.error, t.scenarios_done, t.personas) == ("failed", "Claude API error 500", 2, None)
+    assert t.adapter == b"PK-1"
+    assert db.query(TrainedModel).count() == 1
+
+    monkeypatch.setattr(training.agents, "review_round", review)
+    fake_agents.scores = [7, 7]
+    t, [model] = resume(db, t)
+    assert (t.status, t.scenarios_done) == ("completed", 4)
+    conversation = lambda k: f"User: msg from persona {k}\nAssistant: reply to msg from persona {k}"  # noqa: E731
+    # Reviewed from round 1's saved scenarios, just as an uninterrupted run would.
+    assert fake_agents.reviews == [("P", [("Clarity", 7.0), ("Tone", 7.0)],
+                                    [(conversation(2), 6.0), (conversation(1), 8.0)])]
+    assert fake_agents.last_scores[-1] == [7.0, 7.0]
+    assert model.generate_calls == ["PR", "PR+"]
 
 
 def test_score_windows():

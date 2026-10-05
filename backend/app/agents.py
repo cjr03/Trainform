@@ -4,6 +4,7 @@ argument."""
 import random
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from statistics import fmean
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -61,16 +62,32 @@ You improve system prompts for AI agents using evaluation evidence. You will rec
 - <current_prompt>: the agent's current system prompt.
 - <conversation>: the latest conversation the agent had while running under that prompt.
 - <scores>: a grader's score for the agent's reply on each criterion, from 1 (failed) to 10 (fully met).
+- <recent_scores>: the mean scores of the agent's latest conversations, oldest first. Each ran under the prompt your \
+revision before it produced, and the last is the conversation above, so the last two show whether your latest edit \
+helped.
+- <best_prompt> and <best_score>, only when an earlier version scored higher than the current prompt: that version \
+and its mean score.
+
+Every conversation is with a different simulated user, and harder users earn lower scores, so treat one score as \
+noisy evidence and trust a trend across several more.
 
 Rewrite the prompt so the agent scores higher next time:
-1. Start with the lowest-scoring criteria. Use the conversation to diagnose why the agent fell short: a missing \
+1. Choose what to build on. When <best_prompt> is given, start from it: carry over only the later edits the scores \
+support, and back out an edit that was followed by lower scores. Otherwise build on the current prompt.
+2. Start with the lowest-scoring criteria. Use the conversation to diagnose why the agent fell short: a missing \
 instruction, a vague or conflicting one, a rule buried where it is easy to overlook, or no guidance for this kind of user.
-2. Fix those causes directly. Add or sharpen the instruction, say when it applies, and where it helps add a short \
+3. Fix those causes directly. Add or sharpen the instruction, say when it applies, and where it helps add a short \
 example of the desired behaviour.
-3. Keep what works. Do not remove or weaken the instructions behind high scores, and do not change the agent's role, \
+4. Keep what works. Do not remove or weaken the instructions behind high scores, and do not change the agent's role, \
 scope or factual content.
-4. Generalise. The next conversation will be with a different user, so fix the class of failure rather than this one \
+5. Generalise. The next conversation will be with a different user, so fix the class of failure rather than this one \
 transcript, and never quote or refer to this conversation in the prompt.
+
+At the end of a training round you receive a round review instead: <current_prompt> holds the round's best-scoring \
+prompt, <round_scores> the agent's mean score on each criterion over the whole round, and <weakest_conversations> \
+the round's lowest-scoring conversations with their mean scores (some ran under earlier versions of the prompt). \
+Revise for the patterns across the round rather than any one conversation: fix the weakest criteria first, and treat \
+a failure that recurs across the weakest conversations as the most important; steps 4 and 5 still apply.
 
 The agent runs on a small open-weight language model, so keep the instructions plain and unambiguous. If the prompt \
 grows, tighten wording elsewhere so it stays under about 1000 words.
@@ -108,6 +125,11 @@ vague, impatient, off-topic, emotional, manipulative, or by asking for exactly w
 want from the agent and why, what they do and don't know, how they write (tone, length, vocabulary, typos), and where \
 they are in the conversation flow: opening, mid-conversation after a partial answer, escalating after a failed \
 attempt, or wrapping up. Make every high-rated pressure concrete in the brief.
+
+You may also receive, in <previous_scores> tags under the same keys, the agent's mean score on each criterion over \
+its last round of conversations. Then aim the personas at its weaknesses: rate the lowest-scoring criteria high for \
+most personas, so the agent practises what it fails at, while still stressing each other criterion hard in some \
+personas so it keeps what it already does well.
 
 Vary the personas widely. Use the full 1-10 range and different combinations of ratings, so that each criterion is \
 stressed hard by some personas and lightly by others; do not rate every criterion high for everyone. Make them \
@@ -227,11 +249,31 @@ def create_rubric(llm, agent_prompt: str) -> list[str]:
     return criteria
 
 
-def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: list[dict]) -> str:
-    """Prompt generator agent: current prompt + last conversation + [{"criterion", "score"}] -> improved prompt."""
+def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: list[dict],
+                             best: tuple[str, float] | None = None, recent: list[float] = ()) -> str:
+    """Prompt generator agent: current prompt + last conversation + [{"criterion", "score"}] -> improved prompt.
+
+    Its track record lets it hill-climb: `recent` is the latest scenarios' mean scores, oldest first, ending with this
+    conversation's, and `best` the (prompt, mean score) of an earlier version that scored higher than this one."""
     lines = "\n".join(f"- {s['criterion']}: {s['score']}/10" for s in scores)
-    message = "\n\n".join([_tag("current_prompt", agent_prompt), _tag("conversation", conversation),
-                           _tag("scores", lines)])
+    parts = [_tag("current_prompt", agent_prompt), _tag("conversation", conversation), _tag("scores", lines)]
+    if recent:
+        parts.append(_tag("recent_scores", ", ".join(f"{x:.1f}" for x in recent)))
+    if best:
+        parts += [_tag("best_prompt", best[0]), _tag("best_score", f"{best[1]:.1f}")]
+    return _ask(llm, PROMPT_GENERATOR_SYSTEM, "\n\n".join(parts), PROMPT_SCHEMA,
+                lambda out: _text(out["prompt"], "prompt"))
+
+
+def review_round(llm, agent_prompt: str, criterion_means: list[tuple[str, float]],
+                 weakest: list[tuple[str, float]]) -> str:
+    """Prompt generator agent, between rounds: the round's best prompt + its mean score per criterion + its
+    lowest-scoring (conversation, mean score)s -> the next round's starting prompt."""
+    means = "\n".join(f"- {c}: {m:.1f}/10" for c, m in criterion_means)
+    conversations = "\n\n".join(f"Conversation {i} (mean score {score:.1f}/10):\n{c}"
+                                 for i, (c, score) in enumerate(weakest, 1))
+    message = "\n\n".join([_tag("current_prompt", agent_prompt), _tag("round_scores", means),
+                            _tag("weakest_conversations", conversations)])
     return _ask(llm, PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA, lambda out: _text(out["prompt"], "prompt"))
 
 
@@ -247,10 +289,12 @@ def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
-def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None) -> list[dict]:
+def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None,
+                      last_scores: list[float] | None = None) -> list[dict]:
     """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}.
 
-    The personas pressure `rubric`, or criteria from the rubric creator agent when none is given."""
+    The personas pressure `rubric`, or criteria from the rubric creator agent when none is given, hardest where
+    `last_scores` (the agent's mean score per criterion last round) are lowest."""
     rubric = rubric or create_rubric(llm, agent_prompt)
     if getattr(llm, "local", False):
         # ponytail: code picks the 1-10 ratings, since small models can't rate reliably; the model only writes each
@@ -259,6 +303,9 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
         for i in range(n):
             rng = random.Random(i)
             ratings = [rng.randint(1, 10) for _ in rubric]
+            if last_scores:  # below-average criteria get the higher of two rolls
+                ratings = [max(r, rng.randint(1, 10)) if score < fmean(last_scores) else r
+                           for r, score in zip(ratings, last_scores)]
             pressures = "\n".join(f"- {c}: {r}/10" for c, r in zip(rubric, ratings))
             brief = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('pressures', pressures)}",
                          PROMPT_SCHEMA, lambda out: _text(out["prompt"], "persona brief"))
@@ -270,6 +317,9 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
     def batch(count):
         message = (f"{_tag('agent_prompt', agent_prompt)}\n\n{_tag('criteria', _keyed_lines(rubric))}\n\n"
                    f"<count>{count}</count>")
+        if last_scores:
+            lines = "\n".join(f"c{i}: {x:.1f}" for i, x in enumerate(last_scores, 1))
+            message += f"\n\n{_tag('previous_scores', lines)}"
         return _ask(llm, PERSONA_GENERATOR_SYSTEM, message, schema, lambda out: [
             (_unkey(p["attributes"], rubric), p["prompt"].strip()) for p in out["personas"]])[:count]
 
