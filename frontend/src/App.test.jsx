@@ -58,10 +58,12 @@ it('stores the token and goes to Train after signing in', async () => {
   expect(getToken()).toBe('new-tok')
 })
 
-it('clears the token on Sign out', async () => {
+it('clears the token and the Train draft on Sign out', async () => {
   setToken('tok')
   renderAt('/train')
+  expect(sessionStorage.getItem('trainform_train_draft')).not.toBeNull()
   await userEvent.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(screen.getByTestId('auth-page')).toBeInTheDocument()
   expect(getToken()).toBeNull()
+  expect(sessionStorage.getItem('trainform_train_draft')).toBeNull()
 })

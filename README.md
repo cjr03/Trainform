@@ -33,8 +33,9 @@ For each round (`backend/app/training.py`, `run_training`):
    with (before step 3), the prompt of its highest-scoring scenario and the round's mean score. The round with the
    highest mean becomes the training's best model, which is what the downloads return.
 
-The Train page shows progress and the mean score over the last n, n/2, n/4 and 1 scenarios. The Inspect page drills
-down from training to round to scenario and shows the transcript, the scores and the prompt that was used.
+The Train page shows progress and the mean score over all scenarios so far (Total runs), the last 50%, the last 25% and
+the last one. It keeps the setup and the training on screen for the tab, so switching pages or reloading loses neither;
+signing out clears it. The Inspect page drills down from training to round to scenario and shows the transcript, the scores and the prompt that was used.
 
 ## Architecture
 

@@ -11,14 +11,33 @@ const STEPS = [
   ['Complete', 'Training finished. Take the best prompt and LoRA weights with you.'],
 ]
 const WINDOWS = [
-  ['n', 'Last n runs'],
-  ['n/2', 'Last n/2'],
-  ['n/4', 'Last n/4'],
+  ['n', 'Total runs'],
+  ['n/2', 'Last 50%'],
+  ['n/4', 'Last 25%'],
   ['last', 'Last run'],
 ]
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 const inRange = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
 const score = (s) => (s == null ? '—' : s.toFixed(1))
+
+// The setup and the training on screen, kept for this tab so leaving the page or reloading loses neither.
+// Signing out clears it (clearToken). Storage can be unavailable (e.g. blocked); the page then just forgets.
+const DRAFT_KEY = 'trainform_train_draft'
+const loadDraft = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem(DRAFT_KEY)) ?? {}
+  } catch {
+    return {}
+  }
+}
+const storeDraft = (draft) => {
+  try {
+    if (draft) sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    else sessionStorage.removeItem(DRAFT_KEY)
+  } catch {
+    // Unavailable or full: nothing to keep.
+  }
+}
 
 function useAction() {
   const [busy, setBusy] = useState(false)
@@ -453,13 +472,15 @@ function CompleteStep({ training, onReset }) {
 }
 
 function Dashboard({ onReset }) {
-  const [step, setStep] = useState(0)
-  const [baseModel, setBaseModel] = useState('')
-  const [prompt, setPrompt] = useState('')
-  const [rubric, setRubric] = useState([])
-  const [scenarios, setScenarios] = useState('5')
-  const [rounds, setRounds] = useState('3')
-  const [training, setTraining] = useState(null)
+  const [draft] = useState(loadDraft)
+  const [step, setStep] = useState(draft.step ?? 0)
+  const [baseModel, setBaseModel] = useState(draft.baseModel ?? '')
+  const [prompt, setPrompt] = useState(draft.prompt ?? '')
+  const [rubric, setRubric] = useState(draft.rubric ?? [])
+  const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
+  const [rounds, setRounds] = useState(draft.rounds ?? '3')
+  // A running one is refreshed by the effects below; a finished one no longer changes.
+  const [training, setTraining] = useState(draft.training ?? null)
   const [pollError, setPollError] = useState('')
   const [runStart, starting, startError] = useAction()
   const slides = useRef([])
@@ -477,6 +498,11 @@ function Dashboard({ onReset }) {
   // Scenarios has valid defaults, so it only counts as done once training starts.
   const done = (i) => (training ? i < 4 || (i === 4 && completed) : i < 3 && i !== step && valid[i] && reachable(i))
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
+
+  useEffect(
+    () => storeDraft({ step, baseModel, prompt, rubric, scenarios, rounds, training }),
+    [step, baseModel, prompt, rubric, scenarios, rounds, training],
+  )
 
   // Reopen a training still in progress, e.g. after navigating away or reloading.
   useEffect(() => {
@@ -684,5 +710,9 @@ function Dashboard({ onReset }) {
 
 export default function TrainPage() {
   const [run, setRun] = useState(0)
-  return <Dashboard key={run} onReset={() => setRun((r) => r + 1)} />
+  const reset = () => {
+    storeDraft(null)
+    setRun((r) => r + 1)
+  }
+  return <Dashboard key={run} onReset={reset} />
 }
