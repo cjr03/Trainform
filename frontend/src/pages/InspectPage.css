@@ -98,6 +98,16 @@
   border-color: rgba(255, 209, 102, 0.4);
 }
 
+.badge.badge-paused,
+.badge.badge-pausing {
+  color: var(--accent-2);
+  border-color: rgba(155, 107, 255, 0.45);
+}
+
+.badge.badge-pausing {
+  border-style: dashed;
+}
+
 .inspect-bar {
   display: block;
   height: 6px;

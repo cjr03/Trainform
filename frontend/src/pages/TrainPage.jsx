@@ -19,6 +19,7 @@ const WINDOWS = [
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 const inRange = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
 const score = (s) => (s == null ? '—' : s.toFixed(1))
+const ACTIVE = ['pending', 'running', 'pausing'] // a user has at most one training in these
 
 // The setup and the training on screen, kept for this tab so leaving the page or reloading loses neither.
 // Signing in or out clears it (clearToken). Storage can be unavailable (e.g. blocked); the page then just forgets.
@@ -239,9 +240,10 @@ function PromptStep({ model, prompt, onChange }) {
   const [mode, setMode] = useState('write')
   const [description, setDescription] = useState('')
   const [run, busy, error] = useAction()
+  const request = () => run(async () => onChange((await api.generatePrompt(description.trim(), model)).prompt))
   const generate = () => {
     if (prompt.trim() && !window.confirm('Replace your prompt with a generated one?')) return
-    run(async () => onChange((await api.generatePrompt(description.trim(), model)).prompt))
+    request()
   }
 
   return (
@@ -275,6 +277,11 @@ function PromptStep({ model, prompt, onChange }) {
             <button type="button" className="btn" disabled={!description.trim() || busy} onClick={generate}>
               {busy && <Spinner />}Generate prompt
             </button>
+            {error && (
+              <button type="button" className="btn btn-ghost" disabled={!description.trim() || busy} onClick={request}>
+                Retry
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -297,9 +304,10 @@ function PromptStep({ model, prompt, onChange }) {
 function RubricStep({ model, prompt, criteria, onChange }) {
   const [draft, setDraft] = useState('')
   const [run, busy, error] = useAction()
+  const request = () => run(async () => onChange((await api.generateRubric(prompt.trim(), model)).criteria))
   const generate = () => {
     if (criteria.length && !window.confirm('Replace your criteria with a newly generated set?')) return
-    run(async () => onChange((await api.generateRubric(prompt.trim(), model)).criteria))
+    request()
   }
   const add = (e) => {
     e.preventDefault()
@@ -315,6 +323,11 @@ function RubricStep({ model, prompt, criteria, onChange }) {
           {busy && <Spinner />}
           {criteria.length ? 'Regenerate' : 'Generate from prompt'}
         </button>
+        {error && (
+          <button type="button" className="btn btn-ghost" disabled={!prompt.trim() || busy} onClick={request}>
+            Retry
+          </button>
+        )}
       </div>
       <Alert>{error}</Alert>
       {criteria.length > 0 && (
@@ -378,22 +391,42 @@ function Meter({ label, value, max }) {
   )
 }
 
-function TrainingStep({ training, pollError, onReset }) {
+// `busy` and `error` belong to the pause/resume request; resuming (Retry, after a failure) continues from saved progress.
+function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, error }) {
   if (!training) return null
+  const { status } = training
   return (
     <div className="stack">
-      <p role="status" className="train-status" data-status={training.status}>
-        {training.status}
+      <p role="status" className="train-status" data-status={status}>
+        {status}
       </p>
-      {training.status === 'failed' && (
-        <>
-          <Alert>{training.error || 'Training stopped without an error message.'}</Alert>
-          <div className="row">
-            <button type="button" className="btn btn-primary" onClick={onReset}>
-              Start a new training
+      {status === 'failed' && <Alert>{training.error || 'Training stopped without an error message.'}</Alert>}
+      {status === 'paused' && <p className="muted">Paused. Its progress is saved, so it resumes where it stopped.</p>}
+      <Alert>{error}</Alert>
+      {status !== 'completed' && (
+        <div className="row">
+          {(status === 'pending' || status === 'running') && (
+            <button type="button" className="btn" disabled={busy} onClick={onPause}>
+              Pause
             </button>
-          </div>
-        </>
+          )}
+          {status === 'pausing' && (
+            <button type="button" className="btn" disabled>
+              Pausing…
+            </button>
+          )}
+          {(status === 'paused' || status === 'failed') && (
+            <>
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={onResume}>
+                {busy && <Spinner />}
+                {status === 'paused' ? 'Resume' : 'Retry'}
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={onReset}>
+                Start a new training
+              </button>
+            </>
+          )}
+        </div>
       )}
       <Alert>{pollError && `Lost contact with the server (${pollError}). Retrying…`}</Alert>
       <div className="meters">
@@ -483,6 +516,7 @@ function Dashboard({ onReset }) {
   const [training, setTraining] = useState(draft.training ?? null)
   const [pollError, setPollError] = useState('')
   const [runStart, starting, startError] = useAction()
+  const [runControl, controlling, controlError] = useAction()
   const slides = useRef([])
   const shown = useRef(step)
 
@@ -504,28 +538,35 @@ function Dashboard({ onReset }) {
     [step, baseModel, prompt, rubric, scenarios, rounds, training],
   )
 
-  // Reopen a training still in progress, e.g. after navigating away or reloading.
+  // Show the training as the server has it: the one in progress (e.g. after navigating away, reloading or resuming it
+  // from Inspect), else the draft's, which may have been paused, resumed or deleted elsewhere since.
   useEffect(() => {
     let live = true
     api
       .listTrainings()
-      .then(async ([latest]) => {
-        if (latest?.status !== 'pending' && latest?.status !== 'running') return
-        const t = await api.getTraining(latest.id)
+      .then(async (list) => {
+        const id = list.find((t) => ACTIVE.includes(t.status))?.id ?? draft.training?.id
+        if (id == null) return
+        const t = await api.getTraining(id)
         if (!live) return
         setTraining(t)
-        setStep(4)
+        // A finished training opens on Complete, unless it was already finished and shown on Training.
+        setStep((s) => (t.status !== 'completed' ? 4 : draft.training?.status === 'completed' ? s : 5))
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (live && e.status === 404) onReset() // the draft's training was deleted
+      })
     return () => {
       live = false
-    }
+    }    // Runs once, when the page opens.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const id = training?.id
-  const polling = training?.status === 'pending' || training?.status === 'running'
+  // Restarting on every status change drops a poll already in flight, so it can't undo a pause it predates.
+  const status = training?.status
   useEffect(() => {
-    if (!polling) return
+    if (!ACTIVE.includes(status)) return
     let live = true
     let timer
     const poll = async () => {
@@ -545,7 +586,7 @@ function Dashboard({ onReset }) {
       live = false
       clearTimeout(timer)
     }
-  }, [id, polling])
+  }, [id, status])
 
   // Move focus into the new slide when the control that changed it has gone (or is now inert or disabled).
   useEffect(() => {
@@ -568,8 +609,9 @@ function Dashboard({ onReset }) {
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
       const t = await api.startTraining(config).catch(async (e) => {
         if (e.status !== 409) throw e
-        const [latest] = await api.listTrainings()
-        return api.getTraining(latest.id)
+        const active = (await api.listTrainings()).find((t) => ACTIVE.includes(t.status))
+        if (!active) throw e // it finished in the meantime
+        return api.getTraining(active.id)
       })
       setTraining(t)
       setStep(4)
@@ -629,7 +671,16 @@ function Dashboard({ onReset }) {
       </dl>
       <Alert>{startError}</Alert>
     </div>,
-    <TrainingStep key="training" training={training} pollError={pollError} onReset={onReset} />,
+    <TrainingStep
+      key="training"
+      training={training}
+      pollError={pollError}
+      onReset={onReset}
+      onPause={() => runControl(async () => setTraining(await api.pauseTraining(id)))}
+      onResume={() => runControl(async () => setTraining(await api.resumeTraining(id)))}
+      busy={controlling}
+      error={controlError}
+    />,
     <CompleteStep key="complete" training={training} onReset={onReset} />,
   ]
 

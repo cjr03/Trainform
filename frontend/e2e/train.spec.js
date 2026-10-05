@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { expect, test } from '@playwright/test'
-import { createUser, modelZip, signIn, uid } from './helpers'
+import { createUser, modelZip, signIn, uid, uploadModel } from './helpers'
 
 test('train an agent from model upload to downloads', async ({ page, request }) => {
   await signIn(page, await createUser(request))
@@ -86,4 +86,40 @@ test('train an agent from model upload to downloads', async ({ page, request }) 
   await expect(page.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '4')
   await expect(page.getByRole('progressbar', { name: 'Rounds completed' })).toHaveAttribute('aria-valuenow', '2')
   await expect(page.getByRole('group', { name: 'Total runs' })).toContainText('4 runs')
+})
+
+test('pause a training, find it in Inspect and resume it to completion', async ({ page, request }) => {
+  const user = await createUser(request)
+  const base_model = await uploadModel(request, user.auth)
+  // 20 scenarios at 0.25 s a reply (TRAINFORM_FAKE_DELAY) leave time to pause; the Train page opens the running one.
+  const res = await request.post('/api/trainings', {
+    headers: user.auth,
+    data: { base_model, prompt: 'You help bike shop customers.', rubric: ['Is polite.'], scenarios: 5, rounds: 4 },
+  })
+  expect(res.status()).toBe(201)
+  const { id } = await res.json()
+  const get = async () => (await request.get(`/api/trainings/${id}`, { headers: user.auth })).json()
+  await signIn(page, user)
+
+  await page.getByRole('button', { name: 'Pause' }).click()
+  await expect(page.getByRole('status')).toHaveText('paused', { timeout: 10_000 })
+  await expect(page.getByText(/progress is saved/)).toBeVisible()
+  const saved = await get()
+  expect(saved.status).toBe('paused')
+  expect(saved.scenarios_done).toBeLessThan(20)
+  await expect(page.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', String(saved.scenarios_done))
+
+  // Paused trainings stay in Inspect, which resumes them and opens the Train page on the running one.
+  await page.getByRole('link', { name: 'Inspect' }).click()
+  const option = page.getByRole('region', { name: 'Trainings' }).getByRole('button', { name: new RegExp(`^#${id} `) })
+  await expect(option).toContainText('paused')
+  await option.click()
+  await page.getByRole('button', { name: 'Resume training' }).click()
+  await expect(page).toHaveURL(/\/train$/)
+  await expect(page.getByRole('heading', { name: 'Complete' })).toBeVisible({ timeout: 30_000 })
+
+  // It continued from the saved progress: every scenario ran exactly once.
+  expect((await get()).scenarios_done).toBe(20)
+  const rounds = await (await request.get(`/api/trainings/${id}/rounds`, { headers: user.auth })).json()
+  expect(rounds.map((r) => r.scenarios)).toEqual([5, 5, 5, 5])
 })

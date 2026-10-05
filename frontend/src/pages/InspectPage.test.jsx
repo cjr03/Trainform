@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, saveBlob } from '../api'
 import InspectPage from './InspectPage'
@@ -13,6 +13,9 @@ vi.mock('../api', () => ({
     listScenarios: vi.fn(),
     downloadPrompt: vi.fn(),
     downloadWeights: vi.fn(),
+    pauseTraining: vi.fn(),
+    resumeTraining: vi.fn(),
+    deleteTraining: vi.fn(),
   },
   saveBlob: vi.fn(),
 }))
@@ -52,8 +55,11 @@ const scenario = {
 
 const renderPage = () =>
   render(
-    <MemoryRouter>
-      <InspectPage />
+    <MemoryRouter initialEntries={['/inspect']}>
+      <Routes>
+        <Route path="/inspect" element={<InspectPage />} />
+        <Route path="/train" element={<p>Train page stub</p>} />
+      </Routes>
     </MemoryRouter>,
   )
 
@@ -303,4 +309,131 @@ it('shows the prompts loading state and load errors', async () => {
   reject(new Error('Training not found'))
   expect(await prompts.findByRole('alert')).toHaveTextContent('Training not found')
   expect(prompts.queryByRole('status')).not.toBeInTheDocument()
+})
+
+const more = [
+  { id: 5, base_model: 'phi-2', status: 'paused', best_score: 6, created_at: '2026-10-01T10:00:00Z' },
+  { id: 4, base_model: 'gemma-2b', status: 'failed', best_score: null, created_at: '2026-10-01T09:00:00Z' },
+  { id: 3, base_model: 'mistral-7b', status: 'pausing', best_score: null, created_at: '2026-10-01T08:00:00Z' },
+]
+const option = (name) => screen.findByRole('button', { name })
+
+it('shows paused and pausing statuses', async () => {
+  api.listTrainings.mockResolvedValue(more)
+  renderPage()
+  expect(within(await option(/phi-2/)).getByText('paused')).toHaveClass('badge-paused')
+  expect(within(await option(/mistral-7b/)).getByText('pausing')).toHaveClass('badge-pausing')
+})
+
+it('offers only the actions that fit the selected training', async () => {
+  api.listTrainings.mockResolvedValue([...trainings, ...more])
+  const user = userEvent.setup()
+  renderPage()
+  const actions = () => ['Pause training', 'Resume training', 'Retry training', 'Delete training']
+    .filter((name) => screen.queryByRole('button', { name }))
+  expect(actions()).toEqual([])
+  for (const [name, expected] of [
+    [/llama-1b/, ['Pause training']],
+    [/mistral-7b/, []],
+    [/phi-2/, ['Resume training', 'Delete training']],
+    [/gemma-2b/, ['Retry training', 'Delete training']],
+    [/qwen-0\.5b/, ['Delete training']],
+  ]) {
+    await user.click(await option(name))
+    expect(actions(), String(name)).toEqual(expected)
+  }
+})
+
+it('pauses a running training and refreshes the list', async () => {
+  const user = userEvent.setup()
+  api.pauseTraining.mockResolvedValue({})
+  renderPage()
+  await user.click(await option(/llama-1b/))
+  api.listTrainings.mockResolvedValue([trainings[0], { ...trainings[1], status: 'pausing' }])
+  await user.click(screen.getByRole('button', { name: 'Pause training' }))
+  expect(api.pauseTraining).toHaveBeenCalledWith(1)
+  expect(await within(screen.getByRole('button', { name: /llama-1b/, pressed: true })).findByText('pausing')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Pause training' })).not.toBeInTheDocument()
+})
+
+it('keeps refreshing while a training is pausing', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  api.listTrainings.mockResolvedValue([more[2]])
+  renderPage()
+  await option(/mistral-7b/)
+  api.listTrainings.mockResolvedValue([{ ...more[2], status: 'paused' }])
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  expect(within(screen.getByRole('button', { name: /mistral-7b/ })).getByText('paused')).toBeInTheDocument()
+  const calls = api.listTrainings.mock.calls.length
+  await act(() => vi.advanceTimersByTimeAsync(6000))
+  expect(api.listTrainings).toHaveBeenCalledTimes(calls)
+})
+
+it('resumes a paused training and opens it on the Train page', async () => {
+  api.listTrainings.mockResolvedValue(more)
+  api.resumeTraining.mockResolvedValue({})
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/phi-2/))
+  await user.click(screen.getByRole('button', { name: 'Resume training' }))
+  expect(api.resumeTraining).toHaveBeenCalledWith(5)
+  expect(await screen.findByText('Train page stub')).toBeInTheDocument()
+})
+
+it('shows a failed training error and retries it from the keyboard', async () => {
+  api.listTrainings.mockResolvedValue(more)
+  api.getTraining.mockResolvedValue({ ...details[1], error: 'Claude API error: overloaded' })
+  api.resumeTraining.mockResolvedValue({})
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/gemma-2b/))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Claude API error: overloaded')
+  screen.getByRole('button', { name: 'Retry training' }).focus()
+  await user.keyboard('{Enter}')
+  expect(api.resumeTraining).toHaveBeenCalledWith(4)
+  expect(await screen.findByText('Train page stub')).toBeInTheDocument()
+})
+
+it('shows why an action was refused', async () => {
+  api.listTrainings.mockResolvedValue(more)
+  api.resumeTraining.mockRejectedValue(new Error('You already have a training in progress.'))
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/phi-2/))
+  await user.click(screen.getByRole('button', { name: 'Resume training' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('You already have a training in progress.')
+  expect(screen.getByRole('button', { name: 'Resume training' })).toBeEnabled()
+  expect(screen.queryByText('Train page stub')).not.toBeInTheDocument()
+})
+
+it('deletes a training after confirming, then clears the selection', async () => {
+  api.deleteTraining.mockResolvedValue(null)
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/qwen-0\.5b/))
+  await screen.findByRole('button', { name: /Round 2/ })
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  await user.click(screen.getByRole('button', { name: 'Delete training' }))
+  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('#2'))
+  expect(api.deleteTraining).not.toHaveBeenCalled()
+
+  api.listTrainings.mockResolvedValue([trainings[1]])
+  await user.click(screen.getByRole('button', { name: 'Delete training' }))
+  expect(api.deleteTraining).toHaveBeenCalledWith(2)
+  await waitFor(() => expect(screen.queryByRole('button', { name: /qwen-0\.5b/ })).not.toBeInTheDocument())
+  expect(screen.queryByRole('region', { name: 'Rounds' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Prompts' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Delete training' })).not.toBeInTheDocument()
+  confirm.mockRestore()
+})
+
+it('keeps working where scrollIntoView returns a promise (current Chromium)', async () => {
+  Element.prototype.scrollIntoView.mockResolvedValue(undefined)
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/qwen-0\.5b/))
+  await user.click(await screen.findByRole('button', { name: /Round 2/ }))
+  await user.click(await option(/llama-1b/))
+  expect(await screen.findByRole('button', { name: /Round 1/ })).toHaveTextContent('4')
+  expect(screen.getByRole('button', { name: /llama-1b/, pressed: true })).toBeInTheDocument()
 })

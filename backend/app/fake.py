@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import time
 import zipfile
 
 
@@ -73,6 +74,7 @@ class FakeLocalModel:
         self.name, self.examples_seen = name, 0
 
     def generate(self, system_prompt: str, conversation: str) -> str:
+        time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))  # E2E sets it so a run is slow enough to pause
         return "Hello! Happy to help. Could you tell me a little more about what you need?"
 
     def sft(self, examples: list[dict]) -> float:
