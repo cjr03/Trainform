@@ -319,7 +319,9 @@ def test_local_personas_bring_requests_that_test_their_top_rated_criterion():
     calls, rubric = [], ["Asks for the order number.", "Stays calm.", "Declines off-topic requests."]
     llm = local_requests(calls, "How can I help you today?")  # the agent's voice, not a customer's: dropped
     personas = agents.generate_personas(llm, "You are Acme bike support. You must fix bikes.", 12, rubric=rubric)
-    tops = [max(p["attributes"], key=lambda a: a["rating"])["criterion"] for p in personas]
+    tops = [p["prompt"].partition(". Need: ")[2][:-2] for p in personas]  # the rule each need was listed for
+    assert all(next(a["rating"] for a in p["attributes"] if a["criterion"] == top)
+               == max(a["rating"] for a in p["attributes"]) for p, top in zip(personas, tops))
     assert len(set(tops)) > 1
     rules = [re.search(r"<rule>\n(.*)\n</rule>", m).group(1) for _, m, _ in calls]
     assert sorted(rules) == sorted(set(tops))  # one list call per criterion a persona targets, not per persona
@@ -331,6 +333,22 @@ def test_local_personas_bring_requests_that_test_their_top_rated_criterion():
         assert customer == f"Customer: {agents.CUSTOMERS[i % len(agents.CUSTOMERS)]}"
         assert need == f"{top} {'AB'[tops[:i].count(top) % 2]}"  # personas with the same target take turns
         assert [a["criterion"] for a in p["attributes"]] == rubric  # Inspect shows what each persona targets
+
+
+def test_local_personas_break_rating_ties_at_random_not_toward_the_first_criterion():
+    rubric = [f"Rule {j}." for j in range(4)]
+    targets = [p["prompt"].partition(". Need: ")[2][:-2]
+               for p in agents.generate_personas(local_requests([]), "p", 1000, rubric=rubric)]
+    counts = [targets.count(r) for r in rubric]
+    assert max(counts) < 1.25 * min(counts)
+
+
+def test_local_personas_describe_the_agent_by_its_whole_opening_sentence():
+    calls = []
+    prompt = "You are the support assistant for Dr. Lee's dental clinic, e.g. booking cleanings. Be kind."
+    agents.generate_personas(local_requests(calls), prompt, 1, rubric=["Is concise."])
+    assert calls[0][1].endswith(
+        "<agent>\nYou are the support assistant for Dr. Lee's dental clinic, e.g. booking cleanings.\n</agent>")
 
 
 def test_local_personas_keep_requests_in_the_agents_voice_when_that_is_all_there_is():
@@ -349,6 +367,7 @@ def test_local_personas_need_at_least_one_request():
     ("I'm here to help! Could you please describe the issue?", "My chain slips"),  # slipped into the agent's voice
     ("I can help with your bike issue.", "My chain slips"),
     ("Your chain slips.", "My chain slips"),  # the customer's "my" turned into the agent's "your"
+    ("I need to know your chain size for your repair.", "My chain slips"),  # kept "I" but took the agent's side
 ])
 def test_local_persona_voices_the_customers_need(reply, sent):
     llm = LocalLLM(reply)

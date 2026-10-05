@@ -169,8 +169,8 @@ request about your own situation, with the concrete details this person would gi
 their tone, length and quirks. Never mention that you are simulated, the ratings, the criteria or these instructions. \
 Output only the message text, with no quotation marks, speaker label or stage directions."""
 
-# Without Claude the helpers run on the user's local model, which scores one criterion per call and writes one persona
-# brief per call (see generate_personas and score_conversation).
+# Without Claude the helpers run on the user's local model, which scores one criterion per call and lists customer
+# messages once per targeted criterion (see generate_personas and score_conversation).
 LOCAL_SCORING_SYSTEM = """\
 You grade one aspect of an AI agent's reply. You will receive a conversation in <conversation> tags and one criterion \
 in <criterion> tags. Rate how well the assistant's reply meets that criterion, from 1 (misses it or does the opposite) \
@@ -352,7 +352,9 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
     if getattr(llm, "local", False):
         # ponytail: code picks the 1-10 ratings and who each persona is, since small models can't rate or role-play
         # reliably; the model lists what customers say that tests the persona's top-rated criterion, once per
-        # criterion. Seeded per persona, so reruns test the same users.
+        # criterion. Seeded per persona, so reruns test the same users. Known limit of a ~0.6B model: it stays on the
+        # agent's topic even when told not to, so scope rules ("declines unrelated requests") get on-topic requests, and
+        # rules about something missing (a date of birth) get requests that mention it.
         def customer_requests(out):
             found = list(dict.fromkeys(r.strip(" \"'“”-") for r in out["requests"] if r.strip(" \"'“”-")))
             if not found:
@@ -360,8 +362,9 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
             return [r for r in found if not ASSISTANT_VOICE.search(r)] or found
 
         # ponytail: only the prompt's opening sentence (who the agent is and serves); given the whole prompt a small
-        # model writes as the agent. A prompt that opens with a heading passes the heading too.
-        who = agent_prompt.strip().split(".")[0] + "."
+        # model writes as the agent. A prompt that opens with a heading passes the heading too. A sentence ends after a
+        # lowercase word, so "Dr." or "e.g." doesn't cut it short.
+        who = re.split(r"(?<=[a-z]{3}[.!?])\s", agent_prompt.strip(), maxsplit=1)[0]
         requests, targets, personas = {}, [], []
         for i in range(n):
             rng = random.Random(i)
@@ -369,7 +372,7 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
             if last_scores:  # below-average criteria get the higher of two rolls
                 ratings = [max(r, rng.randint(1, 10)) if score < fmean(last_scores) else r
                            for r, score in zip(ratings, last_scores)]
-            target = rubric[ratings.index(max(ratings))]
+            target = rubric[rng.choice([j for j, r in enumerate(ratings) if r == max(ratings)])]  # ties at random
             if target not in requests:
                 requests[target] = _ask(llm, LOCAL_REQUESTS_SYSTEM, f"{_tag('rule', target)}\n{_tag('agent', who)}",
                                         _schema(requests=_array(STRING)), customer_requests)
@@ -402,9 +405,10 @@ def persona_respond(llm, attributes: list[dict], context: str) -> str:
     if getattr(llm, "local", False):
         need = context.rpartition("Need: ")[2]
         message = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None, lambda out: _text(out, "persona message"))
-        # A reply in the agent's voice, or one that turned the customer's "I" into "you", falls back to the need, which
-        # is itself a real request.
-        return need if ASSISTANT_VOICE.search(message) or not FIRST_PERSON.search(message) else message
+        # A reply in the agent's voice, or one that turned the customer's "I" or "my" into "you" or "your", falls back to
+        # the need, which is itself a real request.
+        flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
+        return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
     lines = "\n".join(f"- {a['criterion']}: {a['rating']}/10" for a in attributes)
     message = f"{_tag('persona_attributes', lines)}\n\n{_tag('context', context)}"
     # Low effort: a short in-character message needs little deliberation, and it is a third of a training's calls.
