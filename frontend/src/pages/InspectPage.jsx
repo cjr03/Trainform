@@ -69,8 +69,8 @@ function Prompts({ state }) {
           </section>
           <section className="prompt-block prompt-best" aria-label="Highest-scoring prompt">
             <h3>
-              Highest-scoring prompt
-              {t.best_prompt != null && <span className="prompt-score">{fmt(t.best_score)}/10</span>}
+              Highest-scoring prompt{' '}
+              {t.best_prompt != null && <span className="prompt-score">Score {fmt(t.best_score)}/10</span>}
             </h3>
             {t.best_prompt != null ? <pre tabIndex={0}>{t.best_prompt}</pre> : <p className="muted">No finished round yet</p>}
           </section>

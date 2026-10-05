@@ -273,6 +273,7 @@ it('shows the original and highest-scoring prompts of the selected training', as
   const best = prompts.getByRole('region', { name: 'Highest-scoring prompt' })
   expect(best).toHaveTextContent(details[2].best_prompt)
   expect(best).toHaveTextContent('8.3/10')
+  expect(prompts.getByRole('heading', { name: 'Highest-scoring prompt Score 8.3/10' })).toBeInTheDocument()
 })
 
 it('shows an empty best prompt until a round finishes, and follows the selected training', async () => {
