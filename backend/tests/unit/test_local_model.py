@@ -401,7 +401,8 @@ def test_load_adapter_restores_adapter_bytes(tiny_model_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
     trained = LocalModel("tiny")
     trained.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}] * 3)
-    lora = lambda m: {n: p.detach().cpu() for n, p in m.model.named_parameters() if "lora_" in n}  # noqa: E731
+    # clone: on the CPU, .cpu() returns the same storage, so a snapshot would change along with the model.
+    lora = lambda m: {n: p.detach().cpu().clone() for n, p in m.model.named_parameters() if "lora_" in n}  # noqa: E731
     resumed = LocalModel("tiny")
     assert any(not p.equal(lora(trained)[n]) for n, p in lora(resumed).items())
     resumed.load_adapter(trained.adapter_bytes())
