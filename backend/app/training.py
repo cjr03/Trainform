@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field, StringConstraints
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ from app.auth import current_user
 from app.db import SessionLocal, get_db
 from app.llm import get_llm, local_llm
 from app.local_model import LocalModel, list_local_models
-from app.models import Scenario, TrainedModel, Training, User
+from app.models import ACTIVE, Scenario, TrainedModel, Training, User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/trainings", tags=["training"])
@@ -29,50 +29,71 @@ INTERNAL_ERROR = "Training failed; see the server logs."
 _SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
 
 
+def _set_status(db: Session, t: Training, old: tuple, new: str, **values) -> bool:
+    """Move `t` from one of the `old` statuses to `new` in one UPDATE, so a concurrent change can't be lost."""
+    changed = db.execute(update(Training).where(Training.id == t.id, Training.status.in_(old))
+                         .values(status=new, **values)).rowcount
+    db.commit()
+    return bool(changed)
+
+
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal) -> None:
-    """Run every round of a training. `load_model(name)` returns a LocalModel-like object."""
+    """Run a training's remaining rounds, continuing from its saved progress (models.Training.next_prompt, personas
+    and adapter, the round's saved scenarios and its finished rounds' TrainedModels). `load_model(name)` returns a
+    LocalModel-like object. The API writes status too ("pausing"), so this only changes it with targeted UPDATEs."""
     with session_factory() as db:
         try:
             t = db.get(Training, training_id)
-            t.status = "running"
-            db.commit()
+            _set_status(db, t, ("pending",), "running")  # left alone if the user already asked to pause
             model = load_model(t.base_model)
+            if t.adapter:
+                model.load_adapter(t.adapter)
             llm = llm or local_llm(model)  # no Claude: the helpers share the loaded model, with its adapter off
-            prompt = t.initial_prompt
-            best_score = None
-            for r in range(1, t.rounds + 1):
+            prompt = t.next_prompt or t.initial_prompt
+            finished = db.scalar(select(func.count()).where(TrainedModel.training_id == t.id))
+            for r in range(finished + 1, t.rounds + 1):
+                if _set_status(db, t, ("pausing",), "paused"):  # a safe point: progress is saved
+                    return
                 t.current_round = r
-                db.commit()
                 weights = model.adapter_bytes()  # what this round's scenarios run with, before its SFT
-                done = []
-                personas = agents.generate_personas(llm, prompt, t.scenarios_per_round, rubric=t.rubric)
-                # A persona's message depends only on the persona, so the round's messages are written at once. The
-                # rest of each scenario waits for the prompt the one before it produced, so it runs in order.
-                messages = agents.concurrently(llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]),
-                                               personas)
-                for number, (persona, message) in enumerate(zip(personas, messages), 1):
+                if t.personas is None:
+                    personas = agents.generate_personas(llm, prompt, t.scenarios_per_round, rubric=t.rubric)
+                    # A persona's message depends only on the persona, so the round's messages are written at once.
+                    # The rest of each scenario waits for the prompt the one before it produced, so it runs in order.
+                    messages = agents.concurrently(
+                        llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]), personas)
+                    t.personas = [{"persona": p, "message": m} for p, m in zip(personas, messages)]
+                db.commit()
+                done = list(db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r)
+                                       .order_by(Scenario.scenario_number)))
+                for number, p in enumerate(t.personas[len(done):], len(done) + 1):
+                    if _set_status(db, t, ("pausing",), "paused"):
+                        return
+                    message = p["message"]
                     reply = agents.primary_respond(model.generate, prompt, message)  # same user turn SFT trains on
                     conversation = f"User: {message}\nAssistant: {reply}"
                     scores = agents.score_conversation(llm, conversation, t.rubric)
-                    s = Scenario(training_id=t.id, round=r, scenario_number=number, persona=persona, prompt=prompt,
+                    s = Scenario(training_id=t.id, round=r, scenario_number=number, persona=p["persona"], prompt=prompt,
                                  input=message, output=reply, scores=scores, score=fmean(x["score"] for x in scores))
+                    if r < t.rounds or number < len(t.personas):  # the very last improved prompt would go unused
+                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores)
+                    # Saved together with the prompt it produced: a failure before this just redoes the scenario.
                     db.add(s)
                     t.scenarios_done += 1
+                    t.next_prompt = prompt
                     db.commit()
                     done.append(s)
-                    if r < t.rounds or number < len(personas):  # the very last improved prompt would go unused
-                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores)
                 examples = [{"prompt": s.prompt, "input": s.input, "output": s.output}
                             for s in done if s.score >= HIGH_SCORE]
                 if examples:
                     model.sft(examples)
                 # Store what earned the score: the round's weights and its best-scoring scenario's prompt.
-                m = TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
-                                 weights=weights, mean_score=fmean(s.score for s in done))
-                db.add(m)
-                db.flush()
-                if best_score is None or m.mean_score > best_score:
-                    best_score, t.best_model_id = m.mean_score, m.id
+                db.add(TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
+                                    weights=weights, mean_score=fmean(s.score for s in done)))
+                t.best_model_id = db.scalar(select(TrainedModel.id).where(TrainedModel.training_id == t.id)
+                                            .order_by(TrainedModel.mean_score.desc(), TrainedModel.round).limit(1))
+                # Committed with the round's model, so a resume starts the next round on the trained adapter.
+                t.adapter, t.personas = model.adapter_bytes(), None
                 db.commit()
             t.status = "completed"
             db.commit()
@@ -136,18 +157,13 @@ def detail(db: Session, t: Training) -> dict:
     }
 
 
-@router.post("", status_code=201)
-def create_training(body: TrainingIn, background: BackgroundTasks, user: User = Depends(current_user),
-                    llm=Depends(get_llm), db: Session = Depends(get_db)):
-    if body.base_model not in {m["name"] for m in list_local_models(user.id)}:
-        raise HTTPException(400, f"Unknown base model: {body.base_model}")
+def _start(background: BackgroundTasks, db: Session, llm, write) -> dict:
+    """Take a training slot, run `write()`, which commits a pending Training and returns it, and run it in the
+    background. Returns the training's detail."""
     if not _SLOTS.acquire(blocking=False):
         raise HTTPException(429, "The server is busy with other trainings; try again later.")
     try:
-        t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
-                     scenarios_per_round=body.scenarios, rounds=body.rounds)
-        db.add(t)
-        db.commit()
+        t = write()
         out = detail(db, t)
     except Exception as e:
         _SLOTS.release()
@@ -166,6 +182,57 @@ def _run_in_slot(*args) -> None:
         run_training(*args)
     finally:
         _SLOTS.release()
+
+
+@router.post("", status_code=201)
+def create_training(body: TrainingIn, background: BackgroundTasks, user: User = Depends(current_user),
+                    llm=Depends(get_llm), db: Session = Depends(get_db)):
+    if body.base_model not in {m["name"] for m in list_local_models(user.id)}:
+        raise HTTPException(400, f"Unknown base model: {body.base_model}")
+
+    def insert():
+        t = Training(user_id=user.id, base_model=body.base_model, initial_prompt=body.prompt, rubric=body.rubric,
+                     scenarios_per_round=body.scenarios, rounds=body.rounds)
+        db.add(t)
+        db.commit()
+        return t
+
+    return _start(background, db, llm, insert)
+
+
+@router.post("/{training_id}/pause")
+def pause_training(training_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Ask the run to stop at its next safe point, where it saves its progress and becomes "paused"."""
+    t = owned(db, training_id, user)
+    if not _set_status(db, t, ("pending", "running"), "pausing"):
+        raise HTTPException(409, "Only a pending or running training can be paused.")
+    return detail(db, t)
+
+
+@router.post("/{training_id}/resume")
+def resume_training(training_id: int, background: BackgroundTasks, user: User = Depends(current_user),
+                    llm=Depends(get_llm), db: Session = Depends(get_db)):
+    """Continue a paused or failed training from its saved progress (the UI's Retry), with the user's current helper."""
+    t = owned(db, training_id, user)
+    if t.status not in ("paused", "failed"):
+        raise HTTPException(409, "Only a paused or failed training can be resumed.")
+
+    def restart():
+        # Only one request can make the change, so a training never gets a second run.
+        if not _set_status(db, t, ("paused", "failed"), "pending", error=None):
+            raise HTTPException(409, "Only a paused or failed training can be resumed.")
+        return t
+
+    return _start(background, db, llm, restart)
+
+
+@router.delete("/{training_id}", status_code=204)
+def delete_training(training_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    t = owned(db, training_id, user)
+    # Its scenarios and trained models go with it (ON DELETE CASCADE).
+    if not db.execute(delete(Training).where(Training.id == t.id, Training.status.not_in(ACTIVE))).rowcount:
+        raise HTTPException(409, "Pause the training before deleting it.")
+    db.commit()
 
 
 @router.get("")

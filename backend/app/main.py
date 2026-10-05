@@ -13,13 +13,18 @@ async def lifespan(_app: FastAPI):
     auth._secret()  # fail fast: tokens and stored Claude keys both need TRAINFORM_SECRET
     # ponytail: create_all instead of migrations; add Alembic once a deployed schema has to change.
     Base.metadata.create_all(engine)
-    # Training runs are background threads of this process, so any left pending/running died with the last one.
     with engine.begin() as conn:
-        conn.execute(update(models.Training).where(models.Training.status.in_(("pending", "running")))
-                     .values(status="failed", error="Interrupted by a server restart"))
         # Added after the first release; create_all never alters existing tables.
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0"))
-        models.ONE_ACTIVE_TRAINING.create(conn, checkfirst=True)
+        conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
+                          "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea"))
+        # Training runs are background threads of this process, so any left active died with the last one. Their
+        # progress is saved, so they wait, paused, for the user to resume them.
+        conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))
+                     .values(status="paused", error=None))
+        # Recreated so an index from before "pausing" existed covers it too.
+        conn.execute(text("DROP INDEX IF EXISTS one_active_training_per_user"))
+        models.ONE_ACTIVE_TRAINING.create(conn)
     yield
 
 

@@ -15,6 +15,7 @@ class FakeModel:
         self.generate_calls = []
         self.conversations = []
         self.sft_calls = []
+        self.adapter = b"PK-0"
 
     def generate(self, system_prompt, conversation):
         self.generate_calls.append(system_prompt)
@@ -23,10 +24,14 @@ class FakeModel:
 
     def sft(self, examples):
         self.sft_calls.append(examples)
+        self.adapter = b"PK-%d" % (int(self.adapter[3:]) + 1)
         return 0.5
 
     def adapter_bytes(self):
-        return b"PK-%d" % len(self.sft_calls)
+        return self.adapter
+
+    def load_adapter(self, data):
+        self.adapter = data
 
 
 @pytest.fixture
@@ -253,6 +258,108 @@ def test_dead_database_is_logged_not_raised(caplog):
     with caplog.at_level(logging.ERROR):
         training.run_training(1, "llm", FakeModel, session_factory=DeadSession)
     assert caplog.records and all(r.exc_info for r in caplog.records)
+
+
+def request_pause(*_):
+    """What POST /pause does, from another connection."""
+    with SessionLocal() as s:
+        s.query(Training).update({"status": "pausing"})
+        s.commit()
+
+
+def resume(db, t):
+    """What POST /resume does before starting the run again."""
+    db.query(Training).filter_by(id=t.id).update({"status": "pending", "error": None})
+    db.commit()
+    return run(db, t)
+
+
+def test_failure_mid_round_resumes_from_saved_progress(db, user, fake_agents):
+    fake_agents.scores = [8, 5, RuntimeError("Claude rate limit reached")]
+    t, _ = run(db, make_training(db, user, rounds=2, scenarios=3))
+    assert (t.status, t.error, t.current_round, t.scenarios_done) == ("failed", "Claude rate limit reached", 1, 2)
+    # Saved: the prompt scenario 3 runs with, and round 1's personas with their messages; no round finished yet.
+    assert t.next_prompt == "P++" and t.adapter is None
+    assert [x["message"] for x in t.personas] == [f"msg from persona {k}" for k in (1, 2, 3)]
+    assert t.personas[0]["persona"] == {"attributes": [{"criterion": "Clarity", "rating": 1}], "prompt": "persona 1"}
+
+    fake_agents.scores = [9, 4, 4, 4]
+    t, [model] = resume(db, t)
+    assert (t.status, t.error, t.current_round, t.scenarios_done) == ("completed", None, 2, 6)
+    scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
+    # The same chain an uninterrupted run makes: round 1's personas are not regenerated, scenario 3 is redone.
+    assert [s.prompt for s in scenarios] == ["P", "P+", "P++", "P+++", "P++++", "P+++++"]
+    assert fake_agents.persona_prompts == ["P", "P+++"]
+    assert fake_agents.events.count("message persona 1") == 2  # once per round
+    # Round 1's SFT uses its high scorers from both runs.
+    assert model.sft_calls[0] == [{"prompt": x.prompt, "input": x.input, "output": x.output}
+                                  for x in (scenarios[0], scenarios[2])]
+    trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
+    assert [(m.round, m.weights) for m in trained] == [(1, b"PK-0"), (2, b"PK-1")]
+    assert t.best_model_id == trained[0].id
+
+
+def test_pause_at_a_round_boundary_and_resume(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8]
+    sft = FakeModel.sft
+    monkeypatch.setattr(FakeModel, "sft", lambda self, examples: request_pause() or sft(self, examples))
+    t, _ = run(db, make_training(db, user, rounds=2, scenarios=1))
+    # The round in flight finishes, with its SFT, and the training stops before the next one.
+    assert (t.status, t.current_round, t.scenarios_done, t.next_prompt, t.personas) == ("paused", 1, 1, "P+", None)
+    assert t.adapter == b"PK-1"  # the adapter after round 1's SFT
+    assert db.query(TrainedModel).count() == 1 and fake_agents.persona_prompts == ["P"]
+
+    monkeypatch.setattr(FakeModel, "sft", sft)
+    fake_agents.scores = [4]
+    t, [model] = resume(db, t)
+    assert (t.status, t.current_round, t.scenarios_done) == ("completed", 2, 2)
+    assert fake_agents.persona_prompts == ["P", "P+"]
+    assert model.generate_calls == ["P+"] and model.sft_calls == []
+    trained = db.query(TrainedModel).order_by(TrainedModel.round).all()
+    assert [(m.round, m.weights) for m in trained] == [(1, b"PK-0"), (2, b"PK-1")]  # round 2 ran on the saved adapter
+    assert t.best_model_id == trained[0].id  # best across both runs, not just the resumed one
+
+
+def test_pause_mid_round_stops_before_the_next_scenario(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8]
+    score = training.agents.score_conversation
+    monkeypatch.setattr(training.agents, "score_conversation", lambda *a: request_pause() or score(*a))
+    t, _ = run(db, make_training(db, user, rounds=1, scenarios=3))
+    # The scenario in flight is saved (the thread's commit does not overwrite "pausing"), and no other starts.
+    assert (t.status, t.scenarios_done, t.next_prompt) == ("paused", 1, "P+")
+    assert db.query(Scenario).count() == 1 and db.query(TrainedModel).count() == 0
+
+    monkeypatch.setattr(training.agents, "score_conversation", score)
+    fake_agents.scores = [8, 8]
+    t, [model] = resume(db, t)
+    assert (t.status, t.scenarios_done) == ("completed", 3)
+    assert [s.prompt for s in db.query(Scenario).order_by(Scenario.scenario_number)] == ["P", "P+", "P++"]
+    assert model.generate_calls == ["P+", "P++"]
+
+
+def test_pause_before_the_run_starts(db, user, fake_agents):
+    t = make_training(db, user, rounds=1, scenarios=1)
+    request_pause()
+    t, _ = run(db, t)
+    assert (t.status, t.current_round) == ("paused", 0)  # never set back to "running"
+    assert fake_agents.persona_prompts == []
+
+
+def test_a_scenario_is_saved_together_with_the_prompt_it_produced(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8, 8]
+    improved = []
+
+    def generate_improved_prompt(llm, prompt, conv, scores):
+        if len(improved) == 1:
+            raise RuntimeError("Claude API error 500")
+        improved.append(prompt)
+        return prompt + "+"
+
+    monkeypatch.setattr(training.agents, "generate_improved_prompt", generate_improved_prompt)
+    t, _ = run(db, make_training(db, user, rounds=1, scenarios=3))
+    # Scenario 2 was scored but its improved prompt failed, so neither is saved and a resume redoes it.
+    assert (t.status, t.scenarios_done, t.next_prompt) == ("failed", 1, "P+")
+    assert db.query(Scenario).count() == 1
 
 
 def test_score_windows():

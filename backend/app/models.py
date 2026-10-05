@@ -32,7 +32,8 @@ class Training(Base):
     rubric: Mapped[list[str]] = mapped_column(JSON)
     scenarios_per_round: Mapped[int]
     rounds: Mapped[int]
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | running | completed | failed
+    # pending | running | pausing | paused | completed | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     error: Mapped[str | None] = mapped_column(Text)
     current_round: Mapped[int] = mapped_column(default=0)
     scenarios_done: Mapped[int] = mapped_column(default=0)  # across all rounds
@@ -41,13 +42,19 @@ class Training(Base):
         ForeignKey("trained_models.id", use_alter=True, ondelete="SET NULL", name="fk_trainings_best_model")
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Saved progress, so a paused, failed or interrupted training continues where it stopped (see run_training):
+    next_prompt: Mapped[str | None] = mapped_column(Text)  # the prompt the next scenario runs with
+    personas: Mapped[list[dict] | None] = mapped_column(JSON)  # current round: [{"persona", "message"}]
+    # Zipped LoRA adapter after the last finished round's SFT; deferred so listing trainings doesn't load it.
+    adapter: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
 
     user: Mapped[User] = relationship(back_populates="trainings")
 
 
-# At most one pending or running training per user, enforced by the database so concurrent requests can't race.
+ACTIVE = ("pending", "running", "pausing")  # statuses with a run in progress (or about to be)
+# At most one active training per user, enforced by the database so concurrent requests can't race.
 ONE_ACTIVE_TRAINING = Index("one_active_training_per_user", Training.user_id, unique=True,
-                            postgresql_where=Training.status.in_(("pending", "running")))
+                            postgresql_where=Training.status.in_(ACTIVE))
 
 
 class Scenario(Base):

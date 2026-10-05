@@ -22,6 +22,7 @@ from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.errors import GatedRepoError, LocalEntryNotFoundError, RepositoryNotFoundError
 from huggingface_hub.utils import filter_repo_objects
 from peft import LoraConfig, get_peft_model
+from peft.utils import load_peft_weights, set_peft_model_state_dict
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -275,6 +276,12 @@ class LocalModel:
                 if f.is_file():
                     zf.write(f, f.relative_to(tmp))
         return buf.getvalue()
+
+    def load_adapter(self, data: bytes) -> None:
+        """Restore an adapter from adapter_bytes, e.g. to resume a training on the weights it had trained."""
+        with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(io.BytesIO(data)) as zf:
+            zf.extractall(tmp)  # our own adapter_bytes, read back from the database
+            set_peft_model_state_dict(self.model, load_peft_weights(tmp, device=self.device))
 
 
 class DownloadIn(BaseModel):

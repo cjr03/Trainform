@@ -37,3 +37,6 @@ def test_fake_local_model():
     assert model.examples_seen == 2
     with zipfile.ZipFile(io.BytesIO(model.adapter_bytes())) as zf:
         assert json.loads(zf.read("adapter_config.json"))["peft_type"] == "LORA"
+    resumed = fake.FakeLocalModel("demo")
+    resumed.load_adapter(model.adapter_bytes())
+    assert resumed.examples_seen == 2 and resumed.adapter_bytes() == model.adapter_bytes()
