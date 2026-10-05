@@ -41,7 +41,7 @@ def test_full_account_flow(client):
     assert r.status_code == 201
     body = r.json()
     assert body["user"] == {"id": body["user"]["id"], "email": "ada@example.com", "username": "ada",
-                            "claude_linked": False}
+                            "claude_linked": False, "claude_available": False}
     assert client.get("/api/me", headers=bearer(body["token"])).json() == body["user"]
 
     r = client.post("/api/auth/login", json={"username": "ada", "password": "password1"})
@@ -68,7 +68,7 @@ def test_password_stored_hashed(client, db):
 
 def test_signup_with_claude_key_stored_encrypted(client, db):
     r = signup(client, anthropic_api_key="  sk-ant-secret  ")
-    assert r.json()["user"]["claude_linked"] is True
+    assert r.json()["user"]["claude_linked"] is True and r.json()["user"]["claude_available"] is True
     assert "sk-ant-secret" not in r.text
     stored = db.query(User).one().anthropic_key_encrypted
     assert "sk-ant-secret" not in stored
@@ -234,3 +234,10 @@ def test_login_is_throttled_after_repeated_failures(client):
     r = login(client, "password1")  # locked out even with the right password
     assert (r.status_code, r.json()["detail"]) == (429, "Too many failed sign-in attempts; try again later.")
     assert client.post("/api/auth/login", json={"username": "bob", "password": "x"}).status_code == 401
+
+
+def test_claude_is_available_but_not_linked_on_the_operators_shared_key(client, monkeypatch):
+    monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", "ada")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-operator")
+    user = signup(client).json()["user"]
+    assert (user["claude_linked"], user["claude_available"]) == (False, True)

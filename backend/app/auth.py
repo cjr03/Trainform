@@ -12,6 +12,7 @@ from pydantic import BaseModel, EmailStr, Field, StringConstraints
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import fake
 from app.db import get_db
 from app.models import User
 
@@ -125,9 +126,17 @@ class ClaudeKey(BaseModel):
     api_key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
 
 
+def shared_key(user: User) -> str | None:
+    """The operator's Claude key, for allow-listed usernames only, so open sign-up can't spend it."""
+    # ponytail: no per-user budget; add a daily call counter if allow-listed users need limits.
+    shared = {u.strip() for u in os.environ.get("TRAINFORM_SHARED_KEY_USERS", "").split(",")}
+    return os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
+
+
 def user_out(user: User) -> dict:
-    return {"id": user.id, "email": user.email, "username": user.username,
-            "claude_linked": user.anthropic_key_encrypted is not None}
+    linked = user.anthropic_key_encrypted is not None
+    return {"id": user.id, "email": user.email, "username": user.username, "claude_linked": linked,
+            "claude_available": linked or bool(shared_key(user)) or fake.enabled()}  # what Train can offer
 
 
 def _session(user: User) -> dict:

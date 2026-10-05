@@ -509,7 +509,7 @@ function Dashboard({ onReset }) {
   const [step, setStep] = useState(draft.step ?? 0)
   const [baseModel, setBaseModel] = useState(draft.baseModel ?? '')
   const [helper, setHelper] = useState(draft.helper ?? null) // 'claude' | 'local'; null: the server picks
-  const [claudeLinked, setClaudeLinked] = useState(null)
+  const [claudeAvailable, setClaudeAvailable] = useState(null)
   const [prompt, setPrompt] = useState(draft.prompt ?? '')
   const [rubric, setRubric] = useState(draft.rubric ?? [])
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
@@ -544,8 +544,8 @@ function Dashboard({ onReset }) {
   useEffect(() => {
     api.me().then(
       (me) => {
-        setClaudeLinked(me.claude_linked)
-        setHelper((h) => (me.claude_linked ? (h ?? 'claude') : 'local'))
+        setClaudeAvailable(me.claude_available)
+        setHelper((h) => (me.claude_available ? (h ?? 'claude') : 'local'))
       },
       () => {}, // unknown: the choice stays unset, so the server's default (Claude if linked) applies
     )
@@ -645,15 +645,15 @@ function Dashboard({ onReset }) {
                 type="radio"
                 name="train-helper"
                 checked={helper === key}
-                disabled={key === 'claude' && !claudeLinked}
-                aria-describedby={key === 'claude' && claudeLinked === false ? 'train-helper-hint' : undefined}
+                disabled={key === 'claude' && !claudeAvailable}
+                aria-describedby={key === 'claude' && claudeAvailable === false ? 'train-helper-hint' : undefined}
                 onChange={() => setHelper(key)}
               />
               <span>{label}</span>
             </label>
           ))}
         </fieldset>
-        {claudeLinked === false && (
+        {claudeAvailable === false && (
           <p id="train-helper-hint" className="muted">
             Link your Claude API key on the <a href="/account">Account</a> page to train with Claude.
           </p>

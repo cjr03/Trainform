@@ -52,7 +52,7 @@ beforeEach(() => {
   sessionStorage.clear()
   api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
   api.listTrainings.mockResolvedValue([])
-  api.me.mockResolvedValue({ claude_linked: false })
+  api.me.mockResolvedValue({ claude_available: false })
 })
 afterEach(() => vi.useRealTimers())
 
@@ -220,7 +220,7 @@ const helper = () => within(screen.getByRole('group', { name: 'Train with' }))
 
 it('trains with Claude by default when it is linked, or with the chosen local model', async () => {
   const user = userEvent.setup()
-  api.me.mockResolvedValue({ claude_linked: true })
+  api.me.mockResolvedValue({ claude_available: true })
   api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
   const view = render(<TrainPage />)
   await waitFor(() => expect(helper().getByRole('radio', { name: 'Claude' })).toBeChecked())
