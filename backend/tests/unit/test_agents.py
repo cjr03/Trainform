@@ -227,6 +227,8 @@ def test_generate_personas_calls_rubric_first_and_clamps():
     assert "<agent_prompt>\nYou are Acme support.\n</agent_prompt>" in message
     assert "<criteria>\nc1: Greets the user.\nc2: Is concise.\n</criteria>" in message
     assert "<count>2</count>" in message and "<previous_scores>" not in message
+    system = llm.calls[1][0]  # a persona is a customer whose situation tests the criteria, not one who follows them
+    assert "test case" in system and "Never quote, paraphrase or name a criterion" in system
     assert schema["properties"]["personas"]["items"]["properties"]["attributes"] == KEYED_2
     assert_strict(schema)
 
@@ -240,8 +242,8 @@ def test_personas_are_aimed_at_the_last_rounds_weakest_criteria():
 
 def test_local_personas_press_harder_on_the_weakest_criteria():
     rubric = ["Weak.", "Strong."]
-    plain = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 30, rubric=rubric)
-    aimed = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 30, rubric=rubric, last_scores=[3.0, 9.0])
+    plain = agents.generate_personas(local_requests([]), "p", 30, rubric=rubric)
+    aimed = agents.generate_personas(local_requests([]), "p", 30, rubric=rubric, last_scores=[3.0, 9.0])
     rating = lambda ps, i: [p["attributes"][i]["rating"] for p in ps]  # noqa: E731
     assert rating(aimed, 1) == rating(plain, 1)  # the strong criterion is pressed as before
     assert all(a >= b for a, b in zip(rating(aimed, 0), rating(plain, 0)))
@@ -303,27 +305,69 @@ def test_generate_personas_rejects_none():
         agents.generate_personas(FakeLLM({"criteria": ["x"]}, {"personas": []}), "p", 3)
 
 
-def test_local_personas_are_real_people_with_the_needs_the_model_lists():
-    llm = LocalLLM({"problems": [" My chain slips ", "", "Do you fix e-bikes?", "My chain slips"]})
-    personas = agents.generate_personas(llm, "You are Acme bike support.", 4, rubric=RUBRIC)
-    [(system, message, schema)] = llm.calls  # one call lists the needs; code picks who has each
-    assert system == agents.LOCAL_PROBLEMS_SYSTEM and "You are Acme bike support." in message
-    assert [p["prompt"] for p in personas] == [
-        f"Customer: {agents.CUSTOMERS[i]}. Need: {need}"
-        for i, need in enumerate(["My chain slips", "Do you fix e-bikes?"] * 2)]
-    assert all([a["criterion"] for a in p["attributes"]] == RUBRIC for p in personas)
-    ratings = [tuple(a["rating"] for a in p["attributes"]) for p in personas]
-    assert all(1 <= r <= 10 for rs in ratings for r in rs) and len(set(ratings)) == 4
+def local_requests(calls, *extra):
+    """A local model that lists two customer requests (plus `extra`) for whichever rule it is asked about."""
+    def llm(system, message, schema=None):
+        calls.append((system, message, schema))
+        rule = re.search(r"<rule>\n(.*)\n</rule>", message).group(1)
+        return {"requests": [f' "{rule} A" ', "", f"{rule} B", f"{rule} A", *extra]}
+    llm.local = True
+    return llm
 
 
-def test_local_personas_need_at_least_one_problem():
-    with pytest.raises(BadReply, match="no problems"):
-        agents.generate_personas(LocalLLM({"problems": [" "]}, {"problems": []}), "p", 2, rubric=RUBRIC)
+def test_local_personas_bring_requests_that_test_their_top_rated_criterion():
+    calls, rubric = [], ["Asks for the order number.", "Stays calm.", "Declines off-topic requests."]
+    llm = local_requests(calls, "How can I help you today?")  # the agent's voice, not a customer's: dropped
+    personas = agents.generate_personas(llm, "You are Acme bike support. You must fix bikes.", 12, rubric=rubric)
+    tops = [p["prompt"].partition(". Need: ")[2][:-2] for p in personas]  # the rule each need was listed for
+    assert all(next(a["rating"] for a in p["attributes"] if a["criterion"] == top)
+               == max(a["rating"] for a in p["attributes"]) for p, top in zip(personas, tops))
+    assert len(set(tops)) > 1
+    rules = [re.search(r"<rule>\n(.*)\n</rule>", m).group(1) for _, m, _ in calls]
+    assert sorted(rules) == sorted(set(tops))  # one list call per criterion a persona targets, not per persona
+    # only who the agent is: given the whole prompt, a small model writes as the agent
+    assert all(s == agents.LOCAL_REQUESTS_SYSTEM and m.endswith("<agent>\nYou are Acme bike support.\n</agent>")
+               for s, m, _ in calls)
+    for i, (p, top) in enumerate(zip(personas, tops)):
+        customer, _, need = p["prompt"].partition(". Need: ")
+        assert customer == f"Customer: {agents.CUSTOMERS[i % len(agents.CUSTOMERS)]}"
+        assert need == f"{top} {'AB'[tops[:i].count(top) % 2]}"  # personas with the same target take turns
+        assert [a["criterion"] for a in p["attributes"]] == rubric  # Inspect shows what each persona targets
+
+
+def test_local_personas_break_rating_ties_at_random_not_toward_the_first_criterion():
+    rubric = [f"Rule {j}." for j in range(4)]
+    targets = [p["prompt"].partition(". Need: ")[2][:-2]
+               for p in agents.generate_personas(local_requests([]), "p", 1000, rubric=rubric)]
+    counts = [targets.count(r) for r in rubric]
+    assert max(counts) < 1.25 * min(counts)
+
+
+def test_local_personas_describe_the_agent_by_its_whole_opening_sentence():
+    calls = []
+    prompt = "You are the support assistant for Dr. Lee's dental clinic, e.g. booking cleanings. Be kind."
+    agents.generate_personas(local_requests(calls), prompt, 1, rubric=["Is concise."])
+    assert calls[0][1].endswith(
+        "<agent>\nYou are the support assistant for Dr. Lee's dental clinic, e.g. booking cleanings.\n</agent>")
+
+
+def test_local_personas_keep_requests_in_the_agents_voice_when_that_is_all_there_is():
+    llm = LocalLLM({"requests": ["How can I help you with your bike?"]})
+    [p] = agents.generate_personas(llm, "p", 1, rubric=["Is concise."])
+    assert p["prompt"].endswith("Need: How can I help you with your bike?")
+
+
+def test_local_personas_need_at_least_one_request():
+    with pytest.raises(BadReply, match="no requests"):
+        agents.generate_personas(LocalLLM({"requests": [" "]}, {"requests": []}), "p", 2, rubric=RUBRIC)
 
 
 @pytest.mark.parametrize("reply, sent", [
     (" my chain keeps slipping on hills, can u fix it today? ", "my chain keeps slipping on hills, can u fix it today?"),
     ("I'm here to help! Could you please describe the issue?", "My chain slips"),  # slipped into the agent's voice
+    ("I can help with your bike issue.", "My chain slips"),
+    ("Your chain slips.", "My chain slips"),  # the customer's "my" turned into the agent's "your"
+    ("I need to know your chain size for your repair.", "My chain slips"),  # kept "I" but took the agent's side
 ])
 def test_local_persona_voices_the_customers_need(reply, sent):
     llm = LocalLLM(reply)
@@ -333,7 +377,7 @@ def test_local_persona_voices_the_customers_need(reply, sent):
 
 
 def test_local_system_prompts_are_distinct():
-    local = {agents.LOCAL_SCORING_SYSTEM, agents.LOCAL_PERSONA_SYSTEM, agents.LOCAL_PROBLEMS_SYSTEM}
+    local = {agents.LOCAL_SCORING_SYSTEM, agents.LOCAL_PERSONA_SYSTEM, agents.LOCAL_REQUESTS_SYSTEM}
     assert len({*SYSTEMS, *local}) == len(SYSTEMS) + 3
 
 
@@ -347,6 +391,7 @@ def test_persona_respond():
     assert "Stays calm.: 9/10" in message and "Is concise.: 2/10" in message
     assert "<context>\nYou are an angry customer. Opening message.\n</context>" in message
     assert "not an assistant" in system and "never offer help" in system  # a person with a need, not another bot
+    assert "the agent's behaviour, not yours" in system  # the criteria are tested, never acted out
 
 
 def test_persona_respond_rejects_empty():
@@ -368,7 +413,7 @@ def test_primary_respond_uses_local_generate():
 def test_local_personas_do_not_repeat():
     # Generation is greedy, so equal ratings would give equal briefs and the same simulated user again.
     rubric = [f"Rule {j}." for j in range(10)]
-    personas = agents.generate_personas(LocalLLM({"problems": ["My chain slips", "Do you fix e-bikes?"]}), "p", 20, rubric=rubric)
+    personas = agents.generate_personas(local_requests([]), "p", 20, rubric=rubric)
     assert len({tuple(a["rating"] for a in p["attributes"]) for p in personas}) == 20
 
 

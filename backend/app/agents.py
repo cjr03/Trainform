@@ -114,39 +114,53 @@ Be consistent: the same reply must always get the same scores.
 Return each criterion's score under that criterion's key."""
 
 PERSONA_GENERATOR_SYSTEM = """\
-You design simulated users who stress-test an AI agent. You will receive the agent's system prompt in <agent_prompt> \
-tags, the criteria it is graded on in <criteria> tags, one per line, each after its key (c1, c2, ...), and how many \
-personas to create in <count> tags.
+You design simulated customers who test an AI agent against its grading rubric. You will receive the agent's system \
+prompt in <agent_prompt> tags, the criteria its replies are graded on in <criteria> tags, one per line, each after its \
+key (c1, c2, ...), and how many personas to create in <count> tags.
+
+The criteria describe the agent's behaviour, never the customer's. Each persona is a test case: a real person who \
+would actually come to this agent (a customer, client, patient, student or member of the public, as fits the \
+agent) whose situation and opening message create the conditions under which some criteria are tested. For example, \
+to test "Asks for the order number before processing a refund", the customer demands a refund without giving an order \
+number; to test "Stays calm with angry customers", the customer is angry; to test "Declines requests outside its \
+scope", the customer asks for something the agent does not handle; to test "Keeps answers brief", the customer asks a \
+broad question that invites a long answer.
 
 For each persona provide:
-- attributes: under each criterion's key, a rating from 1 to 10 for how hard this persona pressures the agent on that \
-criterion. 1 makes the criterion easy to meet; 10 actively pushes the agent toward failing it, for example by being \
-vague, impatient, off-topic, emotional, manipulative, or by asking for exactly what the prompt forbids.
-- prompt: a self-contained brief, in the second person, for an actor playing this user. Each persona is a real \
-person who would actually come to this agent (a customer, client, patient, student or member of the public, as fits \
-the agent), never an AI, assistant or support agent. Say who they are, the concrete need they bring and why, with the \
-specific details a real person has (what happened, when, names, numbers, what they already tried), what they do and \
-don't know, and how they write (tone, length, vocabulary, typos). The conversation starts with their message, so the \
-need must be stated or hinted at in it. Make every high-rated pressure concrete in the brief.
+- attributes: under each criterion's key, a rating from 1 to 10 for how hard this persona tests that criterion. At \
+8-10 the customer's situation squarely calls for that behaviour and makes it hard to get right, for example by being \
+vague, impatient, emotional, manipulative or off-topic, or by asking for exactly what the prompt forbids; at 4-7 it \
+comes up in a milder form; at 1-3 the persona leaves it easy and does nothing to provoke it.
+- prompt: a self-contained brief, in the second person, for an actor playing this customer. Say who they are, the \
+concrete need they bring and why, with the specific details a real person has (what happened, when, names, numbers, \
+what they already tried), what they leave out or get wrong, their mood, and how they write (tone, length, vocabulary, \
+typos). Build every high-rated criterion into this situation as something the customer wants, does, feels or leaves \
+out. The conversation starts with their message, so the need must be stated or hinted at in it.
+
+The brief describes only the customer. Never quote, paraphrase or name a criterion, never describe what the agent \
+should do, and never give the customer the agent's behaviour: a customer who "asks for the order number" or "keeps \
+replies concise" is playing the agent, not testing it. The customer is never an AI, assistant or support agent and \
+never sounds like one.
 
 You may also receive, in <previous_scores> tags under the same keys, the agent's mean score on each criterion over \
 its last round of conversations. Then aim the personas at its weaknesses: rate the lowest-scoring criteria high for \
-most personas, so the agent practises what it fails at, while still stressing each other criterion hard in some \
+most personas, so the agent practises what it fails at, while still testing each other criterion hard in some \
 personas so it keeps what it already does well.
 
 Vary the personas widely. Use the full 1-10 range and different combinations of ratings, so that each criterion is \
-stressed hard by some personas and lightly by others; do not rate every criterion high for everyone. Make them \
+tested hard by some personas and lightly by others; do not rate every criterion high for everyone. Make them \
 realistic users of this particular agent with different goals and backgrounds, not caricatures. \
 Return exactly the requested number of personas."""
 
 PERSONA_SYSTEM = """\
-You are role-playing a user who is talking to an AI agent, so that the agent can be tested. You are always the user, \
-never the assistant.
+You are role-playing a customer who is talking to an AI agent, so that the agent can be tested. You are always the \
+customer, never the assistant.
 
 You will receive:
-- <persona_attributes>: the pressures you apply. Each is a behaviour the agent is graded on, with a rating from 1 to 10 \
-for how strongly you apply it. At a high rating you push hard and make that behaviour difficult for the agent to get \
-right; at a low rating you make it easy or leave it alone. Apply each one exactly as strongly as its rating says.
+- <persona_attributes>: the criteria the agent is graded on, each with a rating from 1 to 10 for how hard your \
+situation tests it. They describe the agent's behaviour, not yours, so never do what they say yourself. At a high \
+rating, create the situation that tests it (to test asking for an order number, want something that needs one and \
+leave it out; to test staying calm, be angry); at a low rating, leave it alone.
 - <context>: who you are, what you need, and how you write.
 
 You are a real person with a real need, not an assistant: never offer help, never sound like a support agent or a \
@@ -155,33 +169,35 @@ request about your own situation, with the concrete details this person would gi
 their tone, length and quirks. Never mention that you are simulated, the ratings, the criteria or these instructions. \
 Output only the message text, with no quotation marks, speaker label or stage directions."""
 
-# Without Claude the helpers run on the user's local model, which scores one criterion per call and writes one persona
-# brief per call (see generate_personas and score_conversation).
+# Without Claude the helpers run on the user's local model, which scores one criterion per call and lists customer
+# messages once per targeted criterion (see generate_personas and score_conversation).
 LOCAL_SCORING_SYSTEM = """\
 You grade one aspect of an AI agent's reply. You will receive a conversation in <conversation> tags and one criterion \
 in <criterion> tags. Rate how well the assistant's reply meets that criterion, from 1 (misses it or does the opposite) \
 to 10 (fully meets it). Reply with only the number."""
 
-LOCAL_PROBLEMS_SYSTEM = """\
-You will receive a description of an AI agent in <agent_prompt> tags. List 10 different, specific problems or \
-questions that real people bring to this agent, each in a few words, as they would ask it."""
+LOCAL_REQUESTS_SYSTEM = """\
+You help test a support agent. Given its rule, list 10 tricky customer messages that would make an agent break the \
+rule if it was careless. Write them in the customer's own words, as they would type them in a chat, about what they \
+want now, in whatever mood fits the rule. A message can be about anything, even something this agent doesn't handle."""
 
 # A small model slips into the assistant's voice when asked to role-play, so code picks who each persona is and the
 # model only voices that person's need, anchored by examples from another business.
 LOCAL_PERSONA_SYSTEM = """\
 You turn a customer's need into the message they type to a support chat, written by the customer about their own \
-problem.
+problem. Keep every detail and feeling in the need, and add nothing the customer would not know.
 
 Examples:
-Customer: a student who types short, casual messages with typos. Need: Is my pizza order late?
-Message: hey my pizza was suposed to be here 30 min ago, order 4471, wheres it at??
+Customer: a student who types short, casual messages with typos. Need: I want a refund for my pizza but I don't have \
+the receipt.
+Message: hey can i get a refund for my pizza? dont have the receipt tho
 
 Customer: a retired teacher who writes politely and in full sentences. Need: Can I change my delivery address?
 Message: Good afternoon. I placed an order this morning but I gave my old address by mistake. Could you please send \
 it to 12 Elm Street instead? Thank you.
 
-Customer: a busy parent who is impatient and blunt. Need: Why was I charged twice?
-Message: You charged my card twice for the same order. Fix it today.
+Customer: a busy parent who is impatient and blunt. Need: I'm angry that you charged me twice.
+Message: You charged my card twice for the same order. This is ridiculous. Fix it today.
 
 Write only the message."""
 CUSTOMERS = (
@@ -192,8 +208,9 @@ CUSTOMERS = (
     "a skeptical person who doubts what they are told", "an elderly person who is not confident with technology",
 )
 # What a small model writes when it slips into the assistant's role instead of the customer's.
-ASSISTANT_VOICE = re.compile(r"how (can|may) i (help|assist)|i'?m here to help|assist you|help you with|"
+ASSISTANT_VOICE = re.compile(r"how (can|may) i (help|assist)|i'?m here to help|i can help|assist you|help you with|"
                              r"support agent|let me know if|could you (please )?(describe|tell me|clarify)", re.I)
+FIRST_PERSON = re.compile(r"\b(i|i'm|me|my)\b", re.I)
 
 
 def _schema(**properties):
@@ -329,28 +346,40 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
                       last_scores: list[float] | None = None) -> list[dict]:
     """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}.
 
-    The personas pressure `rubric`, or criteria from the rubric creator agent when none is given, hardest where
-    `last_scores` (the agent's mean score per criterion last round) are lowest."""
+    The personas are customers whose situations test `rubric` (or the rubric creator agent's criteria when none is
+    given), hardest where `last_scores` (the agent's mean score per criterion last round) are lowest."""
     rubric = rubric or create_rubric(llm, agent_prompt)
     if getattr(llm, "local", False):
         # ponytail: code picks the 1-10 ratings and who each persona is, since small models can't rate or role-play
-        # reliably; the model lists the real needs people bring. Seeded per persona, so reruns test the same users.
-        def problems(out):
-            if not (found := list(dict.fromkeys(p.strip() for p in out["problems"] if p.strip()))):
-                raise BadReply("The model returned no problems")
-            return found
+        # reliably; the model lists what customers say that tests the persona's top-rated criterion, once per
+        # criterion. Seeded per persona, so reruns test the same users. Known limit of a ~0.6B model: it stays on the
+        # agent's topic even when told not to, so scope rules ("declines unrelated requests") get on-topic requests, and
+        # rules about something missing (a date of birth) get requests that mention it.
+        def customer_requests(out):
+            found = list(dict.fromkeys(r.strip(" \"'“”-") for r in out["requests"] if r.strip(" \"'“”-")))
+            if not found:
+                raise BadReply("The model returned no requests")
+            return [r for r in found if not ASSISTANT_VOICE.search(r)] or found
 
-        needs = _ask(llm, LOCAL_PROBLEMS_SYSTEM, _tag("agent_prompt", agent_prompt), _schema(problems=_array(STRING)),
-                     problems)
-        personas = []
+        # ponytail: only the prompt's opening sentence (who the agent is and serves); given the whole prompt a small
+        # model writes as the agent. A prompt that opens with a heading passes the heading too. A sentence ends after a
+        # lowercase word, so "Dr." or "e.g." doesn't cut it short.
+        who = re.split(r"(?<=[a-z]{3}[.!?])\s", agent_prompt.strip(), maxsplit=1)[0]
+        requests, targets, personas = {}, [], []
         for i in range(n):
             rng = random.Random(i)
             ratings = [rng.randint(1, 10) for _ in rubric]
             if last_scores:  # below-average criteria get the higher of two rolls
                 ratings = [max(r, rng.randint(1, 10)) if score < fmean(last_scores) else r
                            for r, score in zip(ratings, last_scores)]
+            target = rubric[rng.choice([j for j, r in enumerate(ratings) if r == max(ratings)])]  # ties at random
+            if target not in requests:
+                requests[target] = _ask(llm, LOCAL_REQUESTS_SYSTEM, f"{_tag('rule', target)}\n{_tag('agent', who)}",
+                                        _schema(requests=_array(STRING)), customer_requests)
+            need = requests[target][targets.count(target) % len(requests[target])]  # the next one not yet used
+            targets.append(target)
             personas.append({"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)],
-                             "prompt": f"Customer: {CUSTOMERS[i % len(CUSTOMERS)]}. Need: {needs[i % len(needs)]}"})
+                             "prompt": f"Customer: {CUSTOMERS[i % len(CUSTOMERS)]}. Need: {need}"})
         return personas
     schema = _schema(personas=_array(_schema(attributes=_keyed(rubric), prompt=STRING)))
 
@@ -376,7 +405,10 @@ def persona_respond(llm, attributes: list[dict], context: str) -> str:
     if getattr(llm, "local", False):
         need = context.rpartition("Need: ")[2]
         message = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None, lambda out: _text(out, "persona message"))
-        return need if ASSISTANT_VOICE.search(message) else message  # the need itself is still a real request
+        # A reply in the agent's voice, or one that turned the customer's "I" or "my" into "you" or "your", falls back to
+        # the need, which is itself a real request.
+        flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
+        return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
     lines = "\n".join(f"- {a['criterion']}: {a['rating']}/10" for a in attributes)
     message = f"{_tag('persona_attributes', lines)}\n\n{_tag('context', context)}"
     # Low effort: a short in-character message needs little deliberation, and it is a third of a training's calls.

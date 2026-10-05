@@ -1,9 +1,12 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { readdirSync, readFileSync } from 'node:fs'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, saveBlob } from '../api'
 import TrainPage from './TrainPage'
+
+const render = (ui) => rtlRender(ui, { wrapper: MemoryRouter })
 
 vi.mock('../api', () => ({
   api: {
@@ -216,7 +219,7 @@ it('uploads a zipped model and selects it', async () => {
   expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
 })
 
-const helper = () => within(screen.getByRole('group', { name: 'Train with' }))
+const helper = () => within(screen.getByRole('radiogroup', { name: 'Train with' }))
 
 it('trains with Claude by default when it is linked, or with the chosen local model', async () => {
   const user = userEvent.setup()
@@ -302,7 +305,7 @@ it('shows no source badge for a model without one', async () => {
   api.listLocalModels.mockResolvedValue([{ name: 'demo', source: null }])
   render(<TrainPage />)
   const option = (await screen.findByRole('radio', { name: 'demo' })).closest('label')
-  expect(option.querySelector('.badge')).toBeNull()
+  expect(option.querySelector('[data-slot="badge"]')).toBeNull()
 })
 
 it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
@@ -765,4 +768,21 @@ it('defines no CSS classes that another page stylesheet also defines', () => {
     const theirs = classes(file)
     expect(own.filter((c) => theirs.has(c)), file).toEqual([])
   }
+})
+
+it('explains the pipeline and its output on the first step only', async () => {
+  const view = render(<TrainPage />)
+  const how = screen.getByRole('region', { name: 'How it works' })
+  expect(within(how).getByText(/LoRA weights/)).toBeInTheDocument()
+  view.unmount()
+
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 1 }))
+  const later = render(<TrainPage />)
+  expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
+  later.unmount()
+
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
+  api.getTraining.mockResolvedValue(completed)
+  render(<TrainPage />)
+  expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
 })

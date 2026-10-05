@@ -41,7 +41,7 @@ it('shows both options on one card', async () => {
   const signIn = within(page).getByRole('tab', { name: 'Sign in' })
   const create = within(page).getByRole('tab', { name: 'Create account' })
   expect(signIn).toHaveAttribute('aria-selected', 'true')
-  expect(signIn.closest('.card')).toBe(create.closest('.card'))
+  expect(signIn.closest('[data-slot="card"]')).toBe(create.closest('[data-slot="card"]'))
   await user.click(create)
   expect(create).toHaveAttribute('aria-selected', 'true')
   expect(screen.getByLabelText('Email')).toBeInTheDocument()
@@ -234,4 +234,17 @@ it('treats a whitespace-only key as no key', async () => {
   await user.type(screen.getByLabelText('Anthropic API key'), ' sk-ant-1 ')
   await user.click(screen.getByRole('button', { name: 'Link & create account' }))
   expect(api.signup).toHaveBeenCalledWith(expect.objectContaining({ anthropic_api_key: 'sk-ant-1' }))
+})
+
+it('explains what Trainform does next to the sign-in card', () => {
+  setup()
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Describe your agent. Get back a better one.')
+  const how = screen.getByRole('region', { name: 'How it works' })
+  expect(within(how).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
+    'Describe your agent',
+    'Get a prompt and a rubric',
+    'Stress-test it',
+    'Improve every round',
+  ])
+  expect(within(how).getByRole('list', { name: 'What you get' })).toHaveTextContent(/LoRA weights/)
 })

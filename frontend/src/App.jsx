@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
+import { LogOut } from 'lucide-react'
 import { api, clearToken, getToken, setToken } from './api'
+import { Button } from '@/components/ui/button'
 import AccountPage from './pages/AccountPage'
 import AuthPage from './pages/AuthPage'
 import InspectPage from './pages/InspectPage'
 import TrainPage from './pages/TrainPage'
+
+const NAV_LINK =
+  'flex-1 rounded-md px-3 py-1.5 text-center text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground sm:flex-none aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => Boolean(getToken()))
@@ -31,19 +36,24 @@ export default function App() {
   if (!authed) return <AuthPage onAuth={onAuth} />
 
   return (
-    <div className="app-shell">
-      <nav className="nav glass">
-        <span className="brand">TRAINFORM</span>
-        <div className="nav-links">
-          <NavLink to="/train">Train</NavLink>
-          <NavLink to="/inspect">Inspect</NavLink>
-          <NavLink to="/account">Account</NavLink>
+    <div className="flex min-h-screen flex-col">
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-lg">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-2.5">
+          <span className="font-brand text-base font-bold tracking-[0.3em] text-gradient">TRAINFORM</span>
+          <nav aria-label="Main" className="order-last flex w-full gap-1 sm:order-none sm:mr-auto sm:w-auto">
+            {['Train', 'Inspect', 'Account'].map((name) => (
+              <NavLink key={name} to={`/${name.toLowerCase()}`} className={NAV_LINK}>
+                {name}
+              </NavLink>
+            ))}
+          </nav>
+          <Button variant="ghost" size="sm" onClick={logout}>
+            <LogOut aria-hidden="true" />
+            Sign out
+          </Button>
         </div>
-        <button className="btn btn-ghost" onClick={logout}>
-          Sign out
-        </button>
-      </nav>
-      <main className="page">
+      </header>
+      <main className="w-full px-4 pt-8 pb-16">
         <Routes>
           <Route path="/train" element={<TrainPage />} />
           <Route path="/inspect" element={<InspectPage />} />

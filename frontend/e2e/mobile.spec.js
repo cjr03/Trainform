@@ -45,7 +45,7 @@ test('a filled Inspect page fits a phone, even with an unbroken criterion', asyn
 
   // Each criterion gets the full width for its name, with its bar on a row below.
   const name = await scores.nth(1).getByText('Is polite.').boundingBox()
-  const bar = await scores.nth(1).locator('.inspect-bar').boundingBox()
+  const bar = await scores.nth(1).locator('[aria-hidden="true"]').boundingBox()
   const row = await scores.nth(1).boundingBox()
   expect(bar.y).toBeGreaterThanOrEqual(name.y + name.height)
   expect(bar.width).toBeGreaterThan(row.width * 0.9)

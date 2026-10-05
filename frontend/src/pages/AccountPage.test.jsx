@@ -113,3 +113,13 @@ it('shows the server error when linking fails', async () => {
   expect(await within(claude()).findByRole('alert')).toHaveTextContent('Anthropic API key was rejected')
   expect(within(claude()).getByText('Not linked')).toBeInTheDocument()
 })
+
+it('explains what linking Claude adds and that training works without it', async () => {
+  await setup()
+  expect(within(claude()).getByText(/stronger prompts, rubrics, personas and grading/i)).toBeInTheDocument()
+  expect(within(claude()).getByText(/training still works, with the helpers running locally/i)).toBeInTheDocument()
+  expect(within(claude()).getByRole('link', { name: /anthropic console/i })).toHaveAttribute(
+    'href',
+    'https://console.anthropic.com/settings/keys',
+  )
+})
