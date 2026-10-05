@@ -8,6 +8,7 @@ import InspectPage from './InspectPage'
 vi.mock('../api', () => ({
   api: {
     listTrainings: vi.fn(),
+    getTraining: vi.fn(),
     listRounds: vi.fn(),
     listScenarios: vi.fn(),
     downloadPrompt: vi.fn(),
@@ -27,6 +28,10 @@ const rounds = {
     { round: 2, mean_score: 8.25, scenarios: 2, model_id: 11 },
   ],
   1: [{ round: 1, mean_score: 4, scenarios: 1, model_id: null }],
+}
+const details = {
+  2: { initial_prompt: 'Answer support questions.', best_prompt: 'Answer support questions calmly and cite the order.', best_score: 8.25 },
+  1: { initial_prompt: 'Help with billing.', best_prompt: null, best_score: null },
 }
 const scenario = {
   id: 31,
@@ -56,6 +61,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   api.listTrainings.mockResolvedValue(trainings)
   api.listRounds.mockImplementation(async (id) => rounds[id])
+  api.getTraining.mockImplementation(async (id) => details[id])
   api.listScenarios.mockResolvedValue([scenario, { ...scenario, id: 32, scenario_number: 2, score: 5 }])
 })
 afterEach(() => vi.useRealTimers())
@@ -254,4 +260,47 @@ it('brings each new panel into view and focuses the transcript', async () => {
   await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
   expect(revealed()).toEqual(['Rounds', 'Scenarios', 'Scenario 1'])
   expect(screen.getByRole('region', { name: 'Scenario 1' })).toHaveFocus()
+})
+
+it('shows the original and highest-scoring prompts of the selected training', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  expect(api.getTraining).toHaveBeenCalledWith(2)
+  const prompts = within(screen.getByRole('region', { name: 'Prompts' }))
+  expect(prompts.getByRole('heading', { name: 'Original prompt' })).toBeInTheDocument()
+  expect(await prompts.findByRole('region', { name: 'Original prompt' })).toHaveTextContent(details[2].initial_prompt)
+  const best = prompts.getByRole('region', { name: 'Highest-scoring prompt' })
+  expect(best).toHaveTextContent(details[2].best_prompt)
+  expect(best).toHaveTextContent('8.3/10')
+  expect(prompts.getByRole('heading', { name: 'Highest-scoring prompt Score 8.3/10' })).toBeInTheDocument()
+})
+
+it('shows an empty best prompt until a round finishes, and follows the selected training', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /llama-1b/ }))
+  const prompts = within(screen.getByRole('region', { name: 'Prompts' }))
+  expect(await prompts.findByText(details[1].initial_prompt)).toBeInTheDocument()
+  expect(prompts.getByText('No finished round yet')).toBeInTheDocument()
+  expect(prompts.queryByText(/\/10/)).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /qwen-0\.5b/ }))
+  expect(await prompts.findByText(details[2].best_prompt)).toBeInTheDocument()
+  expect(prompts.getByText(details[2].initial_prompt)).toBeInTheDocument()
+  expect(prompts.queryByText(details[1].initial_prompt)).not.toBeInTheDocument()
+  expect(prompts.queryByText('No finished round yet')).not.toBeInTheDocument()
+})
+
+it('shows the prompts loading state and load errors', async () => {
+  let reject
+  api.getTraining.mockImplementation(() => new Promise((_, r) => (reject = r)))
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  const prompts = within(screen.getByRole('region', { name: 'Prompts' }))
+  expect(prompts.getByRole('status')).toHaveTextContent('Loading prompts…')
+  reject(new Error('Training not found'))
+  expect(await prompts.findByRole('alert')).toHaveTextContent('Training not found')
+  expect(prompts.queryByRole('status')).not.toBeInTheDocument()
 })

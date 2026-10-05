@@ -58,10 +58,33 @@ it('stores the token and goes to Train after signing in', async () => {
   expect(getToken()).toBe('new-tok')
 })
 
-it('clears the token on Sign out', async () => {
+it("starts from a fresh Train page after signing in, not the previous user's draft", async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 1, prompt: 'previous user prompt' }))
+  const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
+  vi.stubGlobal('fetch', vi.fn(async (url) => json(url === '/api/auth/login' ? { token: 'new-tok' } : [])))
+  renderAt('/train')
+  await userEvent.type(screen.getByLabelText('Username'), 'ada')
+  await userEvent.type(screen.getByLabelText('Password'), 'secret-pw')
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+  expect(await screen.findByTestId('train-page')).toBeInTheDocument()
+  expect(sessionStorage.getItem('trainform_train_draft')).not.toContain('previous user prompt')
+})
+
+it('signs out even when storage is blocked', () => {
+  setToken('tok')
+  vi.spyOn(Storage.prototype, 'clear').mockImplementationOnce(() => {
+    throw new DOMException('blocked', 'SecurityError')
+  })
+  expect(() => clearToken()).not.toThrow()
+  expect(getToken()).toBeNull()
+})
+
+it('clears the token and the Train draft on Sign out', async () => {
   setToken('tok')
   renderAt('/train')
+  expect(sessionStorage.getItem('trainform_train_draft')).not.toBeNull()
   await userEvent.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(screen.getByTestId('auth-page')).toBeInTheDocument()
   expect(getToken()).toBeNull()
+  expect(sessionStorage.getItem('trainform_train_draft')).toBeNull()
 })

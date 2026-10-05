@@ -23,23 +23,28 @@ For each round (`backend/app/training.py`, `run_training`):
 
 1. The persona generator creates `scenarios_per_round` personas for the current prompt, rating how hard each one
    pressures every criterion of your rubric (the one the rubric creator drafted and you edited). It asks Claude for
-   at most 10 personas per call.
-2. For each persona, the persona agent writes one message, the primary agent replies, and the scoring agent scores
-   the exchange against your rubric. The result is stored as a scenario, and the prompt generator rewrites the prompt
-   before the next scenario. Conversations are a single turn: one persona message and one reply.
+   at most 10 personas per call, sending those calls at once.
+2. The persona agent writes each persona's message, up to 8 at a time, since a message depends only on its persona.
+   Then, for each persona in turn, the primary agent replies, and the scoring agent scores the exchange against your
+   rubric. The result is stored as a scenario, and the prompt generator rewrites the prompt before the next scenario.
+   Conversations are a single turn: one persona message and one reply.
 3. Scenarios with a mean score of 7 or more become SFT examples. The model is fine-tuned on them through a LoRA
    adapter (r=8, all linear layers). Rounds without such examples skip the fine-tune.
 4. The round is saved as a trained model holding what earned its score: the LoRA adapter the round's scenarios ran
    with (before step 3), the prompt of its highest-scoring scenario and the round's mean score. The round with the
    highest mean becomes the training's best model, which is what the downloads return.
 
-The Train page shows progress and the mean score over the last n, n/2, n/4 and 1 scenarios. The Inspect page drills
-down from training to round to scenario and shows the transcript, the scores and the prompt that was used.
+The Train page shows progress and the mean score over all scenarios so far (Total runs), the last 50%, the last 25% and
+the last one. It keeps the setup and the training on screen for the tab, so switching pages or reloading loses neither;
+signing out clears it. The Inspect page drills down from training to round to scenario and shows the transcript, the scores and the prompt that was used.
 
 ## Architecture
 
 - **Backend** (`backend/app`): FastAPI + SQLAlchemy on PostgreSQL. `auth.py` handles accounts, tokens and Claude
-  keys. `agents.py` holds the six Claude agents. `llm.py` makes Claude calls (`claude-opus-5-5`).
+  keys. `agents.py` holds the six Claude agents. `llm.py` makes Claude calls (`claude-opus-5-5`, medium effort;
+  low for the persona agent's messages). Claude's structured outputs key every per-criterion rating and score by
+  criterion (`c1`…`cN`, all required), so a reply always has exactly one per criterion. The SDK retries rate limits
+  and overloads up to 5 times, and an agent retries a failed call or garbled reply once before the training fails.
   `local_model.py` handles Hugging Face Hub search, download and upload, plus generation and LoRA SFT with
   transformers + PEFT (on MPS, CUDA or CPU). `training.py` runs the loop and the train/inspect API. All routes are
   under `/api`.
@@ -101,8 +106,8 @@ operator's credits. A linked key that can't be decrypted returns 400, asking the
 With no key, the helper agents run on the local model chosen on the Model step (the frontend sends it as `model` to
 `/api/agents/prompt` and `/api/agents/rubric`; a training uses its base model). They run on the base weights with the
 LoRA adapter switched off, so fine-tuning never changes the agents that grade and coach the model. During a training
-they share the already-loaded model; the agent routes keep the last-used model loaded. Small models can't write
-JSON, so on this path:
+they share the already-loaded model, one call at a time; the agent routes keep the last-used model loaded. Small
+models can't write JSON, so on this path:
 
 - prompts are plain text, and rubrics are one criterion per line (repeats dropped, at most 8);
 - the scorer rates one criterion per call, with generation limited to digit tokens;

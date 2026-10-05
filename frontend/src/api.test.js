@@ -47,13 +47,15 @@ describe('request', () => {
     await expect(request('/x')).rejects.toThrow('bad email; too short')
   })
 
-  it('clears the token and announces logout on 401', async () => {
+  it('clears the token and tab session and announces logout on 401', async () => {
     vi.stubGlobal('fetch', respond(401, { detail: 'Not authenticated' }))
     const onLogout = vi.fn()
     window.addEventListener('trainform:logout', onLogout)
     setToken('stale')
+    sessionStorage.setItem('trainform_train_draft', '{}')
     await expect(request('/me')).rejects.toThrow('Not authenticated')
     expect(getToken()).toBeNull()
+    expect(sessionStorage.length).toBe(0) // the next user in this tab gets none of it
     expect(onLogout).toHaveBeenCalledOnce()
     window.removeEventListener('trainform:logout', onLogout)
   })

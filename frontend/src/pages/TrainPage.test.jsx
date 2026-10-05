@@ -46,6 +46,7 @@ const detail = (over = {}) => ({
 
 beforeEach(() => {
   vi.resetAllMocks()
+  sessionStorage.clear()
   api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
   api.listTrainings.mockResolvedValue([])
 })
@@ -424,9 +425,9 @@ it('polls every 2 s, rendering both progress bars and the four score windows, un
   expect(screen.getByRole('status')).toHaveTextContent(/running/i)
 
   for (const [name, runs, score] of [
-    ['Last n runs', '6 runs', '6.5'],
-    ['Last n/2', '3 runs', '7.0'],
-    ['Last n/4', '1 run', '7.5'],
+    ['Total runs', '6 runs', '6.5'],
+    ['Last 50%', '3 runs', '7.0'],
+    ['Last 25%', '1 run', '7.5'],
     ['Last run', '1 run', '8.0'],
   ]) {
     const card = screen.getByRole('group', { name })
@@ -493,6 +494,63 @@ it('resets the dashboard for a new training', async () => {
   const calls = api.getTraining.mock.calls.length
   await tick(6000)
   expect(api.getTraining).toHaveBeenCalledTimes(calls)
+})
+
+it('keeps the setup when the page is left and reopened', async () => {
+  const user = userEvent.setup()
+  const view = render(<TrainPage />)
+  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  await user.clear(screen.getByRole('spinbutton', { name: 'Training rounds' }))
+  await user.type(screen.getByRole('spinbutton', { name: 'Training rounds' }), '4')
+  view.unmount() // what navigating to Inspect or Account does
+
+  render(<TrainPage />)
+  expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
+  expect(screen.getByRole('spinbutton', { name: 'Training rounds' })).toHaveValue(4)
+  expect(screen.getByTestId('total-runs')).toHaveTextContent('20')
+  await user.click(step('Rubric'))
+  expect(screen.getByRole('textbox', { name: 'Criterion 1' })).toHaveValue('Clarity')
+  await user.click(step('Prompt'))
+  expect(screen.getByRole('textbox', { name: 'Agent prompt' })).toHaveValue('Be helpful.')
+  await user.click(step('Model'))
+  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).toBeChecked()
+})
+
+it('reopens the finished training it was showing', async () => {
+  const user = polling()
+  const view = await startTraining(user, completed)
+  view.unmount()
+  render(<TrainPage />)
+  expect(step('Complete')).toHaveAttribute('aria-current', 'step')
+  expect(screen.getByTestId('best-prompt')).toHaveTextContent('Be kind.')
+})
+
+it('starts the next setup from scratch after a reset', async () => {
+  const user = polling()
+  const view = await startTraining(user, completed)
+  await user.click(screen.getByRole('button', { name: 'Start a new training' }))
+  view.unmount()
+  render(<TrainPage />)
+  expect(step('Model')).toHaveAttribute('aria-current', 'step')
+  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).not.toBeChecked()
+})
+
+it('still works when session storage is unavailable', async () => {
+  const user = userEvent.setup()
+  const fail = () => {
+    throw new DOMException('denied', 'SecurityError')
+  }
+  const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(fail)
+  const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(fail)
+  const del = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(fail)
+  await reachScenarios(user)
+  expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
+  for (const spy of [get, set, del]) spy.mockRestore()
 })
 
 it('defines no CSS classes that another page stylesheet also defines', () => {
