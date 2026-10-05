@@ -31,6 +31,17 @@ describe('request', () => {
     expect(init.body).toBe('{"a":1}')
   })
 
+  it('keeps sending the token it signed in with even if storage loses it mid-session', async () => {
+    // The macOS app's WebKit storage has dropped the token right after sign-in, signing the user out on their next click.
+    const fetch = respond(200, {})
+    vi.stubGlobal('fetch', fetch)
+    setToken('tok')
+    localStorage.clear()
+    await request('/thing')
+    expect(fetch.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer tok' })
+    expect(getToken()).toBe('tok')
+  })
+
   it('omits auth and content-type when there is no token or body', async () => {
     const fetch = respond(200, [])
     vi.stubGlobal('fetch', fetch)

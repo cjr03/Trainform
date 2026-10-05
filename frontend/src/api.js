@@ -1,9 +1,17 @@
 const TOKEN_KEY = 'trainform_token'
 
-export const getToken = () => localStorage.getItem(TOKEN_KEY)
-export const setToken = (token) => localStorage.setItem(TOKEN_KEY, token)
+// The session's token lives here; localStorage only keeps it for the next launch. The macOS app's WebKit storage has
+// lost it mid-session, which sent requests without it and signed the user out on their next click.
+let token = localStorage.getItem(TOKEN_KEY)
+
+export const getToken = () => token
+export const setToken = (value) => {
+  token = value
+  localStorage.setItem(TOKEN_KEY, value)
+}
 // Signing out also forgets what this tab kept for the user, such as the Train page's draft.
 export const clearToken = () => {
+  token = null
   localStorage.removeItem(TOKEN_KEY)
   try {
     sessionStorage.clear()
