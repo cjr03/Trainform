@@ -11,6 +11,10 @@ function respond(status, body, contentType = 'application/json') {
   )
 }
 
+// What the API's auth check returns; a wrong password at sign-in is a 401 without the WWW-Authenticate header.
+const unauthenticated = () =>
+  vi.fn(async () => new Response('{"detail":"Not authenticated"}', { status: 401, headers: { 'WWW-Authenticate': 'Bearer' } }))
+
 beforeEach(() => clearToken())
 afterEach(() => vi.unstubAllGlobals())
 
@@ -48,7 +52,7 @@ describe('request', () => {
   })
 
   it('clears the token and tab session and announces logout on 401', async () => {
-    vi.stubGlobal('fetch', respond(401, { detail: 'Not authenticated' }))
+    vi.stubGlobal('fetch', unauthenticated())
     const onLogout = vi.fn()
     window.addEventListener('trainform:logout', onLogout)
     setToken('stale')
@@ -57,6 +61,24 @@ describe('request', () => {
     expect(getToken()).toBeNull()
     expect(sessionStorage.length).toBe(0) // the next user in this tab gets none of it
     expect(onLogout).toHaveBeenCalledOnce()
+    window.removeEventListener('trainform:logout', onLogout)
+  })
+
+  it('signs out a tab whose token was cleared elsewhere, such as by signing out in another tab', async () => {
+    vi.stubGlobal('fetch', unauthenticated())
+    const onLogout = vi.fn()
+    window.addEventListener('trainform:logout', onLogout)
+    await expect(request('/me')).rejects.toThrow('Not authenticated')
+    expect(onLogout).toHaveBeenCalledOnce()
+    window.removeEventListener('trainform:logout', onLogout)
+  })
+
+  it('does not sign out on a wrong password at sign-in', async () => {
+    vi.stubGlobal('fetch', respond(401, { detail: 'Invalid username or password' }))
+    const onLogout = vi.fn()
+    window.addEventListener('trainform:logout', onLogout)
+    await expect(request('/auth/login', { method: 'POST', body: {} })).rejects.toThrow('Invalid username or password')
+    expect(onLogout).not.toHaveBeenCalled()
     window.removeEventListener('trainform:logout', onLogout)
   })
 

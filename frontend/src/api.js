@@ -32,7 +32,9 @@ export async function request(path, { method = 'GET', body, form } = {}) {
     body: form ?? (body === undefined ? undefined : JSON.stringify(body)),
   })
   if (!res.ok) {
-    if (res.status === 401 && token) {
+    // The API's auth check (unlike a wrong password at sign-in) says WWW-Authenticate. It signs this tab out even
+    // without a token, which another tab clears by signing out, so the page doesn't stay stuck on "Not authenticated".
+    if (res.status === 401 && res.headers.has('WWW-Authenticate')) {
       clearToken()
       window.dispatchEvent(new Event('trainform:logout'))
     }
