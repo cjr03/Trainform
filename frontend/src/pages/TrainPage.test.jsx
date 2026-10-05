@@ -1,9 +1,12 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { readdirSync, readFileSync } from 'node:fs'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, saveBlob } from '../api'
 import TrainPage from './TrainPage'
+
+const render = (ui) => rtlRender(ui, { wrapper: MemoryRouter })
 
 vi.mock('../api', () => ({
   api: {
@@ -767,11 +770,16 @@ it('defines no CSS classes that another page stylesheet also defines', () => {
   }
 })
 
-it('explains the pipeline and its output during setup, not once training has started', async () => {
+it('explains the pipeline and its output on the first step only', async () => {
   const view = render(<TrainPage />)
   const how = screen.getByRole('region', { name: 'How it works' })
   expect(within(how).getByText(/LoRA weights/)).toBeInTheDocument()
   view.unmount()
+
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 1 }))
+  const later = render(<TrainPage />)
+  expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
+  later.unmount()
 
   sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
   api.getTraining.mockResolvedValue(completed)

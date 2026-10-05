@@ -1,5 +1,6 @@
 import { CircleAlert, Download, FlaskConical, Loader2, Pause, Play, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -107,13 +108,13 @@ function HowItWorks() {
       <h2 id="train-how" className="sr-only">
         How it works
       </h2>
-      <ol className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">
+      <ol className="m-0 grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
         {HOW.map(([Icon, title, text]) => (
           <li key={title} className="flex gap-3 rounded-lg border bg-card/60 p-4">
             <Icon className="mt-0.5 size-5 shrink-0 text-brand" />
-            <div className="grid gap-1">
+            <div className="grid content-start gap-1">
               <span className="font-display text-sm font-semibold">{title}</span>
-              <span className="text-sm text-muted-foreground">{text}</span>
+              <span className="text-sm text-muted-foreground max-sm:hidden">{text}</span>
             </div>
           </li>
         ))}
@@ -738,9 +739,9 @@ function Dashboard({ onReset }) {
         {claudeAvailable === false && (
           <p id="train-helper-hint" className="m-0 text-sm text-muted-foreground">
             Link your Claude API key on the{' '}
-            <a href="/account" className="text-primary underline-offset-4 hover:underline">
+            <Link to="/account" className="text-primary underline-offset-4 hover:underline">
               Account
-            </a>{' '}
+            </Link>{' '}
             page to train with Claude.
           </p>
         )}
@@ -808,8 +809,8 @@ function Dashboard({ onReset }) {
 
   return (
     <div className="train-page" data-testid="train-page">
-      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
-      {!training && <HowItWorks />}
+      <h1 className="m-0 text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
+      {!training && step === 0 && <HowItWorks />}
 
       <ol className="stepper" aria-label="Training workflow" style={{ '--progress': step / (STEPS.length - 1) }}>
         {STEPS.map(([name], i) => (
