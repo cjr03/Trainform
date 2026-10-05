@@ -29,9 +29,11 @@ def fake_anthropic(monkeypatch, response=None, error=None):
 
     def client(api_key, max_retries):
         calls["api_key"], calls["max_retries"] = api_key, max_retries
+        calls["clients"] = calls.get("clients", 0) + 1
         return SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=create)))
 
     monkeypatch.setattr(anthropic, "Anthropic", client)
+    llm._client.cache_clear()
     return calls
 
 
@@ -51,6 +53,13 @@ def test_text_request_shape_and_join(monkeypatch):
         "output_config": {"effort": "medium"},
     }
     assert llm.MODEL == "claude-opus-5-5"
+
+
+def test_one_client_per_key_so_calls_reuse_its_connections(monkeypatch):
+    calls = fake_anthropic(monkeypatch, reply(block("text", text="hi")))
+    for key in ("sk-1", "sk-1", "sk-2", "sk-1"):
+        call_claude(key, "s", "m")
+    assert calls["clients"] == 2
 
 
 def test_schema_request_parses_json(monkeypatch):

@@ -89,7 +89,37 @@ def test_generate_improved_prompt():
     assert "<current_prompt>\nOld prompt.\n</current_prompt>" in message
     assert "<conversation>\nuser: hi\nassistant: yo\n</conversation>" in message
     assert "Greets the user.: 3/10" in message and "Is concise.: 9/10" in message
+    assert "<best_prompt>" not in message and "<recent_scores>" not in message
     assert_strict(schema)
+
+
+def test_generate_improved_prompt_sees_its_track_record():
+    # So it can build on the best version so far and tell whether its last edit helped.
+    llm = FakeLLM({"prompt": "Better."})
+    agents.generate_improved_prompt(llm, "Current.", "c", [], best=("Best so far.", 8.5), recent=[6, 7.25, 5])
+    _, message, _ = llm.calls[0]
+    assert "<best_prompt>\nBest so far.\n</best_prompt>" in message
+    assert "<best_score>\n8.5\n</best_score>" in message
+    assert "<recent_scores>\n6.0, 7.2, 5.0\n</recent_scores>" in message
+
+
+def test_review_round():
+    llm = FakeLLM({"prompt": " Next round's prompt. "})
+    out = agents.review_round(llm, "Round's best prompt.", [("Greets the user.", 8.25), ("Is concise.", 4.5)],
+                              [("User: a\nAssistant: b", 3.5), ("User: c\nAssistant: d", 4.0)])
+    assert out == "Next round's prompt."
+    system, message, schema = llm.calls[0]
+    assert system == agents.PROMPT_GENERATOR_SYSTEM and schema == agents.PROMPT_SCHEMA
+    assert "<current_prompt>\nRound's best prompt.\n</current_prompt>" in message
+    assert "<round_scores>\n- Greets the user.: 8.2/10\n- Is concise.: 4.5/10\n</round_scores>" in message
+    assert ("<weakest_conversations>\nConversation 1 (mean score 3.5/10):\nUser: a\nAssistant: b\n\n"
+            "Conversation 2 (mean score 4.0/10):\nUser: c\nAssistant: d\n</weakest_conversations>") in message
+    assert "<conversation>" not in message
+
+
+def test_review_round_rejects_empty():
+    with pytest.raises(LLMError):
+        agents.review_round(FakeLLM({"prompt": ""}, {"prompt": ""}), "p", [], [])
 
 
 def test_generate_improved_prompt_rejects_empty():
@@ -186,9 +216,27 @@ def test_generate_personas_calls_rubric_first_and_clamps():
     _, message, schema = llm.calls[1]
     assert "<agent_prompt>\nYou are Acme support.\n</agent_prompt>" in message
     assert "<criteria>\nc1: Greets the user.\nc2: Is concise.\n</criteria>" in message
-    assert "<count>2</count>" in message
+    assert "<count>2</count>" in message and "<previous_scores>" not in message
     assert schema["properties"]["personas"]["items"]["properties"]["attributes"] == KEYED_2
     assert_strict(schema)
+
+
+def test_personas_are_aimed_at_the_last_rounds_weakest_criteria():
+    llm = FakeLLM({"personas": [reply("a", 9, 2)]})
+    agents.generate_personas(llm, "p", 1, rubric=RUBRIC, last_scores=[3.5, 8.25])
+    _, message, _ = llm.calls[0]
+    assert "<previous_scores>\nc1: 3.5\nc2: 8.2\n</previous_scores>" in message
+
+
+def test_local_personas_press_harder_on_the_weakest_criteria():
+    rubric = ["Weak.", "Strong."]
+    plain = agents.generate_personas(LocalLLM(*({"prompt": "b"} for _ in range(30))), "p", 30, rubric=rubric)
+    aimed = agents.generate_personas(LocalLLM(*({"prompt": "b"} for _ in range(30))), "p", 30, rubric=rubric,
+                                     last_scores=[3.0, 9.0])
+    rating = lambda ps, i: [p["attributes"][i]["rating"] for p in ps]  # noqa: E731
+    assert rating(aimed, 1) == rating(plain, 1)  # the strong criterion is pressed as before
+    assert all(a >= b for a, b in zip(rating(aimed, 0), rating(plain, 0)))
+    assert sum(rating(aimed, 0)) > sum(rating(plain, 0))
 
 
 def test_a_persona_missing_a_rating_is_retried_then_an_llm_error():

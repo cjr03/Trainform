@@ -11,23 +11,27 @@ fine-tune the model at the end of every round. When it finishes you download the
 | --- | --- | --- |
 | Prompt creator | Claude | Agent description → system prompt (optional, Prompt step) |
 | Rubric creator | Claude | System prompt → 4–8 criteria scored 1–10 (optional, Rubric step) |
-| Persona generator | Claude | Prompt + criteria → N personas, each with a 1–10 pressure rating per criterion and an actor brief |
+| Persona generator | Claude | Prompt + criteria (+ last round's mean per criterion) → N personas, each with a 1–10 pressure rating per criterion and an actor brief |
 | Persona agent | Claude | Plays one persona and writes its message to the agent |
 | Primary agent | Local model | The model being trained; replies under the current prompt |
 | Scoring agent | Claude | Grades the reply against the training's rubric, 1–10 per criterion |
-| Prompt generator | Claude | Current prompt + conversation + scores → improved prompt |
+| Prompt generator | Claude | Current prompt + conversation + scores + track record → improved prompt; between rounds, a review of the round → the next round's prompt |
 
 ## The training loop
 
 For each round (`backend/app/training.py`, `run_training`):
 
 1. The persona generator creates `scenarios_per_round` personas for the current prompt, rating how hard each one
-   pressures every criterion of your rubric (the one the rubric creator drafted and you edited). It asks Claude for
-   at most 10 personas per call, sending those calls at once.
+   pressures every criterion of your rubric (the one the rubric creator drafted and you edited). From round 2 it sees
+   the last round's mean score per criterion and presses hardest on the weakest. It asks Claude for at most 10
+   personas per call, sending those calls at once. From round 2 the round starts from the prompt generator's review of
+   the last round: its best-scoring prompt, revised using its mean per criterion and its lowest-scoring conversations.
 2. The persona agent writes each persona's message, up to 8 at a time, since a message depends only on its persona.
    Then, for each persona in turn, the primary agent replies, and the scoring agent scores the exchange against your
    rubric. The result is stored as a scenario, and the prompt generator rewrites the prompt before the next scenario.
-   Conversations are a single turn: one persona message and one reply.
+   It also sees its track record (the round's best-scoring prompt so far, and the latest scores) so it builds on the
+   best version and backs out edits that lowered scores. Conversations are a single turn: one persona message and one
+   reply. With Claude, the next round's review, personas and messages are written while the model fine-tunes (step 3).
 3. Scenarios with a mean score of 7 or more become SFT examples. The model is fine-tuned on them through a LoRA
    adapter (r=8, all linear layers). Rounds without such examples skip the fine-tune.
 4. The round is saved as a trained model holding what earned its score: the LoRA adapter the round's scenarios ran
