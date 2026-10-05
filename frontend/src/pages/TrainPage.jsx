@@ -278,7 +278,7 @@ function PromptStep({ model, prompt, onChange }) {
               {busy && <Spinner />}Generate prompt
             </button>
             {error && (
-              <button type="button" className="btn btn-ghost" onClick={request}>
+              <button type="button" className="btn btn-ghost" disabled={!description.trim() || busy} onClick={request}>
                 Retry
               </button>
             )}
@@ -324,7 +324,7 @@ function RubricStep({ model, prompt, criteria, onChange }) {
           {criteria.length ? 'Regenerate' : 'Generate from prompt'}
         </button>
         {error && (
-          <button type="button" className="btn btn-ghost" onClick={request}>
+          <button type="button" className="btn btn-ghost" disabled={!prompt.trim() || busy} onClick={request}>
             Retry
           </button>
         )}
@@ -563,9 +563,10 @@ function Dashboard({ onReset }) {
   }, [])
 
   const id = training?.id
-  const polling = ACTIVE.includes(training?.status)
+  // Restarting on every status change drops a poll already in flight, so it can't undo a pause it predates.
+  const status = training?.status
   useEffect(() => {
-    if (!polling) return
+    if (!ACTIVE.includes(status)) return
     let live = true
     let timer
     const poll = async () => {
@@ -585,7 +586,7 @@ function Dashboard({ onReset }) {
       live = false
       clearTimeout(timer)
     }
-  }, [id, polling])
+  }, [id, status])
 
   // Move focus into the new slide when the control that changed it has gone (or is now inert or disabled).
   useEffect(() => {
@@ -609,6 +610,7 @@ function Dashboard({ onReset }) {
       const t = await api.startTraining(config).catch(async (e) => {
         if (e.status !== 409) throw e
         const active = (await api.listTrainings()).find((t) => ACTIVE.includes(t.status))
+        if (!active) throw e // it finished in the meantime
         return api.getTraining(active.id)
       })
       setTraining(t)

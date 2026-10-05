@@ -619,6 +619,7 @@ it('pauses a running training, polls until it is paused, then resumes it to comp
   api.getTraining.mockResolvedValue(completed)
   await user.click(screen.getByRole('button', { name: 'Resume' }))
   expect(api.resumeTraining).toHaveBeenCalledWith(7)
+  expect(await screen.findByRole('button', { name: 'Pause' })).toBeEnabled() // polling starts once it shows
   await tick()
   expect(step('Complete')).toHaveAttribute('aria-current', 'step')
 })
