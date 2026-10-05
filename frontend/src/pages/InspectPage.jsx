@@ -27,10 +27,9 @@ function useLoad(load, key, version) {
   return state.key === key ? state : { loading: key != null }
 }
 
-function Column({ ref, title, state, loadingText, emptyText, children }) {
+function LoadStatus({ state, loadingText }) {
   return (
-    <section ref={ref} className="inspect-col glass" aria-label={title}>
-      <h2 className="inspect-col-title">{title}</h2>
+    <>
       {state.loading && (
         <p className="row muted" role="status">
           <span className="spinner" /> {loadingText}
@@ -41,7 +40,42 @@ function Column({ ref, title, state, loadingText, emptyText, children }) {
           {state.error.message}
         </p>
       )}
+    </>
+  )
+}
+
+function Column({ ref, title, state, loadingText, emptyText, children }) {
+  return (
+    <section ref={ref} className="inspect-col glass" aria-label={title}>
+      <h2 className="inspect-col-title">{title}</h2>
+      <LoadStatus state={state} loadingText={loadingText} />
       {state.data && (state.data.length ? <ul className="inspect-list">{children}</ul> : <p className="muted">{emptyText}</p>)}
+    </section>
+  )
+}
+
+// The training's starting prompt beside the prompt of its best-scoring round (null until a round finishes).
+function Prompts({ state }) {
+  const t = state.data
+  return (
+    <section className="inspect-prompts glass" aria-label="Prompts">
+      <h2 className="inspect-col-title">Prompts</h2>
+      <LoadStatus state={state} loadingText="Loading prompts…" />
+      {t && (
+        <div className="prompt-pair">
+          <section className="prompt-block" aria-label="Original prompt">
+            <h3>Original prompt</h3>
+            <pre tabIndex={0}>{t.initial_prompt}</pre>
+          </section>
+          <section className="prompt-block prompt-best" aria-label="Highest-scoring prompt">
+            <h3>
+              Highest-scoring prompt
+              {t.best_prompt != null && <span className="prompt-score">{fmt(t.best_score)}/10</span>}
+            </h3>
+            {t.best_prompt != null ? <pre tabIndex={0}>{t.best_prompt}</pre> : <p className="muted">No finished round yet</p>}
+          </section>
+        </div>
+      )}
     </section>
   )
 }
@@ -140,6 +174,7 @@ export default function InspectPage() {
 
   const trainings = useLoad(api.listTrainings, 'all', version)
   const rounds = useLoad(() => api.listRounds(trainingId), trainingId, version)
+  const detail = useLoad(() => api.getTraining(trainingId), trainingId, version)
   const scenarios = useLoad(
     () => api.listScenarios(trainingId, round),
     round == null ? null : `${trainingId}/${round}`,
@@ -231,6 +266,8 @@ export default function InspectPage() {
           </Column>
         )}
       </div>
+
+      {trainingId != null && <Prompts state={detail} />}
 
       {selected?.status === 'completed' && (
         <div className="row">

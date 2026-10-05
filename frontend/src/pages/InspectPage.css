@@ -232,6 +232,32 @@
   margin-bottom: 12px;
 }
 
+/* ---------- Prompts ---------- */
+.inspect-prompts {
+  padding: 16px;
+}
+
+.prompt-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.prompt-block h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.prompt-score {
+  font-family: var(--font-display);
+  color: var(--accent);
+}
+
+.prompt-block pre,
 .inspect-details pre {
   margin: 12px 0 0;
   padding: 12px 14px;
@@ -243,8 +269,20 @@
   border-radius: var(--radius-sm);
 }
 
+.prompt-block pre {
+  margin: 0;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.prompt-best pre {
+  border-color: var(--border-strong);
+  box-shadow: var(--glow);
+}
+
 @media (max-width: 860px) {
   .inspect-cols,
+  .prompt-pair,
   .inspect-score {
     grid-template-columns: 1fr;
   }
