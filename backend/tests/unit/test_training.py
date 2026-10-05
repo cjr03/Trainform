@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -37,8 +38,13 @@ def fake_agents(monkeypatch):
         persona_rubrics = []
         progress = []
         rounds = []
+        events = []
 
     state = State()
+
+    def persona_respond(llm, attributes, context):
+        state.events.append(f"message {context}")
+        return f"msg from {context}"
 
     def generate_personas(llm, agent_prompt, n, rubric=None):
         state.persona_prompts.append(agent_prompt)
@@ -47,6 +53,7 @@ def fake_agents(monkeypatch):
                 for k in range(1, n + 1)]
 
     def score_conversation(llm, conversation, rubric):
+        state.events.append("score")
         with SessionLocal() as s:  # what another process (the API) can see right now
             t = s.query(Training).one()
             state.progress.append((t.status, t.current_round, t.scenarios_done, s.query(Scenario).count()))
@@ -57,7 +64,7 @@ def fake_agents(monkeypatch):
         return [{"criterion": c, "score": value} for c in rubric]
 
     monkeypatch.setattr(training.agents, "generate_personas", generate_personas)
-    monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: f"msg from {context}")
+    monkeypatch.setattr(training.agents, "persona_respond", persona_respond)
     monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
     monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, conv, scores: prompt + "+")
@@ -96,6 +103,40 @@ def test_without_claude_the_helper_agents_run_on_the_base_model(db, user, fake_a
     db.expire_all()
     assert db.get(Training, t.id).status == "completed"
     assert helpers == models and used == ["local llm"]  # the already-loaded model, not a second copy
+
+
+def test_persona_messages_are_written_at_once_before_the_chain(db, user, fake_agents, monkeypatch):
+    fake_agents.scores = [8, 8, 8, 8, 8, 8]
+    together = threading.Barrier(3, timeout=10)  # breaks unless the round's three messages are in flight at once
+    respond = training.agents.persona_respond
+    monkeypatch.setattr(training.agents, "persona_respond", lambda *a: together.wait() * 0 or respond(*a))
+    t, _ = run(db, make_training(db, user, rounds=2, scenarios=3))
+    assert t.status == "completed"
+    round_events = fake_agents.events[:6], fake_agents.events[6:]
+    for events in round_events:  # every persona's message is written before the first scenario is scored
+        assert sorted(events[:3]) == [f"message persona {k}" for k in (1, 2, 3)] and events[3:] == ["score"] * 3
+    # Each scenario still gets its own persona's message, in persona order.
+    scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
+    assert [s.input for s in scenarios] == [f"msg from persona {k}" for k in (1, 2, 3)] * 2
+
+
+def test_local_helper_calls_run_in_turn(db, user, fake_agents, monkeypatch):
+    # One local model answers one call at a time, so its persona messages are not written concurrently.
+    fake_agents.scores = [8, 8]
+    def local(system, message, schema=None, effort=None):
+        pass
+
+    local.local = True
+    monkeypatch.setattr(training, "local_llm", lambda model: local)
+    threads = []
+    respond = training.agents.persona_respond
+    monkeypatch.setattr(training.agents, "persona_respond",
+                        lambda *a: threads.append(threading.get_ident()) or respond(*a))
+    t = make_training(db, user, rounds=1, scenarios=2)
+    training.run_training(t.id, None, FakeModel)
+    db.expire_all()
+    assert db.get(Training, t.id).status == "completed"
+    assert threads == [threading.get_ident()] * 2
 
 
 def test_runs_every_round_and_threads_the_prompt(db, user, fake_agents):

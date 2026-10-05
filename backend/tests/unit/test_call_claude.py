@@ -27,8 +27,8 @@ def fake_anthropic(monkeypatch, response=None, error=None):
             raise error
         return response
 
-    def client(api_key):
-        calls["api_key"] = api_key
+    def client(api_key, max_retries):
+        calls["api_key"], calls["max_retries"] = api_key, max_retries
         return SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=create)))
 
     monkeypatch.setattr(anthropic, "Anthropic", client)
@@ -40,6 +40,7 @@ def test_text_request_shape_and_join(monkeypatch):
                                               block("text", text="world. ")))
     assert call_claude("sk-1", "Be terse.", "Hi") == "Hello world."
     assert calls["api_key"] == "sk-1"
+    assert calls["max_retries"] == 5  # the SDK backs off and retries 429s, 5xx and overloads; a training runs for hours
     assert calls["kwargs"] == {
         "model": llm.MODEL,
         "max_tokens": 16000,
@@ -59,6 +60,12 @@ def test_schema_request_parses_json(monkeypatch):
     assert call_claude("k", "s", "m", schema) == {"prompt": "x"}
     assert calls["kwargs"]["output_config"] == {"effort": "medium", "format": {"type": "json_schema", "schema": schema}}
     assert not {"temperature", "top_p", "top_k", "thinking"} & calls["kwargs"].keys()
+
+
+def test_effort_can_be_lowered(monkeypatch):
+    calls = fake_anthropic(monkeypatch, reply(block("text", text="hi")))
+    assert call_claude("k", "s", "m", effort="low") == "hi"
+    assert calls["kwargs"]["output_config"] == {"effort": "low"}
 
 
 def test_bad_json_is_llm_error(monkeypatch):

@@ -42,7 +42,7 @@ def _tag(message: str, name: str) -> str:
     return m.group(1) if m else ""
 
 
-def fake_llm(system: str, message: str, schema: dict | None = None):
+def fake_llm(system: str, message: str, schema: dict | None = None, effort: str = "medium"):
     """Drop-in for llm.call_claude bound to a key, dispatching on the schema's top-level property."""
     if schema is None:  # persona agent: the context is one of our persona briefs
         return next((opening for brief, _, opening, _ in PERSONAS if brief in message), PERSONAS[0][2])
@@ -54,14 +54,14 @@ def fake_llm(system: str, message: str, schema: dict | None = None):
         return {"prompt": f"You are an AI agent for: {about}\n\nHelp users with that, briefly and politely."}
     if key == "criteria":
         return {"criteria": CRITERIA}
-    if key == "scores":
-        rubric = re.findall(r"^\d+\. (.*)$", _tag(message, "rubric"), re.MULTILINE)
+    if key == "scores":  # one score per criterion key (c1, c2, ...) the schema requires
         conversation = _tag(message, "conversation")
         base = next((score for _, _, opening, score in PERSONAS if conversation.startswith(f"User: {opening}")), 6)
-        return {"scores": [{"criterion": c, "score": max(1, min(10, base + i % 3 - 1))} for i, c in enumerate(rubric)]}
+        return {"scores": {k: max(1, min(10, base + i % 3 - 1))
+                           for i, k in enumerate(schema["properties"]["scores"]["required"])}}
     if key == "personas":
-        criteria = re.findall(r"^- (.*)$", _tag(message, "criteria"), re.MULTILINE)
-        return {"personas": [{"attributes": [{"criterion": c, "rating": rating} for c in criteria], "prompt": brief}
+        keys = schema["properties"]["personas"]["items"]["properties"]["attributes"]["required"]
+        return {"personas": [{"attributes": dict.fromkeys(keys, rating), "prompt": brief}
                              for brief, rating, _, _ in PERSONAS]}
     raise ValueError(f"fake_llm has no answer for schema property {key!r}")
 

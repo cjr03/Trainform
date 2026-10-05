@@ -1,4 +1,5 @@
 import re
+import threading
 
 import pytest
 
@@ -10,10 +11,15 @@ class FakeLLM:
     def __init__(self, *outputs):
         self.outputs = list(outputs)
         self.calls = []
+        self.kwargs = []
 
-    def __call__(self, system, message, schema=None):
+    def __call__(self, system, message, schema=None, **kwargs):
         self.calls.append((system, message, schema))
-        return self.outputs.pop(0)
+        self.kwargs.append(kwargs)
+        out = self.outputs.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 def assert_strict(schema):
@@ -48,7 +54,7 @@ def test_create_prompt():
 
 def test_create_prompt_rejects_empty():
     with pytest.raises(LLMError):
-        agents.create_prompt(FakeLLM({"prompt": "  "}), "x")
+        agents.create_prompt(FakeLLM({"prompt": "  "}, {"prompt": ""}), "x")
 
 
 def test_create_rubric_strips_blanks():
@@ -87,20 +93,52 @@ def test_generate_improved_prompt():
 
 def test_generate_improved_prompt_rejects_empty():
     with pytest.raises(LLMError):
-        agents.generate_improved_prompt(FakeLLM({"prompt": ""}), "p", "c", [])
+        agents.generate_improved_prompt(FakeLLM({"prompt": ""}, {"prompt": ""}), "p", "c", [])
 
 
-def test_score_conversation_aligns_by_order_and_clamps():
+KEYED_2 = {"type": "object", "properties": {"c1": {"type": "integer"}, "c2": {"type": "integer"}},
+           "required": ["c1", "c2"], "additionalProperties": False}
+
+
+def test_score_conversation_maps_keys_to_criteria_and_clamps():
     rubric = ["Greets the user.", "Is concise."]
-    llm = FakeLLM({"scores": [{"criterion": "greets", "score": 14}, {"criterion": "concise", "score": 0}]})
+    llm = FakeLLM({"scores": {"c2": 0, "c1": 14}})
     assert agents.score_conversation(llm, "user: hi\nassistant: hello", rubric) == [
         {"criterion": "Greets the user.", "score": 10}, {"criterion": "Is concise.", "score": 1}]
     system, message, schema = llm.calls[0]
     assert system == agents.SCORING_SYSTEM
     assert "<conversation>\nuser: hi\nassistant: hello\n</conversation>" in message
-    assert "1. Greets the user.\n2. Is concise." in message
-    assert schema["properties"]["scores"]["items"]["properties"]["score"] == {"type": "integer"}
+    assert "<rubric>\nc1: Greets the user.\nc2: Is concise.\n</rubric>" in message
+    assert schema["properties"]["scores"] == KEYED_2
     assert_strict(schema)
+
+
+@pytest.mark.parametrize("n", [1, 4, 8, 30])
+def test_keyed_schemas_require_exactly_one_value_per_criterion(n):
+    # Structured outputs must fill every required key and no others, so Claude can't return the wrong count.
+    rubric = [f"Rule {i}." for i in range(n)]
+    keyed = {f"c{i}": 5 for i in range(1, n + 1)}
+    llm = FakeLLM({"scores": {**keyed, "c99": 1}}, {"personas": [{"attributes": keyed, "prompt": "a"}]})
+    assert len(agents.score_conversation(llm, "c", rubric)) == n
+    assert len(agents.generate_personas(llm, "p", 1, rubric=rubric)[0]["attributes"]) == n
+    for _, _, schema in llm.calls:
+        assert_strict(schema)
+    scores, personas = llm.calls[0][2], llm.calls[1][2]
+    assert scores["properties"]["scores"]["required"] == list(keyed)
+    assert personas["properties"]["personas"]["items"]["properties"]["attributes"]["required"] == list(keyed)
+
+
+def test_a_garbled_reply_is_retried_once():
+    llm = FakeLLM({"scores": {"c1": 5}}, {"scores": {"c1": 7, "c2": 8}})
+    assert [s["score"] for s in agents.score_conversation(llm, "c", ["a", "b"])] == [7, 8]
+    assert len(llm.calls) == 2 and llm.calls[0] == llm.calls[1]
+
+
+def test_a_failed_call_is_retried_once_then_raised():
+    llm = FakeLLM(LLMError("Claude returned malformed JSON"), {"prompt": "x"})
+    assert agents.create_prompt(llm, "d") == "x"
+    with pytest.raises(LLMError, match="malformed JSON"):
+        agents.create_prompt(FakeLLM(*[LLMError("Claude returned malformed JSON")] * 2), "d")
 
 
 class LocalLLM(FakeLLM):
@@ -117,12 +155,6 @@ def test_local_scoring_asks_one_criterion_at_a_time_and_clamps():
     assert_strict(agents.SCORE_SCHEMA)
 
 
-def test_score_conversation_rejects_count_mismatch():
-    llm = FakeLLM({"scores": [{"criterion": "a", "score": 5}]})
-    with pytest.raises(LLMError):
-        agents.score_conversation(llm, "c", ["a", "b"])
-
-
 RUBRIC = ["Greets the user.", "Is concise."]
 
 
@@ -130,66 +162,73 @@ def persona(prompt, *ratings, criteria=RUBRIC):
     return {"attributes": [{"criterion": c, "rating": r} for c, r in zip(criteria, ratings)], "prompt": prompt}
 
 
+def reply(prompt, *ratings):
+    """A persona as Claude returns it: one rating per criterion key."""
+    return {"attributes": {f"c{i}": r for i, r in enumerate(ratings, 1)}, "prompt": prompt}
+
+
 def test_generate_personas_calls_rubric_first_and_clamps():
     llm = FakeLLM({"criteria": RUBRIC},
-                  {"personas": [persona(" Busy CFO ", 0, 11), persona("Lost student", 5, 6)]})
+                  {"personas": [reply(" Busy CFO ", 0, 11), reply("Lost student", 5, 6)]})
     out = agents.generate_personas(llm, "You are Acme support.", 2)
     assert out == [persona("Busy CFO", 1, 10), persona("Lost student", 5, 6)]
     assert [c[0] for c in llm.calls] == [agents.RUBRIC_CREATOR_SYSTEM, agents.PERSONA_GENERATOR_SYSTEM]
     _, message, schema = llm.calls[1]
     assert "<agent_prompt>\nYou are Acme support.\n</agent_prompt>" in message
-    assert "- Greets the user.\n- Is concise." in message
+    assert "<criteria>\nc1: Greets the user.\nc2: Is concise.\n</criteria>" in message
     assert "<count>2</count>" in message
+    assert schema["properties"]["personas"]["items"]["properties"]["attributes"] == KEYED_2
     assert_strict(schema)
 
 
-def test_generate_personas_aligns_attributes_to_rubric():
-    reworded = {"personas": [persona("a", 3, 7, criteria=["greets", "concise"])]}
-    out = agents.generate_personas(FakeLLM({"criteria": RUBRIC}, reworded), "p", 1)
-    assert out == [persona("a", 3, 7)]
-
-
-@pytest.mark.parametrize("ratings", [(5,), (5, 5, 5)])
-def test_generate_personas_rejects_attribute_count_mismatch(ratings):
-    bad = {"personas": [persona("a", *ratings, criteria=["x", "y", "z"])]}
-    with pytest.raises(LLMError, match="rubric has 2"):
-        agents.generate_personas(FakeLLM({"criteria": RUBRIC}, bad), "p", 1)
+def test_a_persona_missing_a_rating_is_retried_then_an_llm_error():
+    bad = {"personas": [reply("a", 5)]}
+    llm = FakeLLM(bad, bad)
+    with pytest.raises(LLMError, match="unexpected response shape"):
+        agents.generate_personas(llm, "p", 1, rubric=RUBRIC)
+    assert len(llm.calls) == 2
 
 
 @pytest.mark.parametrize("call, outputs", [
     (lambda llm: agents.create_prompt(llm, "d"), [{"text": "x"}]),
     (lambda llm: agents.create_rubric(llm, "p"), [{"criteria": [3]}]),
     (lambda llm: agents.generate_improved_prompt(llm, "p", "c", []), ["not json"]),
-    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": [{"criterion": "a", "score": "high"}]}]),
-    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": [{"criterion": "a"}]}]),
+    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": {"c1": "high"}}]),
+    (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": {}}]),
     (lambda llm: agents.generate_personas(llm, "p", 1), [{"criteria": ["x"]}, {"personas": [{"prompt": "a"}]}]),
     (lambda llm: agents.generate_personas(llm, "p", 1), [{"criteria": ["x"]}, {"personas": None}]),
+    (lambda llm: agents.persona_respond(llm, [], "c"), [{"not": "text"}]),
 ])
 def test_unexpected_output_shape_is_llm_error(call, outputs):
     with pytest.raises(LLMError, match="unexpected response shape"):
-        call(FakeLLM(*outputs))
+        call(FakeLLM(*outputs, outputs[-1]))  # the bad reply twice: the first is retried
 
 
 def test_generate_personas_truncates_and_pads_cyclically():
-    many = {"personas": [persona(p, 5, criteria=["x"]) for p in "abc"]}
+    many = {"personas": [reply(p, 5) for p in "abc"]}
     assert [p["prompt"] for p in agents.generate_personas(FakeLLM({"criteria": ["x"]}, many), "p", 2)] == ["a", "b"]
-    few = {"personas": [persona(p, 5, criteria=["x"]) for p in "ab"]}
+    few = {"personas": [reply(p, 5) for p in "ab"]}
     out = agents.generate_personas(FakeLLM({"criteria": ["x"]}, few), "p", 5)
     assert [p["prompt"] for p in out] == ["a", "b", "a", "b", "a"]
     assert out[0] is not out[2]
 
 
-def test_generate_personas_uses_the_given_rubric_in_batches():
-    def batch(k):
-        return {"personas": [persona(f"p{i}", 5, 6) for i in range(k)]}
+def test_generate_personas_requests_its_batches_at_once_and_keeps_their_order():
+    together = threading.Barrier(3, timeout=10)  # breaks unless all three batches are in flight at once
+    calls = []
 
-    llm = FakeLLM(batch(10), batch(12), batch(5))
+    def llm(system, message, schema=None):
+        calls.append((system, message))
+        count = int(re.search(r"<count>(\d+)</count>", message).group(1))
+        together.wait()
+        return {"personas": [reply(f"{count}-{i}", 5, 6) for i in range(count + 2)]}  # extras are dropped
+
     out = agents.generate_personas(llm, "p", 25, rubric=RUBRIC)
     assert len(out) == 25 and all([a["criterion"] for a in p["attributes"]] == RUBRIC for p in out)
-    assert [p["prompt"] for p in out[:12]] == [f"p{i}" for i in range(10)] + ["p0", "p1"]
-    assert [c[0] for c in llm.calls] == [agents.PERSONA_GENERATOR_SYSTEM] * 3  # no rubric creator call
-    assert [re.search(r"<count>(\d+)</count>", c[1]).group(1) for c in llm.calls] == ["10", "10", "5"]
-    assert all("- Greets the user.\n- Is concise." in c[1] for c in llm.calls)
+    assert [p["prompt"] for p in out] == [f"10-{i}" for i in range(10)] * 2 + [f"5-{i}" for i in range(5)]
+    assert [c[0] for c in calls] == [agents.PERSONA_GENERATOR_SYSTEM] * 3  # no rubric creator call
+    assert sorted(re.search(r"<count>(\d+)</count>", c[1]).group(1) for c in calls) == ["10", "10", "5"]
+    assert all("c1: Greets the user.\nc2: Is concise." in c[1] for c in calls)
 
 
 def test_generate_personas_rejects_none():
@@ -219,14 +258,14 @@ def test_persona_respond():
     assert agents.persona_respond(llm, attributes, "You are an angry customer. Opening message.") == "Where is my refund??"
     system, message, schema = llm.calls[0]
     assert system == agents.PERSONA_SYSTEM
-    assert schema is None
+    assert schema is None and llm.kwargs == [{"effort": "low"}]  # a short in-character message needs little thought
     assert "Stays calm.: 9/10" in message and "Is concise.: 2/10" in message
     assert "<context>\nYou are an angry customer. Opening message.\n</context>" in message
 
 
 def test_persona_respond_rejects_empty():
     with pytest.raises(LLMError):
-        agents.persona_respond(FakeLLM(" "), [], "c")
+        agents.persona_respond(FakeLLM(" ", " "), [], "c")
 
 
 def test_primary_respond_uses_local_generate():
@@ -246,3 +285,15 @@ def test_local_personas_do_not_repeat():
     llm = LocalLLM(*({"prompt": "brief"} for _ in range(20)))
     personas = agents.generate_personas(llm, "p", 20, rubric=rubric)
     assert len({tuple(a["rating"] for a in p["attributes"]) for p in personas}) == 20
+
+
+def test_concurrently_keeps_order_and_runs_claude_calls_at_once():
+    together = threading.Barrier(3, timeout=10)  # breaks unless all three calls are in flight at once
+    assert agents.concurrently(FakeLLM(), lambda x: together.wait() * 0 + x * 2, [1, 2, 3]) == [2, 4, 6]
+
+
+def test_concurrently_runs_local_model_calls_in_turn():
+    # The local model answers one call at a time, and its helper calls switch the shared adapter off and on.
+    threads = []
+    assert agents.concurrently(LocalLLM(), lambda x: threads.append(threading.get_ident()) or x, [1, 2, 3]) == [1, 2, 3]
+    assert threads == [threading.get_ident()] * 3

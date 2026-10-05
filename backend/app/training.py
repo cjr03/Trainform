@@ -46,8 +46,11 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                 weights = model.adapter_bytes()  # what this round's scenarios run with, before its SFT
                 done = []
                 personas = agents.generate_personas(llm, prompt, t.scenarios_per_round, rubric=t.rubric)
-                for number, persona in enumerate(personas, 1):
-                    message = agents.persona_respond(llm, persona["attributes"], persona["prompt"])
+                # A persona's message depends only on the persona, so the round's messages are written at once. The
+                # rest of each scenario waits for the prompt the one before it produced, so it runs in order.
+                messages = agents.concurrently(llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]),
+                                               personas)
+                for number, (persona, message) in enumerate(zip(personas, messages), 1):
                     reply = agents.primary_respond(model.generate, prompt, message)  # same user turn SFT trains on
                     conversation = f"User: {message}\nAssistant: {reply}"
                     scores = agents.score_conversation(llm, conversation, t.rubric)

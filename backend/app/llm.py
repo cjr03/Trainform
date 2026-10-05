@@ -22,13 +22,14 @@ class LLMError(Exception):
     """A Claude call failed; the message is safe to show the user."""
 
 
-def call_claude(api_key: str, system: str, message: str, schema: dict | None = None):
+def call_claude(api_key: str, system: str, message: str, schema: dict | None = None, effort: str = "medium"):
     """One Claude call. Returns the text, or the parsed JSON object when `schema` (a JSON Schema) is given."""
-    output_config = {"effort": "medium"}
+    output_config = {"effort": effort}
     if schema:
         output_config["format"] = {"type": "json_schema", "schema": schema}
     try:
-        response = anthropic.Anthropic(api_key=api_key).beta.messages.create(
+        # Five retries with the SDK's backoff ride out the 429s, 5xx and overloads an hours-long training will meet.
+        response = anthropic.Anthropic(api_key=api_key, max_retries=5).beta.messages.create(
             model=MODEL,
             max_tokens=16000,
             system=system,
@@ -66,8 +67,8 @@ def _warn_fake_mode():
 
 
 def get_llm(user: User = Depends(current_user)):
-    """FastAPI dependency: an `llm(system, message, schema=None)` callable bound to the user's Claude key, or None
-    when the user has no key; callers then run the helper agents on a local model (`local_llm`)."""
+    """FastAPI dependency: an `llm(system, message, schema=None, effort="medium")` callable bound to the user's Claude
+    key, or None when the user has no key; callers then run the helper agents on a local model (`local_llm`)."""
     if fake.enabled():
         _warn_fake_mode()
         return fake.fake_llm
@@ -107,8 +108,8 @@ def local_llm(model, lock=None):
 
     Small models can't write JSON, so a schema must have a single field and the reply is mapped onto it: the whole
     reply for a string, one item per line for a list of strings, and a digits-only reply for an integer. `lock`
-    serialises callers that share `model`."""
-    def llm(system, message, schema=None):
+    serialises callers that share `model`. `effort` is Claude's and is ignored."""
+    def llm(system, message, schema=None, effort=None):
         if lock and not lock.acquire(timeout=LOCAL_WAIT):
             raise LLMError("The local model is busy; try again shortly")
         try:

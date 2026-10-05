@@ -66,11 +66,12 @@ class StubModel:
 
 
 def test_local_llm_plain_text():
-    model = StubModel(" hi there ")
+    model = StubModel(" hi there ", "again")
     local = llm.local_llm(model)
     assert local.local is True
     assert local("sys", "msg") == " hi there "
-    assert model.calls == [("sys", "msg", False)]
+    assert local("sys", "msg", effort="low") == "again"  # Claude's effort setting means nothing to the local model
+    assert model.calls == [("sys", "msg", False)] * 2
 
 
 def test_local_llm_string_field_is_the_whole_reply():
