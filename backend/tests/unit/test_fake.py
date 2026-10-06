@@ -32,10 +32,12 @@ def test_fake_llm_satisfies_every_agent():
 
 def test_fake_local_model():
     model = fake.FakeLocalModel("demo")
-    assert model.generate("Be helpful.", "User: hi").strip()
-    loss = model.sft([{"prompt": "p", "input": "i", "output": "o"}] * 2)
+    stops = []
+    assert model.generate_many([("Be helpful.", "User: hi")] * 2, stop=lambda: stops.append(1))[1].strip()
+    assert len(stops) == 2  # E2E slows each reply down, so a pause is checked before each
+    loss = model.sft([{"prompt": "p", "input": "i", "output": "o"}] * 2, stop=lambda: stops.append(1))
     assert isinstance(loss, float) and math.isfinite(loss)
-    assert model.examples_seen == 2
+    assert model.examples_seen == 2 and len(stops) == 3
     with zipfile.ZipFile(io.BytesIO(model.adapter_bytes())) as zf:
         assert json.loads(zf.read("adapter_config.json"))["peft_type"] == "LORA"
     resumed = fake.FakeLocalModel("demo")

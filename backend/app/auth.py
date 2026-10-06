@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app import fake
 from app.db import get_db
-from app.models import User
+from app.models import DEFAULT_BASE_MODEL, SEED_AGENT, Agent, User
 
 router = APIRouter(tags=["auth"])
 
@@ -166,6 +166,7 @@ def signup(body: Signup, db: Session = Depends(get_db)):
     except IntegrityError:  # lost a race with a concurrent signup
         db.rollback()
         raise HTTPException(409, _conflict(db, body.username, email) or "Username already taken")
+    db.add(Agent(user_id=user.id, base_model=DEFAULT_BASE_MODEL, **SEED_AGENT))
     session = _session(user)  # before commit: a missing TRAINFORM_SECRET must not leave an account behind
     db.commit()
     return session

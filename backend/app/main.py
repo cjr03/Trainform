@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text, update
 
-from app import agents, auth, local_model, models, training  # noqa: F401  (models registers the tables)
+from app import agent_profiles, agents, auth, local_model, models, training  # noqa: F401  (models registers the tables)
 from app.db import Base, engine
 
 
@@ -19,7 +19,18 @@ async def lifespan(_app: FastAPI):
         conn.execute(text("ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS target text"))
         conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
                           "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea, "
-                          "ADD COLUMN IF NOT EXISTS helper varchar(16)"))
+                          "ADD COLUMN IF NOT EXISTS helper varchar(16), "
+                          "ADD COLUMN IF NOT EXISTS agent_id integer REFERENCES agents(id) ON DELETE CASCADE"))
+        # Every user without an agent gets the seed agent, on their latest training's model; trainings from before
+        # agents existed belong to it.
+        latest_model = "SELECT base_model FROM trainings t WHERE t.user_id = u.id ORDER BY t.id DESC LIMIT 1"
+        conn.execute(text(f"INSERT INTO agents (user_id, name, base_model, prompt) "
+                          f"SELECT u.id, :name, COALESCE(({latest_model}), :model), :prompt FROM users u "
+                          f"WHERE NOT EXISTS (SELECT 1 FROM agents a WHERE a.user_id = u.id)"),
+                     models.SEED_AGENT | {"model": models.DEFAULT_BASE_MODEL})
+        conn.execute(text("UPDATE trainings t SET agent_id = a.id FROM agents a "
+                          "WHERE t.agent_id IS NULL AND a.user_id = t.user_id AND a.name = :name"),
+                     {"name": models.SEED_AGENT["name"]})
         # Training runs are background threads of this process, so any left active died with the last one. Their
         # progress is saved, so they wait, paused, for the user to resume them.
         conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))
@@ -37,7 +48,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Trainform", lifespan=lifespan)
 
-for module in (auth, agents, local_model, training):
+for module in (auth, agents, agent_profiles, local_model, training):
     app.include_router(module.router, prefix="/api")
 
 

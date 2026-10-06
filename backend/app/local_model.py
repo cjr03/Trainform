@@ -47,6 +47,7 @@ HUB_PATTERNS = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]
 PICKLE_SUFFIXES = (".bin", ".pt", ".pth", ".pkl", ".ckpt")
 # Room for a ~1000-word system prompt, a message and a reply; a longer example is dropped, not cut short.
 MAX_SFT_TOKENS = 4096
+GEN_BATCH = 8  # sequences generated at once
 
 
 def _model_dir(name: str) -> Path:
@@ -203,6 +204,7 @@ class LocalModel:
         self.tokenizer = AutoTokenizer.from_pretrained(path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"  # see generate_many
         # bfloat16 halves a GPU's memory traffic, so it generates and trains faster; CPUs are slow at it. PEFT keeps the
         # LoRA adapter in float32, so SFT updates are not lost to rounding.
         dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
@@ -222,30 +224,51 @@ class LocalModel:
             text = f"{system_prompt}\n\nUser: {conversation}\nAssistant:"
         return self.tokenizer(text, add_special_tokens=False)["input_ids"]
 
-    def generate(self, system_prompt: str, conversation: str, max_new_tokens: int = 256, **kwargs) -> str:
-        ids = torch.tensor([self._prompt_ids(system_prompt, conversation)], device=self.device)
+    def generate_many(self, pairs: list[tuple[str, str]], max_new_tokens: int = 256, stop=None, options=None,
+                      **kwargs) -> list[str]:
+        """Greedy replies to [(system prompt, conversation)], in input order, GEN_BATCH at a time: prompts of similar
+        length share a left-padded batch, so every row's prompt ends at the same index. `stop()` runs before each batch
+        and may raise to drop the call; `options(start)` adds model.generate kwargs for a batch whose replies begin at
+        `start`."""
+        prompts = [self._prompt_ids(system, conversation) for system, conversation in pairs]
+        order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+        replies = [""] * len(prompts)
         self.model.eval()
-        with torch.no_grad():
-            out = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=max_new_tokens,
-                                      do_sample=False, pad_token_id=self.tokenizer.pad_token_id, **kwargs)
-        return self.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True).strip()
+        for k in range(0, len(order), GEN_BATCH):
+            if stop:
+                stop()
+            batch = order[k:k + GEN_BATCH]
+            inputs = self.tokenizer.pad({"input_ids": [prompts[i] for i in batch]}, return_tensors="pt").to(self.device)
+            start = inputs["input_ids"].shape[1]
+            with torch.no_grad():
+                out = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                                          pad_token_id=self.tokenizer.pad_token_id,
+                                          **kwargs, **(options(start) if options else {}))
+            for i, row in zip(batch, out[:, start:]):
+                replies[i] = self.tokenizer.decode(row, skip_special_tokens=True).strip()
+        return replies
 
-    def complete(self, system_prompt: str, message: str, digits: bool = False) -> str:
+    def generate(self, system_prompt: str, conversation: str, max_new_tokens: int = 256, **kwargs) -> str:
+        return self.generate_many([(system_prompt, conversation)], max_new_tokens, **kwargs)[0]
+
+    def complete_many(self, pairs: list[tuple[str, str]], digits: bool = False, stop=None) -> list[str]:
         """Helper-agent generation (used when Claude isn't linked). Runs on the base weights with the LoRA adapter off,
-        so fine-tuning never changes the agents that grade and coach the model. `digits` restricts the reply to a
+        so fine-tuning never changes the agents that grade and coach the model. `digits` restricts each reply to a
         number of at most two tokens."""
-        start = len(self._prompt_ids(system_prompt, message))
         with self.model.disable_adapter():
             if not digits:
                 # Greedy decoding makes small models loop on one line until the token limit. A repetition penalty
                 # would also penalise the end-of-turn token (it is in the prompt), so block repeated 4-grams instead,
                 # within the reply only: a reply must be free to keep the wording of a prompt it revises.
                 block = NoRepeatNGramLogitsProcessor(4)
-                return self.generate(system_prompt, message, max_new_tokens=512,
-                                     logits_processor=[lambda ids, scores: block(ids[:, start:], scores)])
+                return self.generate_many(pairs, max_new_tokens=512, stop=stop, options=lambda start: {
+                    "logits_processor": [lambda ids, scores: block(ids[:, start:], scores)]})
             ends = self._end_ids()
-            return self.generate(system_prompt, message, max_new_tokens=2, prefix_allowed_tokens_fn=lambda _, ids: (
-                self._digit_ids if len(ids) == start else self._digit_ids + ends))
+            return self.generate_many(pairs, max_new_tokens=2, stop=stop, options=lambda start: {
+                "prefix_allowed_tokens_fn": lambda _, ids: self._digit_ids + ([] if len(ids) == start else ends)})
+
+    def complete(self, system_prompt: str, message: str, digits: bool = False) -> str:
+        return self.complete_many([(system_prompt, message)], digits)[0]
 
     @cached_property
     def _digit_ids(self) -> list[int]:
@@ -259,9 +282,11 @@ class LocalModel:
         return sorted(i for i in {self.tokenizer.eos_token_id, *(eos if isinstance(eos, list) else [eos])}
                       if i is not None)
 
-    def sft(self, examples: list[dict], epochs: int = 2, accum: int = 4, seed: int = 0) -> float:
-        """Fine-tune on [{"prompt", "input", "output"}], learning only the outputs: `epochs` shuffled passes, each step
-        on the clipped mean gradient of `accum` examples. Returns the mean training loss."""
+    def sft(self, examples: list[dict], epochs: int = 2, accum: int = 4, seed: int = 0, stop=None) -> float:
+        """Fine-tune on [{"prompt", "input", "output"}], learning only the outputs: `epochs` passes, in a seeded
+        shuffled order, over microbatches of up to `accum` examples of similar length (at most MAX_SFT_TOKENS padded
+        tokens), one forward pass and one clipped step each. `stop()` runs before each step and may raise to drop the
+        rest. Returns the mean training loss."""
         data = []
         for ex in examples:
             prompt = self._prompt_ids(ex["prompt"], ex["input"])
@@ -272,25 +297,43 @@ class LocalModel:
         if len(data) < len(examples):
             log.warning("SFT dropped %d of %d examples over %d tokens", len(examples) - len(data), len(examples),
                         MAX_SFT_TOKENS)
+        batches = []
+        for ex in sorted(data, key=lambda ex: len(ex[0])):  # longest last, so it sets its batch's padded width
+            if batches and len(batches[-1]) < accum and (len(batches[-1]) + 1) * len(ex[0]) <= MAX_SFT_TOKENS:
+                batches[-1].append(ex)
+            else:
+                batches.append([ex])
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=2e-4)
         rng, losses = random.Random(seed), []
         self.model.train()
         try:
-            for _ in range(epochs if data else 0):
-                rng.shuffle(data)
-                for i, (ids, labels) in enumerate(data, 1):
-                    loss = self.model(input_ids=torch.tensor([ids], device=self.device),
-                                      labels=torch.tensor([labels], device=self.device)).loss
-                    (loss / accum).backward()
-                    losses.append(loss.item())
-                    if i % accum == 0 or i == len(data):
-                        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-                        optimizer.step()
-                        optimizer.zero_grad()
+            for _ in range(epochs):
+                rng.shuffle(batches)
+                for batch in batches:
+                    if stop:
+                        stop()
+                    loss = self._losses(batch)
+                    loss.mean().backward()
+                    losses += loss.tolist()
+                    torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
         finally:
             self.model.eval()
         return sum(losses) / len(losses) if losses else 0.0
+
+    def _losses(self, batch: list[tuple[list[int], list[int]]]) -> torch.Tensor:
+        """Each (ids, labels) example's mean loss over its labelled tokens, from one right-padded forward pass."""
+        width = max(len(ids) for ids, _ in batch)
+        def pad(rows, value):
+            return torch.tensor([r + [value] * (width - len(r)) for r in rows], device=self.device)
+
+        labels = pad([labels for _, labels in batch], -100)[:, 1:]
+        logits = self.model(input_ids=pad([ids for ids, _ in batch], self.tokenizer.pad_token_id),
+                            attention_mask=pad([[1] * len(ids) for ids, _ in batch], 0)).logits[:, :-1]
+        token_losses = torch.nn.functional.cross_entropy(logits.transpose(1, 2).float(), labels, reduction="none")
+        return token_losses.sum(1) / (labels != -100).sum(1)  # cross_entropy gives -100 labels a loss of 0
 
     def adapter_bytes(self) -> bytes:
         """The current LoRA adapter as a zip archive."""

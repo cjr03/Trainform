@@ -39,25 +39,43 @@ export async function uploadModel(request, auth) {
   return name
 }
 
-// A finished fake-mode training (2 scenarios x 1 round) on a freshly uploaded model.
-export async function createTraining(request, auth, rubric) {
+// An agent on a freshly uploaded model; returns {id, name}.
+export async function createAgent(request, auth) {
   const base_model = await uploadModel(request, auth)
+  const name = uid('agent')
+  const res = await request.post('/api/agents', {
+    headers: auth,
+    data: { name, base_model, prompt: 'You help bike shop customers.' },
+  })
+  expect(res.status()).toBe(201)
+  return { id: (await res.json()).id, name }
+}
+
+// A finished fake-mode training (2 scenarios x 1 round) of a new agent; returns {id, agent}.
+export async function createTraining(request, auth, rubric) {
+  const agent = await createAgent(request, auth)
   const res = await request.post('/api/trainings', {
     headers: auth,
-    data: { base_model, prompt: 'You help bike shop customers.', rubric, scenarios: 2, rounds: 1 },
+    data: { agent_id: agent.id, rubric, scenarios: 2, rounds: 1 },
   })
   expect(res.status()).toBe(201)
   const { id } = await res.json()
   await expect
     .poll(async () => (await (await request.get(`/api/trainings/${id}`, { headers: auth })).json()).status)
     .toBe('completed')
-  return id
+  return { id, agent }
 }
 
-// Opens Inspect on round 1, scenario 1 of training `id` and returns the transcript region.
-export async function openScenario(page, id) {
-  await page.getByRole('link', { name: 'Inspect' }).click()
+// Opens Inspect on `agent`, then its training `id`.
+export async function openTraining(page, { id, agent }) {
+  await page.getByRole('link', { name: 'Inspect', exact: true }).click()
+  await page.getByRole('region', { name: 'Agents' }).getByRole('button', { name: new RegExp(`^${agent.name}`) }).click()
   await page.getByRole('region', { name: 'Trainings' }).getByRole('button', { name: new RegExp(`^#${id} `) }).click()
+}
+
+// Opens Inspect on round 1, scenario 1 of `training` and returns the transcript region.
+export async function openScenario(page, training) {
+  await openTraining(page, training)
   await page.getByRole('region', { name: 'Rounds' }).getByRole('button', { name: /^Round 1/ }).click()
   await page.getByRole('region', { name: 'Scenarios' }).getByRole('button', { name: /^Scenario 1/ }).click()
   return page.getByRole('region', { name: 'Scenario 1', exact: true })

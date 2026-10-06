@@ -5,7 +5,7 @@ let user
 test.beforeEach(async ({ page, request }) => {
   user = await createUser(request)
   await signIn(page, user)
-  await page.getByRole('link', { name: 'Account' }).click()
+  await page.getByRole('link', { name: 'Account', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible()
 })
 

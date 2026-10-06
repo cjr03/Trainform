@@ -75,11 +75,17 @@ class FakeLocalModel:
     def __init__(self, name: str):
         self.name, self.examples_seen = name, 0
 
-    def generate(self, system_prompt: str, conversation: str) -> str:
-        time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))  # E2E sets it so a run is slow enough to pause
-        return "Hello! Happy to help. Could you tell me a little more about what you need?"
+    def generate_many(self, pairs: list[tuple[str, str]], stop, **_) -> list[str]:
+        replies = []
+        for _ in pairs:
+            stop()
+            # E2E sets it so a run is slow enough to pause.
+            time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))
+            replies.append("Hello! Happy to help. Could you tell me a little more about what you need?")
+        return replies
 
-    def sft(self, examples: list[dict], **_) -> float:
+    def sft(self, examples: list[dict], stop, **_) -> float:
+        stop()
         self.examples_seen += len(examples)
         return 1 / (1 + self.examples_seen)
 

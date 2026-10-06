@@ -341,6 +341,17 @@ def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
+def score_conversations(llm, conversations: list[str], rubric: list[str]) -> list[list[dict]]:
+    """score_conversation for each conversation; a local model scores every conversation and criterion in one batch."""
+    if not getattr(llm, "local", False):
+        return concurrently(llm, lambda c: score_conversation(llm, c, rubric), conversations)
+    outs = llm.many([(LOCAL_SCORING_SYSTEM, f"{_tag('conversation', conv)}\n\n{_tag('criterion', c)}")
+                     for conv in conversations for c in rubric], SCORE_SCHEMA)
+    scores = [_clamp(out["score"]) for out in outs]
+    return [[{"criterion": c, "score": s} for c, s in zip(rubric, scores[i:i + len(rubric)])]
+            for i in range(0, len(scores), len(rubric))]
+
+
 def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None,
                       last_scores: list[float] | None = None) -> list[dict]:
     """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}.
@@ -399,24 +410,32 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
             for ratings, prompt in (personas[i % len(personas)] for i in range(n))]
 
 
+def _voiced(context: str, message: str) -> str:
+    """A local model's persona message, or the persona's need when the reply is in the agent's voice or turned the
+    customer's "I" or "my" into "you" or "your" (the need is itself a real request)."""
+    need = context.rpartition("Need: ")[2]
+    flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
+    return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
+
+
 def persona_respond(llm, attributes: list[dict], context: str) -> str:
     """Persona agent: attributes + conversational context -> the persona's next message."""
     if getattr(llm, "local", False):
-        need = context.rpartition("Need: ")[2]
-        message = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None, lambda out: _text(out, "persona message"))
-        # A reply in the agent's voice, or one that turned the customer's "I" or "my" into "you" or "your", falls back to
-        # the need, which is itself a real request.
-        flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
-        return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
+        return _voiced(context, _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None,
+                                     lambda out: _text(out, "persona message")))
     lines = "\n".join(f"- {a['criterion']}: {a['rating']}/10" for a in attributes)
     message = f"{_tag('persona_attributes', lines)}\n\n{_tag('context', context)}"
     # Low effort: a short in-character message needs little deliberation, and it is a third of a training's calls.
     return _ask(partial(llm, effort="low"), PERSONA_SYSTEM, message, None, lambda out: _text(out, "persona message"))
 
 
-def primary_respond(generate, prompt: str, conversation: str) -> str:
-    """Primary agent: runs on the local model being trained, via `generate(system_prompt, conversation)`."""
-    return generate(prompt, conversation).strip()
+def persona_messages(llm, personas: list[dict]) -> list[str]:
+    """persona_respond for each persona; a local model writes them in one batch."""
+    if not getattr(llm, "local", False):
+        return concurrently(llm, lambda p: persona_respond(llm, p["attributes"], p["prompt"]), personas)
+    # Greedy decoding repeats itself, so an empty reply is not asked for again.
+    replies = llm.many([(LOCAL_PERSONA_SYSTEM, f"{p['prompt']}\nMessage:") for p in personas])
+    return [_voiced(p["prompt"], _text(reply, "persona message")) for p, reply in zip(personas, replies)]
 
 
 class PromptRequest(BaseModel):

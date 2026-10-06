@@ -26,12 +26,13 @@ it('routes signed-in users and defaults to Train', () => {
   renderAt('/')
   expect(screen.getByRole('navigation')).toBeInTheDocument()
   expect(screen.getByTestId('train-page')).toBeInTheDocument()
-  for (const name of ['Train', 'Inspect', 'Account']) {
+  for (const name of ['Train', 'Agents', 'Inspect', 'Account']) {
     expect(screen.getByRole('link', { name })).toBeInTheDocument()
   }
 })
 
 it.each([
+  ['/agents', 'agents-page'],
   ['/inspect', 'inspect-page'],
   ['/account', 'account-page'],
 ])('renders %s', (path, testId) => {

@@ -9,10 +9,10 @@
 
 /* ---------- Stepper ---------- */
 .stepper {
-  --rail-inset: calc(100% / 12);
+  --rail-inset: calc(100% / 10);
   position: relative;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   width: min(820px, 100%);
   margin: 0 auto;
   padding: 0;

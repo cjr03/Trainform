@@ -4,6 +4,7 @@ import { LogOut } from 'lucide-react'
 import { api, clearToken, getToken, setToken } from './api'
 import { Button } from '@/components/ui/button'
 import AccountPage from './pages/AccountPage'
+import AgentsPage from './pages/AgentsPage'
 import AuthPage from './pages/AuthPage'
 import InspectPage from './pages/InspectPage'
 import TrainPage from './pages/TrainPage'
@@ -41,7 +42,7 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-2.5">
           <span className="font-brand text-base font-bold tracking-[0.3em] text-gradient">TRAINFORM</span>
           <nav aria-label="Main" className="order-last flex w-full gap-1 sm:order-none sm:mr-auto sm:w-auto">
-            {['Train', 'Inspect', 'Account'].map((name) => (
+            {['Train', 'Agents', 'Inspect', 'Account'].map((name) => (
               <NavLink key={name} to={`/${name.toLowerCase()}`} className={NAV_LINK}>
                 {name}
               </NavLink>
@@ -56,6 +57,7 @@ export default function App() {
       <main className="w-full px-4 pt-8 pb-16">
         <Routes>
           <Route path="/train" element={<TrainPage />} />
+          <Route path="/agents" element={<AgentsPage />} />
           <Route path="/inspect" element={<InspectPage />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="*" element={<Navigate to="/train" replace />} />

@@ -175,8 +175,7 @@ def test_uploads_are_private_to_their_owner(authed_client, db, user, monkeypatch
     assert authed_client.get("/api/models").json() == [{"name": "bobs", "source": "upload"}]
     as_user(user)
     assert authed_client.get("/api/models").json() == []
-    body = {"base_model": "bobs", "prompt": "P", "rubric": ["C"], "scenarios": 1, "rounds": 1}
-    r = authed_client.post("/api/trainings", json=body)
+    r = authed_client.post("/api/agents", json={"name": "Bob's", "base_model": "bobs", "prompt": "P"})
     assert (r.status_code, r.json()["detail"]) == (400, "Unknown base model: bobs")
     assert authed_client.delete("/api/models/bobs").status_code == 404
     as_user(bob)

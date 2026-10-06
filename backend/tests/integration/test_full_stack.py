@@ -31,6 +31,13 @@ def signup(client, **extra):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
+def new_agent(client, auth, base_model="demo"):
+    r = client.post("/api/agents", json={"name": "Acme", "base_model": base_model, "prompt": INITIAL_PROMPT},
+                    headers=auth)
+    assert r.status_code == 201
+    return r.json()["id"]
+
+
 def zip_names(data):
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         return zf.namelist(), json.loads(zf.read("adapter_config.json"))
@@ -47,7 +54,9 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
     assert 3 <= len(r.json()["criteria"]) <= 4
     rubric = r.json()["criteria"][:2] + ["Offers to book a repair."]  # edited on the Rubric slide
 
-    body = {"base_model": "demo", "prompt": INITIAL_PROMPT, "rubric": rubric, "scenarios": 3, "rounds": 2}
+    assert [a["name"] for a in client.get("/api/agents", headers=auth).json()] == ["Bike Repair Agent"]
+    agent_id = new_agent(client, auth)
+    body = {"agent_id": agent_id, "rubric": rubric, "scenarios": 3, "rounds": 2}
     r = client.post("/api/trainings", json=body, headers=auth)
     assert r.status_code == 201
     tid = r.json()["id"]  # TestClient returns once the background run has finished
@@ -85,6 +94,20 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
     assert r.headers["content-disposition"] == f'attachment; filename="training-{tid}-lora.zip"'
     names, config = zip_names(r.content)
     assert "adapter_config.json" in names and config["base_model_name_or_path"] == "demo"
+
+    # The agent has the best model now, and its training's score as its overall.
+    agent = client.get(f"/api/agents/{agent_id}", headers=auth).json()
+    assert agent["overall"] == round(10 * top) and [x["id"] for x in agent["trainings"]] == [tid]
+    assert client.get(f"/api/trainings?agent_id={agent_id}", headers=auth).json()[0]["agent_name"] == "Acme"
+
+
+def test_fake_mode_claude_agent_over_http(client, db, fake_mode):
+    auth = signup(client)
+    body = {"agent_id": new_agent(client, auth, "claude"), "rubric": ["Greets the user."], "scenarios": 2, "rounds": 2}
+    tid = client.post("/api/trainings", json=body, headers=auth).json()["id"]
+    d = client.get(f"/api/trainings/{tid}", headers=auth).json()
+    assert (d["status"], d["error"], d["scenarios_done"], d["base_model"]) == ("completed", None, 4, "claude")
+    assert all(m.weights is None for m in db.query(TrainedModel))  # only the prompt is trained
 
 
 def test_unreadable_claude_key_is_400_not_500(client, monkeypatch):
@@ -130,6 +153,7 @@ def test_fake_llm_with_real_local_model(db, user, tiny_model_dir, monkeypatch):
 
 
 def test_fake_mode_pause_and_resume_over_http(client, db, fake_mode, monkeypatch):
+    monkeypatch.setattr(training, "PAUSE_POLL", 0)
     auth = signup(client)
     sft = fake.FakeLocalModel.sft
 
@@ -138,10 +162,11 @@ def test_fake_mode_pause_and_resume_over_http(client, db, fake_mode, monkeypatch
         return sft(self, examples, **kw)
 
     monkeypatch.setattr(fake.FakeLocalModel, "sft", pause_during_round_1_sft)
-    body = {"base_model": "demo", "prompt": INITIAL_PROMPT, "rubric": ["Greets the user."], "scenarios": 3, "rounds": 2}
+    body = {"agent_id": new_agent(client, auth), "rubric": ["Greets the user."], "scenarios": 3, "rounds": 2}
     tid = client.post("/api/trainings", json=body, headers=auth).json()["id"]
     d = client.get(f"/api/trainings/{tid}", headers=auth).json()
-    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 3)
+    # Round 1's scenarios are saved; its SFT is dropped at once, with nothing of it kept.
+    assert (d["status"], d["current_round"], d["scenarios_done"], d["best_model_id"]) == ("paused", 1, 3, None)
 
     monkeypatch.setattr(fake.FakeLocalModel, "sft", sft)
     assert client.post(f"/api/trainings/{tid}/resume", headers=auth).status_code == 200

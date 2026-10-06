@@ -79,8 +79,15 @@ export const api = {
   },
   listLocalModels: () => request('/models'),
 
+  listAgents: () => request('/agents'),
+  getAgent: (id) => request(`/agents/${id}`),
+  createAgent: (agent) => post('/agents', agent),
+  updateAgent: (id, patch) => request(`/agents/${id}`, { method: 'PATCH', body: patch }),
+  deleteAgent: (id) => request(`/agents/${id}`, { method: 'DELETE' }),
+
+  // `config`: {agent_id, rubric, scenarios, rounds, helper}
   startTraining: (config) => post('/trainings', config),
-  listTrainings: () => request('/trainings'),
+  listTrainings: (agentId) => request(agentId == null ? '/trainings' : `/trainings?agent_id=${agentId}`),
   getTraining: (id) => request(`/trainings/${id}`),
   pauseTraining: (id) => post(`/trainings/${id}/pause`),
   // Continues a paused or failed training from its saved progress (also the Retry after a failure).

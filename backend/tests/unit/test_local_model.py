@@ -344,15 +344,60 @@ def test_generate_decodes_only_new_tokens(tiny, monkeypatch):
 
 
 @pytest.fixture
-def forward_spy(tiny, monkeypatch):
+def loss_spy(tiny, monkeypatch):
+    """The microbatches SFT computes losses on: [[(ids, labels)]]."""
     calls = []
-    forward = tiny.model.forward
-
-    def spy(input_ids, labels):
-        calls.append((input_ids[0].tolist(), labels[0].tolist()))
-        return forward(input_ids=input_ids, labels=labels)
-    monkeypatch.setattr(tiny.model, "forward", spy)
+    losses = tiny._losses
+    monkeypatch.setattr(tiny, "_losses", lambda batch: calls.append(batch) or losses(batch))
     return calls
+
+
+@pytest.fixture
+def peaked(tiny):
+    """`tiny` with a sharpened output layer: a random model's near-tied logits would let padding's float rounding flip
+    a greedy pick, which is noise, not a batching bug."""
+    w = tiny.model.get_output_embeddings().weight
+    original = w.detach().clone()
+    with torch.no_grad():
+        w.mul_(100)
+    yield tiny
+    with torch.no_grad():
+        w.copy_(original)
+
+
+def test_generate_many_matches_one_at_a_time_in_input_order(peaked, monkeypatch):
+    # Left padding must not change a greedy reply, and replies come back in the order asked whatever the batching.
+    tiny = peaked
+    monkeypatch.setattr(local_model, "GEN_BATCH", 3)
+    pairs = [("be helpful", "hi"), ("be helpful be helpful be helpful", "hello there hi hello"), ("system", "hi there"),
+             ("be", "1 7 10 hi hello"), ("be helpful", "hello")] * 2
+    batches = []
+    generate = tiny.model.generate
+    monkeypatch.setattr(tiny.model, "generate", lambda **kw: batches.append(kw["input_ids"].shape[0]) or generate(**kw))
+    stops = []
+    many = tiny.generate_many(pairs, max_new_tokens=8, stop=lambda: stops.append(1))
+    assert batches == [3, 3, 3, 1] and len(stops) == 4  # a stop check before each batch
+    assert many == [tiny.generate(*p, max_new_tokens=8) for p in pairs]
+    assert tiny.complete_many(pairs, digits=True) == [tiny.complete(*p, digits=True) for p in pairs]
+    assert tiny.complete_many(pairs[:5]) == [tiny.complete(*p) for p in pairs[:5]]
+
+
+def test_generate_many_batches_prompts_of_similar_length(tiny, monkeypatch):
+    # Padding a short prompt to a long one's length costs as much compute as the long one.
+    monkeypatch.setattr(local_model, "GEN_BATCH", 2)
+    seen = []
+    monkeypatch.setattr(tiny.model, "generate", lambda input_ids, **kw: seen.append(input_ids.shape) or input_ids)
+    short, long = ("be", "hi"), ("be helpful " * 20, "hi")
+    assert tiny.generate_many([short, long, short, long]) == [""] * 4
+    assert [s[1] for s in seen] == [len(tiny._prompt_ids(*short)), len(tiny._prompt_ids(*long))]
+
+
+def test_a_stop_drops_the_generation(tiny):
+    def stop():
+        raise RuntimeError("paused")
+
+    with pytest.raises(RuntimeError, match="paused"):
+        tiny.generate_many([("be", "hi")], stop=stop)
 
 
 def test_sft_updates_lora_weights(tiny):
@@ -365,25 +410,61 @@ def test_sft_updates_lora_weights(tiny):
     assert not tiny.model.training
 
 
-def test_sft_masks_prompt_tokens(tiny, forward_spy):
+def test_sft_masks_prompt_tokens(tiny, loss_spy):
     tiny.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}])
     prompt = tiny._prompt_ids("be helpful", "hi")
     output = tiny.tokenizer("hello there", add_special_tokens=False)["input_ids"] + [tiny.tokenizer.eos_token_id]
-    assert forward_spy == [(prompt + output, [-100] * len(prompt) + output)] * 2  # one per epoch
+    assert loss_spy == [[(prompt + output, [-100] * len(prompt) + output)]] * 2  # one per epoch
 
 
-def test_sft_learns_from_a_long_prompt(tiny, forward_spy):
+def test_a_microbatchs_losses_are_each_examples_own(tiny):
+    # Right padding and other examples in the batch must not change an example's loss: the mean over its reply tokens.
+    examples = []
+    for prompt, output in (("be helpful", "hello there hello"), ("be helpful be helpful be", "hi")):
+        ids, out = tiny._prompt_ids(prompt, "hi"), tiny.tokenizer(output)["input_ids"]
+        examples.append((ids + out, [-100] * len(ids) + out))
+    with torch.no_grad():
+        batched = tiny._losses(examples)
+        alone = [tiny.model(input_ids=torch.tensor([ids], device=tiny.device),
+                            labels=torch.tensor([labels], device=tiny.device)).loss for ids, labels in examples]
+    assert torch.allclose(batched, torch.stack(alone), atol=1e-5)
+
+
+def test_sft_packs_examples_of_similar_length_into_capped_microbatches(tiny, loss_spy, monkeypatch):
+    # One forward per microbatch is the speed-up; a cap on padded tokens keeps a batch of long examples in memory.
+    monkeypatch.setattr(local_model, "MAX_SFT_TOKENS", 60)
+    examples = [{"prompt": "be helpful " * n, "input": "hi", "output": "hello"} for n in (1, 9, 2, 1, 1, 1, 9)]
+    tiny.sft(examples, epochs=1, accum=4)
+    size = {n: len(tiny._prompt_ids("be helpful " * n, "hi")) + 2 for n in (1, 2, 9)}  # + "hello" and EOS
+    assert size[9] * 3 > 60
+    # Shortest first: up to `accum` per batch, and no batch over 60 padded tokens.
+    assert sorted([len(ids) for ids, _ in batch] for batch in loss_spy) == sorted(
+        [[size[1]] * 4, [size[2], size[9]], [size[9]]])
+
+
+def test_a_stop_drops_the_rest_of_the_sft(tiny, loss_spy):
+    def stop():
+        if loss_spy:
+            raise RuntimeError("paused")
+
+    with pytest.raises(RuntimeError, match="paused"):
+        tiny.sft([{"prompt": "be helpful", "input": w, "output": "hello"} for w in ("hi", "hello", "there")], accum=1,
+                 stop=stop)
+    assert len(loss_spy) == 1 and not tiny.model.training
+
+
+def test_sft_learns_from_a_long_prompt(tiny, loss_spy):
     # Generated prompts run to ~1000 words. A 1024-token cap cut every reply away, so SFT trained on nothing.
     loss = tiny.sft([{"prompt": "be helpful " * 600, "input": "hi", "output": "hello there"}])
     assert math.isfinite(loss) and loss > 0
-    ids, labels = forward_spy[0]
+    [(ids, labels)] = loss_spy[0]
     assert len(ids) > 1024 and labels[-3:] != [-100] * 3
 
 
-def test_sft_drops_an_example_over_the_cap_instead_of_truncating_its_reply(tiny, forward_spy, caplog):
+def test_sft_drops_an_example_over_the_cap_instead_of_truncating_its_reply(tiny, loss_spy, caplog):
     too_long = {"prompt": "be helpful", "input": "hi " * local_model.MAX_SFT_TOKENS, "output": "hello"}
     assert tiny.sft([too_long]) == 0.0
-    assert forward_spy == [] and "1 of 1" in caplog.text
+    assert loss_spy == [] and "1 of 1" in caplog.text
 
 
 def test_sft_steps_on_accumulated_clipped_gradients_over_shuffled_epochs(tiny, monkeypatch):
@@ -394,7 +475,7 @@ def test_sft_steps_on_accumulated_clipped_gradients_over_shuffled_epochs(tiny, m
                         real_clip(params, max_norm))
     examples = [{"prompt": "be helpful", "input": w, "output": "hello there"} for w in ("hi", "hello", "there")] * 2
     tiny.sft(examples, epochs=2, accum=4)
-    assert len(steps) == len(clips) == 4  # 6 examples per epoch: a step after 4, then after the last 2
+    assert len(steps) == len(clips) == 4  # 6 examples per epoch: a microbatch of 4, then one of the last 2
     assert set(clips) == {1.0}
 
 
@@ -451,10 +532,10 @@ def test_complete_blocks_repeats_within_its_reply_but_may_quote_its_input(tiny, 
     # Blocking 4-grams from the input too forced misspellings ("approachate") whenever a reply kept the wording of the
     # prompt it was revising.
     calls = []
-    monkeypatch.setattr(tiny, "generate", lambda *args, **kwargs: calls.append(kwargs) or "reply")
+    monkeypatch.setattr(tiny, "generate_many", lambda pairs, **kwargs: calls.append(kwargs) or ["reply"])
     tiny.complete("system", "keep this")
-    (block,) = calls[0]["logits_processor"]
     start = len(tiny._prompt_ids("system", "keep this"))
+    (block,) = calls[0]["options"](start)["logits_processor"]
     quoting = torch.tensor([[5] * (start - 4) + [7, 8, 9, 10] + [7, 8, 9]])
     looping = torch.tensor([[5] * start + [7, 8, 9, 10] + [7, 8, 9]])
     assert block(quoting, torch.zeros(1, 20))[0, 10] == 0
