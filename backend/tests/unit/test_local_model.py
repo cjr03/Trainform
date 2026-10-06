@@ -376,7 +376,7 @@ def test_generate_many_matches_one_at_a_time_in_input_order(peaked, monkeypatch)
     monkeypatch.setattr(tiny.model, "generate", lambda **kw: batches.append(kw["input_ids"].shape[0]) or generate(**kw))
     stops = []
     many = tiny.generate_many(pairs, max_new_tokens=8, stop=lambda: stops.append(1))
-    assert batches == [3, 3, 3, 1] and len(stops) == 4  # a stop check before each batch
+    assert batches == [3, 3, 3, 1] and len(stops) > 4  # a stop check before each batch and each token
     assert many == [tiny.generate(*p, max_new_tokens=8) for p in pairs]
     assert tiny.complete_many(pairs, digits=True) == [tiny.complete(*p, digits=True) for p in pairs]
     assert tiny.complete_many(pairs[:5]) == [tiny.complete(*p) for p in pairs[:5]]
@@ -398,6 +398,19 @@ def test_a_stop_drops_the_generation(tiny):
 
     with pytest.raises(RuntimeError, match="paused"):
         tiny.generate_many([("be", "hi")], stop=stop)
+
+
+def test_a_stop_drops_a_batch_mid_reply(tiny):
+    calls = []
+
+    def stop():  # passes the check before the batch, then pauses during it
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("paused")
+
+    with pytest.raises(RuntimeError, match="paused"):
+        tiny.generate_many([("be", "hi")], max_new_tokens=50, stop=stop)
+    assert len(calls) == 2
 
 
 def test_sft_updates_lora_weights(tiny):

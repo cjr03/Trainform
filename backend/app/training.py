@@ -32,7 +32,9 @@ MIN_GAIN = 0.25  # how much higher a revision's mean score on a round's messages
 ANCHORS = 4  # round 1's first scenarios, held out of SFT and rerun after each round to compare models like for like
 WEAKEST = 3  # lowest-scoring conversations the prompt generator sees
 INTERNAL_ERROR = "Training failed; see the server logs."
-PAUSE_POLL = 1.0  # seconds between a run's checks for a pause request
+PAUSE_POLL = 0.25  # seconds
+# Claude calls run here while their caller watches for a pause; a dropped call finishes here unwatched.
+_CALLS = ThreadPoolExecutor(32)  # ponytail: shared by all runs; per-run pools if many users pause at once between a run's checks for a pause request
 # Each run holds a loaded model and one of the 40 worker threads the sync routes share, so cap them process-wide.
 _SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
 
@@ -121,8 +123,19 @@ def _pause_check(training_id: int, session_factory):
 
 
 def _checked(llm, check):
-    """`llm` (Claude), running `check` before each call, so a paused fan-out starts no more of them."""
-    return wraps(llm)(lambda *args, **kwargs: check() or llm(*args, **kwargs))
+    """`llm` (Claude), running `check` before and while each call runs, so a pause starts no more of them and stops
+    waiting on those in flight: their replies are dropped (a resume redoes them)."""
+    @wraps(llm)
+    def call(*args, **kwargs):
+        check()
+        reply = _CALLS.submit(llm, *args, **kwargs)
+        while True:
+            try:
+                return reply.result(timeout=0.25)
+            except TimeoutError:
+                check()
+
+    return call
 
 
 def _anchors(db: Session, t: Training) -> list[Scenario]:
