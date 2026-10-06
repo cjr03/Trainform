@@ -806,36 +806,38 @@ def test_score_windows():
 
 
 @pytest.fixture
-def battle(db, user, fake_agents, monkeypatch):
-    """A 2-round battle of an agent whose rounds improve on it (round 2, with prompt "PR", is the best), judged by
-    `battle.verdicts`."""
+def battle(db, user, fake_agents):
+    """A 2-round battle of an agent whose rounds improve on it on the anchor user (round 2, with prompt "PR", is the
+    best). `battle.later` is what round 2's model scores on everyone else (default 9: it is better there too)."""
     agent = Agent(user_id=user.id, name="A", base_model="tiny", prompt="P")
     db.add(agent)
     db.commit()
-    fake_agents.score = lambda k, prompt, adapter: {"PK-0": 6, "PK-1": 7, "PK-2": 8}[adapter] + (prompt == "PR")
-    state = SimpleNamespace(agent=agent, bouts=[], verdicts=[1, 1, -1])
-    monkeypatch.setattr(training.agents, "judge_bouts",
-                        lambda llm, bouts, rubric: state.bouts.extend(bouts) or state.verdicts)
+    state = SimpleNamespace(agent=agent, later=9)
+    adapters = {"PK-0": 6, "PK-1": 7, "PK-2": 9, "PK-rival": 8}
+    fake_agents.score = lambda k, prompt, adapter: (
+        state.later if adapter == "PK-2" and k > 1 else adapters[adapter] + (prompt == "PR" and adapter == "PK-1"))
     state.training = make_training(db, user, rounds=2, scenarios=3, agent_id=agent.id, battle={})
     return state
 
 
-def test_a_battle_keeps_the_agent_until_its_challenger_wins(db, battle):
-    t, _ = run(db, battle.training)
+def test_a_battle_keeps_the_agent_until_its_challenger_grades_higher(db, battle, fake_agents):
+    t, models = run(db, battle.training)
     db.refresh(battle.agent)
     challenger = db.query(TrainedModel).filter_by(training_id=t.id, round=2).one()
-    # The champion is the agent as it started; the challenger, the best round, answered the same messages.
-    assert [(m, a.rpartition(" under ")[2], b.rpartition(" under ")[2]) for m, a, b in battle.bouts] == [
-        (f"msg from persona {k}", "<P> with PK-0", "<PR> with PK-2") for k in (1, 2, 3)]
+    # Both answered the same new messages: the champion as the agent started, the challenger as round 2 left it.
     assert t.status == "completed" and t.battle["winner"] == "challenger"
-    assert [b["verdict"] for b in t.battle["bouts"]] == [1, 1, -1]
+    assert t.battle["grades"] == [6, 9]
+    assert [(b["message"], b["champion"].rpartition(" under ")[2], b["challenger"].rpartition(" under ")[2],
+             b["grades"]) for b in t.battle["bouts"]] == [
+        (f"msg from persona {k}", "<P> with PK-0", "<PR> with PK-2", [6, 9]) for k in (1, 2, 3)]
     assert t.best_model_id == challenger.id
     assert (battle.agent.prompt, battle.agent.weights) == ("PR", b"PK-2")
 
 
-@pytest.mark.parametrize("verdicts", [[-1, -1, 1], [1, -1, 0], [0, 0, 0]])
-def test_a_champion_that_wins_or_ties_keeps_the_agent_unchanged(db, battle, verdicts):
-    battle.verdicts = verdicts
+# The challenger still grades 9 on the anchor user, persona 1, so 4.5 on the other two levels its mean with the champion's 6.
+@pytest.mark.parametrize("later", [2, 4.5])
+def test_a_champion_that_grades_as_high_keeps_the_agent_unchanged(db, battle, later):
+    battle.later = later
     t, _ = run(db, battle.training)
     db.refresh(battle.agent)
     assert t.battle["winner"] == "champion"
@@ -844,22 +846,43 @@ def test_a_champion_that_wins_or_ties_keeps_the_agent_unchanged(db, battle, verd
 
 
 def test_a_pause_during_the_battle_redoes_it_on_resume(db, battle, monkeypatch):
-    judge = training.agents.judge_bouts
+    load = FakeModel.load_adapter
 
-    def pause_then_judge(llm, bouts, rubric):
-        request_pause()
-        llm("system", "message")  # the next Claude call sees the pause
-        return judge(llm, bouts, rubric)
+    def pause_at_the_battle(self, data):
+        if data == b"PK-0":  # only the battle goes back to the starting weights
+            request_pause()
+        load(self, data)
 
-    monkeypatch.setattr(training.agents, "judge_bouts", pause_then_judge)
-    t, _ = run(db, battle.training, llm=lambda *a, **k: None)
+    monkeypatch.setattr(FakeModel, "load_adapter", pause_at_the_battle)
+    t, _ = run(db, battle.training)
     assert (t.status, t.battle) == ("paused", {})
-    monkeypatch.setattr(training.agents, "judge_bouts", judge)
+    monkeypatch.setattr(FakeModel, "load_adapter", load)
     t, _ = resume(db, t)
     assert t.status == "completed" and t.battle["winner"] == "challenger"
 
 
 def test_a_local_battle_meets_new_users_not_round_1s(db, battle, local_helper):
-    run(db, battle.training, llm=None)
+    t, _ = run(db, battle.training, llm=None)
     # Local personas are seeded by position: round 1 met personas 1-3, so the battle meets 4-6.
-    assert [m for m, _, _ in battle.bouts] == [f"msg from persona {k}" for k in (4, 5, 6)]
+    assert [b["message"] for b in t.battle["bouts"]] == [f"msg from persona {k}" for k in (4, 5, 6)]
+
+
+@pytest.mark.parametrize("rival, winner, kept", [(8, "challenger", ("Be brilliant.", b"PK-rival")),
+                                                  (5, "champion", ("P", None))])  # a held agent isn't rewritten
+def test_a_challenge_grades_the_published_agent_without_training(db, battle, fake_agents, rival, winner, kept):
+    fake_agents.score = lambda k, prompt, adapter: {"PK-0": 6, "PK-rival": rival}[adapter]
+    t = battle.training
+    t.rounds, t.battle = 0, {"opponent": {"post_id": 1, "name": "Rival", "author": "bob"}}
+    db.add_all([TrainedModel(training_id=t.id, round=0, prompt="P"),  # an untrained agent: the base weights
+                TrainedModel(training_id=t.id, round=1, prompt="Be brilliant.", weights=b"PK-rival")])
+    db.commit()
+    t, models = run(db, t)
+    db.refresh(battle.agent)
+    assert models[0].sft_calls == [] and scenarios(db, t) == []
+    assert [(b["champion"].rpartition(" under ")[2], b["challenger"].rpartition(" under ")[2])
+            for b in t.battle["bouts"]] == [("<P> with PK-0", "<Be brilliant.> with PK-rival")] * 3
+    assert (t.status, t.battle["winner"], t.battle["grades"]) == ("completed", winner, [6, rival])
+    # The untrained agent's side saved the base weights it ran on, so a win downloads real weights.
+    assert db.query(TrainedModel).filter_by(training_id=t.id, round=0).one().weights == b"PK-0"
+    assert t.battle["opponent"]["name"] == "Rival"
+    assert (battle.agent.prompt, battle.agent.weights) == kept

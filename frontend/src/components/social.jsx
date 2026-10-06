@@ -14,12 +14,13 @@ import { api } from '../api'
 export const LINK = 'text-primary underline-offset-4 hover:underline'
 
 // A published agent: its author, image, overall, caption and prompt, votes, and a copy (or, if `mine`, delete) button.
-export function PostCard({ post, mine, copyLabel = 'Copy to my agents', onChange, onDelete, onCopied }) {
+// With `onPick`, the button hands the post to it instead of copying it.
+export function PostCard({ post, mine, copyLabel = 'Copy to my agents', onChange, onDelete, onCopied, onPick }) {
   const [run, busy, error] = useAction()
   const [copied, setCopied] = useState(null)
   const vote = (v) => run(async () => onChange({ ...post, ...(await api.vote(post.id, post.my_vote === v ? 0 : v)) }))
   const copy = () =>
-    run(async () => {
+    onPick ? onPick(post) : run(async () => {
       const agent = await api.copyPost(post.id)
       setCopied(agent)
       onCopied?.(agent)
@@ -147,8 +148,9 @@ export function PostList({ posts, ...props }) {
   )
 }
 
-// "Find an agent": your feed, or a Trainformer found by search; picking a post copies it into your agents.
-export function FindAgent({ onCopied }) {
+// "Find an agent": your feed, or a Trainformer found by search; picking a post copies it into your agents (or, with
+// `onPick`, hands it over, with the button labelled `pickLabel`).
+export function FindAgent({ onCopied, onPick, pickLabel }) {
   const [from, setFrom] = useState('') // '': your feed, else that Trainformer's posts
   const [posts, setPosts] = useState(null)
   const [q, setQ] = useState('')
@@ -216,7 +218,13 @@ export function FindAgent({ onCopied }) {
         </p>
       )}
       {posts?.length > 0 && (
-        <PostList posts={posts} copyLabel="Use this agent" onChange={(p) => setPosts(replacePost(p))} onCopied={onCopied} />
+        <PostList
+          posts={posts}
+          copyLabel={pickLabel ?? 'Use this agent'}
+          onChange={(p) => setPosts(replacePost(p))}
+          onCopied={onCopied}
+          onPick={onPick}
+        />
       )}
     </div>
   )

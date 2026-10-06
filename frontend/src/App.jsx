@@ -24,13 +24,13 @@ import SearchPage from './pages/SearchPage'
 import TrainPage from './pages/TrainPage'
 
 const NAV = [
-  ['Train', Hammer],
-  ['Agents', KnightHelmet],
-  ['Battle', Swords],
-  ['Inspect', Gem],
+  ['Agents', Hammer],
+  ['Inspect', KnightHelmet],
+  ['Train', Swords],
+  ['Battle', Gem],
 ]
 const NAV_LINK =
-  'inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-center text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground sm:flex-none aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary'
+  'inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-center text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground lg:flex-none aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => Boolean(getToken()))
@@ -69,52 +69,58 @@ export default function App() {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-lg">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2.5">
-          <span className="font-brand text-base font-bold tracking-[0.3em] text-gradient">TRAINFORM</span>
-          <nav aria-label="Main" className="order-last flex w-full gap-1 sm:order-none sm:mr-auto sm:w-auto">
-            {NAV.map(([name, Icon]) => (
-              <NavLink key={name} to={`/${name.toLowerCase()}`} className={NAV_LINK}>
-                <Icon aria-hidden="true" className="size-4" />
-                {name}
-              </NavLink>
-            ))}
-          </nav>
-          <div className="flex items-center">
-            <PublishDialog username={me?.username} />
-            <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
-              <NavLink to="/feed" aria-label="Feed" title="Feed">
-                <MapIcon aria-hidden="true" />
-              </NavLink>
-            </Button>
-            <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
-              <NavLink to="/search" aria-label="Search Trainformers" title="Search Trainformers">
-                <Search aria-hidden="true" />
-              </NavLink>
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label="Account menu" title="Account">
-                  <Avatar url={me?.avatar_url} />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="max-w-[calc(100vw-2rem)]">
-                {me && (
-                  <DropdownMenuItem onSelect={() => navigate(profilePath(me.username))}>
-                    <Avatar url={me.avatar_url} />
-                    <span className="font-semibold wrap-anywhere">{me.username}</span>
+        {/* The logo in the middle column; the tabs and icons share the right one on wide screens, and below lg the
+            tabs take a second row (the wrapper's `contents` lets them join the outer grid). */}
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-4 gap-y-2 px-4 py-2.5">
+          <span className="col-start-2 row-start-1 font-brand text-base font-bold tracking-[0.3em] text-gradient">
+            TRAINFORM
+          </span>
+          <div className="contents lg:col-start-3 lg:row-start-1 lg:flex lg:items-center lg:justify-end lg:gap-1">
+            <nav aria-label="Main" className="col-span-3 row-start-2 flex gap-1">
+              {NAV.map(([name, Icon]) => (
+                <NavLink key={name} to={`/${name.toLowerCase()}`} className={NAV_LINK}>
+                  <Icon aria-hidden="true" className="size-4" />
+                  {name}
+                </NavLink>
+              ))}
+            </nav>
+            <div className="col-start-3 row-start-1 flex items-center justify-self-end">
+              <PublishDialog username={me?.username} />
+              <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
+                <NavLink to="/feed" aria-label="Feed" title="Feed">
+                  <MapIcon aria-hidden="true" />
+                </NavLink>
+              </Button>
+              <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
+                <NavLink to="/search" aria-label="Search Trainformers" title="Search Trainformers">
+                  <Search aria-hidden="true" />
+                </NavLink>
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label="Account menu" title="Account">
+                    <Avatar url={me?.avatar_url} />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="max-w-[calc(100vw-2rem)]">
+                  {me && (
+                    <DropdownMenuItem onSelect={() => navigate(profilePath(me.username))}>
+                      <Avatar url={me.avatar_url} />
+                      <span className="font-semibold wrap-anywhere">{me.username}</span>
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => navigate('/account')}>
+                    <UserRound aria-hidden="true" />
+                    Account
                   </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => navigate('/account')}>
-                  <UserRound aria-hidden="true" />
-                  Account
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={logout}>
-                  <LogOut aria-hidden="true" />
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <DropdownMenuItem onSelect={logout}>
+                    <LogOut aria-hidden="true" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
       </header>

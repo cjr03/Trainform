@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app import llm as llm_module, training
 from app.db import engine
 from app.main import app
-from app.models import Agent, Scenario, TrainedModel, Training, User
+from app.models import Agent, Post, Scenario, TrainedModel, Training, User
 
 BODY = {"agent_id": 1, "rubric": ["  Clarity ", "Tone"], "scenarios": 2, "rounds": 2}  # the `agent` fixture's
 
@@ -567,3 +567,35 @@ def test_create_a_battle(authed_client, fakes, monkeypatch, db):
     r = authed_client.post("/api/trainings", json=BODY | {"battle": True})
     assert (r.status_code, r.json()["battle"]) == (201, {})
     assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [True]
+
+
+def test_challenge_a_published_agent(authed_client, fakes, monkeypatch, db, agent):
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    bob = User(email="bob@example.com", username="bob", password_hash="x")
+    db.add(bob)
+    db.commit()
+    theirs = Post(user_id=bob.id, name="Rival", base_model="tiny", prompt="Be brilliant.", weights=b"PK-rival")
+    other_model = Post(user_id=bob.id, name="Big", base_model="other", prompt="P")
+    db.add_all([theirs, other_model])
+    db.commit()
+
+    r = authed_client.post("/api/trainings", json=BODY | {"battle": True, "opponent_post_id": theirs.id})
+    assert r.status_code == 201
+    assert r.json()["battle"] == {"opponent": {"post_id": theirs.id, "name": "Rival", "author": "bob"}}
+    t = db.get(Training, r.json()["id"])
+    assert t.rounds == 0  # no challenger to train
+    sides = db.query(TrainedModel).filter_by(training_id=t.id).order_by(TrainedModel.round).all()
+    assert [(m.round, m.prompt, m.weights, m.mean_score) for m in sides] == [
+        (0, "Be helpful.", None, None), (1, "Be brilliant.", b"PK-rival", None)]
+    db.delete(theirs)  # a later delete doesn't change the battle
+    db.commit()
+    assert db.query(TrainedModel).filter_by(training_id=t.id).count() == 2
+
+    db.query(Training).delete()
+    db.commit()
+    r = authed_client.post("/api/trainings", json=BODY | {"opponent_post_id": other_model.id})
+    assert (r.status_code, r.json()["detail"]) == (
+        400, "Only an agent on tiny can battle yours; this one is on other.")
+    r = authed_client.post("/api/trainings", json=BODY | {"opponent_post_id": 999})
+    assert (r.status_code, r.json()["detail"]) == (404, "Post not found")
+    assert db.query(Training).count() == 0
