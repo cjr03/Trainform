@@ -26,7 +26,7 @@ from huggingface_hub.utils import filter_repo_objects
 from peft import LoraConfig, get_peft_model
 from peft.utils import load_peft_weights, set_peft_model_state_dict
 from pydantic import BaseModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, NoRepeatNGramLogitsProcessor
+from transformers import AutoModelForCausalLM, AutoTokenizer, NoRepeatNGramLogitsProcessor, StoppingCriteriaList
 
 from app.auth import current_user
 from app.models import User
@@ -228,11 +228,13 @@ class LocalModel:
                       **kwargs) -> list[str]:
         """Greedy replies to [(system prompt, conversation)], in input order, GEN_BATCH at a time: prompts of similar
         length share a left-padded batch, so every row's prompt ends at the same index. `stop()` runs before each batch
-        and may raise to drop the call; `options(start)` adds model.generate kwargs for a batch whose replies begin at
-        `start`."""
+        and each token, and may raise to drop the call; `options(start)` adds model.generate kwargs for a batch whose
+        replies begin at `start`."""
         prompts = [self._prompt_ids(system, conversation) for system, conversation in pairs]
         order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
         replies = [""] * len(prompts)
+        if stop:  # a batch can take many seconds: a pause mustn't wait for it
+            kwargs["stopping_criteria"] = StoppingCriteriaList([lambda *_, **__: stop() or False])
         self.model.eval()
         for k in range(0, len(order), GEN_BATCH):
             if stop:

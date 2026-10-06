@@ -434,8 +434,7 @@ function AgentDetail({ id, onChanged, onDeleted }) {
       <CardContent className="grid gap-5 max-sm:px-5">
         <div className="flex items-center gap-4">
           <AgentImage svg={agent.image} alt={`${agent.name} image`} className="size-16 sm:size-24" />
-          <Overall value={agent.overall} large />
-          <div className="grid min-w-0 gap-1">
+          <div className="mr-auto grid min-w-0 gap-1">
             <h2 id="agent-detail-name" className="m-0 text-2xl wrap-anywhere">
               {agent.name}
             </h2>
@@ -443,6 +442,7 @@ function AgentDetail({ id, onChanged, onDeleted }) {
               {modelName(agent.base_model)} · {count(agent.trainings.length)}
             </span>
           </div>
+          <Overall value={agent.overall} large />
         </div>
         {agent.base_model === 'claude' && <p className="m-0 text-sm text-muted-foreground">{CLAUDE_NOTE}</p>}
 

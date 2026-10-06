@@ -81,7 +81,9 @@ it('shows the selected agent: its full prompt, past trainings and a link to Insp
   expect(api.getAgent).toHaveBeenCalledWith(1)
   expect(await card('Bike Repair Agent')).toHaveAttribute('aria-pressed', 'true')
   const detail = await screen.findByRole('region', { name: 'Bike Repair Agent' })
-  expect(within(detail).getByRole('img', { name: 'Overall 84' })).toBeInTheDocument()
+  const overall = within(detail).getByRole('img', { name: 'Overall 84' })
+  const name = within(detail).getByRole('heading', { name: 'Bike Repair Agent' })
+  expect(name.compareDocumentPosition(overall) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy() // right of the name
   const pre = within(detail).getByText((_, el) => el.tagName === 'PRE')
   expect(pre.textContent).toBe(PROMPT) // whitespace kept
   expect(pre).toHaveClass('whitespace-pre-wrap')

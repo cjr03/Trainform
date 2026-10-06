@@ -610,6 +610,28 @@ def test_the_pause_check_reads_the_status_at_most_every_poll(db, user, monkeypat
         check()
 
 
+def test_a_pause_stops_waiting_on_a_claude_call_in_flight():
+    # A Claude call can take minutes: a pause drops it rather than waiting for its reply.
+    started, release, paused = threading.Event(), threading.Event(), []
+
+    def slow_llm(*args):
+        started.set()
+        release.wait(10)
+        return "late reply"
+
+    def check():
+        if paused:
+            raise Stopped
+
+    llm = training._checked(slow_llm, check)
+    threading.Thread(target=lambda: started.wait(10) and paused.append(1)).start()
+    begun = time.monotonic()
+    with pytest.raises(Stopped):
+        llm("system", "message")
+    assert time.monotonic() - begun < 5 and not release.is_set()
+    release.set()
+
+
 def test_a_finished_run_stops_its_leftover_tasks(db, user):
     t = make_training(db, user, rounds=1, scenarios=1)
     check = training._pause_check(t.id, SessionLocal)

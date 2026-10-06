@@ -447,9 +447,10 @@ function Dashboard({ onReset }) {
       } catch (e) {
         if (live) setPollError(e.message)
       }
-      if (live) timer = setTimeout(poll, 2000)
+      if (live) timer = setTimeout(poll, delay)
     }
-    timer = setTimeout(poll, 2000)
+    const delay = status === 'pausing' ? 300 : 2000 // a pause lands within a second: show it as soon as it does
+    timer = setTimeout(poll, delay)
     return () => {
       live = false
       clearTimeout(timer)
