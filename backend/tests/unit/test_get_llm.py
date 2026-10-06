@@ -155,3 +155,13 @@ def test_a_busy_local_model_is_an_llm_error(monkeypatch):
     lock.release()
     assert llm.local_llm(StubModel("x"), lock)("sys", "msg") == "x"
     assert lock.acquire(blocking=False)  # released after the call
+
+
+def test_the_routes_model_unloads_once_idle(monkeypatch):
+    freed = threading.Event()
+    monkeypatch.setattr(llm, "ROUTE_IDLE", 0.5)
+    monkeypatch.setattr(llm.local_model, "free_memory", freed.set)
+    monkeypatch.setitem(llm._loaded, "key", StubModel("x"))
+    assert llm.local_llm(StubModel("x"), llm._ROUTE_MODEL)("sys", "msg") == "x"
+    assert "key" in llm._loaded  # kept for the next request...
+    assert freed.wait(5) and not llm._loaded  # ...until it sits idle
