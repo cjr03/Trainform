@@ -1,4 +1,4 @@
-import { Download, Pause, Play, Plus, RotateCcw, Sparkles, Swords, Trash2 } from 'lucide-react'
+import { Download, Gem, Pause, Play, Plus, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -21,12 +21,13 @@ const STEPS = [
   ['Training', 'Each round tests the agent against new personas, scores it and trains a better version. Pause stops at once, dropping the step in progress.'],
   ['Complete', 'Training finished. Take the best prompt and LoRA weights with you.'],
 ]
-// A battle sets up like a training; its rounds train a challenger, which then meets the agent head to head.
+// A battle sets up like a training; its rounds train a challenger (or it challenges a published agent), which then
+// meets the agent head to head.
 const BATTLE_STEPS = [
-  ['Agent', 'Pick your agent, the champion, and whether Claude or your local model runs the helper agents.'],
+  ['Agent', 'Pick your agent, the champion, its opponent, and whether Claude or your local model runs the helper agents.'],
   STEPS[1],
-  ['Scenarios', 'Choose how many personas each round tests (and so how many bouts the battle has), and how many rounds train the challenger.'],
-  ['Battle', 'The rounds train a challenger from your agent. Then both answer the same new users and a judge picks each bout. It costs more than training, and your agent only changes if the challenger wins. Pause stops at once.'],
+  ['Scenarios', 'Choose how many personas each round tests (and so how many new users the battle has), and how many rounds train the challenger.'],
+  ['Battle', 'The rounds train a challenger from your agent. Then both answer the same new users and a judge picks each bout. Your agent only changes if the challenger wins.'],
   ['Result', 'The winner keeps the agent. Take its prompt and LoRA weights with you.'],
 ]
 const WINDOWS = [
@@ -247,7 +248,7 @@ function CompleteStep({ training, onReset }) {
   const save = (fetchBlob, filename) => run(async () => saveBlob(await fetchBlob(id), filename))
   return (
     <div className="grid gap-4">
-      {battle?.winner ? (
+      {battle?.grades ? ( // battles from before grading (judged bouts) show as trainings
         <BattleResult battle={battle} />
       ) : (
         <div className="flex flex-col items-center gap-1 pt-3 pb-2">
@@ -266,7 +267,7 @@ function CompleteStep({ training, onReset }) {
           )}
         </div>
       )}
-      <h3 className="m-0 text-base">{battle?.winner ? 'Winning prompt' : 'Best prompt'}</h3>
+      <h3 className="m-0 text-base">{battle?.grades ? 'Winning prompt' : 'Best prompt'}</h3>
       <pre
         className="m-0 max-h-80 overflow-auto rounded-lg border bg-background/60 p-4 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]"
         data-testid="best-prompt"
@@ -293,44 +294,92 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
-const VERDICT = { 1: 'Challenger wins', '-1': 'Champion wins', 0: 'Tie' }
-
+// Both sides' grades on the battle's new users: the higher mean keeps the agent (a tie keeps yours).
 function BattleResult({ battle }) {
-  const count = (verdict) => battle.bouts.filter((b) => b.verdict === verdict).length
+  const rival = battle.opponent ? `${battle.opponent.name} by ${battle.opponent.author}` : 'The challenger'
+  const [mine, theirs] = battle.grades
   return (
     <div className="grid gap-3">
       <div className="flex flex-col items-center gap-1 pt-3 pb-2">
-        <span className="text-sm text-muted-foreground">Champion vs challenger</span>
+        <span className="text-sm text-muted-foreground wrap-anywhere">Your agent vs {battle.opponent ? rival : 'challenger'}</span>
         <span
           className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
           data-testid="battle-score"
         >
-          {count(-1)} – {count(1)}
+          {score(mine)} – {score(theirs)}
         </span>
-        <span className="text-sm text-muted-foreground">
-          {count(0)} {count(0) === 1 ? 'tie' : 'ties'} over {battle.bouts.length} new users
-        </span>
+        <span className="text-sm text-muted-foreground">Mean grade out of 10 over {battle.bouts.length} new users</span>
         <p role="status" className="m-0 pt-2 text-center font-semibold">
           {battle.winner === 'challenger'
-            ? 'The challenger wins. Your agent now has its prompt and weights.'
+            ? `${rival} wins. Your agent now has its prompt and weights.`
             : 'Your agent holds. It keeps its prompt and weights.'}
         </p>
       </div>
       <details className="rounded-lg border p-3">
-        <summary className="cursor-pointer text-sm font-medium">Bouts</summary>
+        <summary className="cursor-pointer text-sm font-medium">Scenarios</summary>
         <ol className="m-0 mt-3 grid gap-3 p-0">
           {battle.bouts.map((b, i) => (
             <li key={i} className="grid gap-1.5 border-t pt-3 text-sm [overflow-wrap:anywhere] first:border-t-0 first:pt-0">
               <span className="font-semibold">
-                Bout {i + 1}: {VERDICT[b.verdict]}
+                Scenario {i + 1}: {score(b.grades[0])} – {score(b.grades[1])}
               </span>
               <span className="text-muted-foreground">User: {b.message}</span>
-              <span>Champion: {b.champion}</span>
-              <span>Challenger: {b.challenger}</span>
+              <span>Your agent: {b.champion}</span>
+              <span>{battle.opponent?.name ?? 'Challenger'}: {b.challenger}</span>
             </li>
           ))}
         </ol>
       </details>
+    </div>
+  )
+}
+
+// A battle's opponent: a challenger trained from your agent, or a published agent picked from your feed or a
+// Trainformer's profile. Only one on your agent's base model fits: the winner's weights go to your agent.
+function OpponentStep({ agent, value, onChange }) {
+  const [mode, setMode] = useState(value ? 'challenge' : 'train')
+  const pick = (m) => {
+    setMode(m)
+    if (m === 'train') onChange(null)
+  }
+  return (
+    <div className="grid gap-3">
+      <span id="battle-opponent" className="text-sm font-medium">
+        Opponent
+      </span>
+      <Choice
+        aria-labelledby="battle-opponent"
+        value={mode}
+        onValueChange={pick}
+        options={[
+          ['train', 'Train a challenger'],
+          ['challenge', 'Challenge an agent'],
+        ]}
+      />
+      {mode === 'challenge' &&
+        (value ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2.5 text-sm">
+            <AgentImage svg={value.image} className="size-8" />
+            <span className="mr-auto grid min-w-0 gap-0.5">
+              <span className="font-semibold wrap-anywhere">
+                {value.name} by {value.author}
+              </span>
+              <span className="text-xs text-muted-foreground wrap-anywhere">
+                {value.base_model === 'claude' ? 'Claude' : value.base_model}
+              </span>
+            </span>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>
+              Change
+            </Button>
+            {agent && value.base_model !== agent.base_model && (
+              <p role="status" className="m-0 w-full text-sm text-warning">
+                Only an agent on {agent.base_model} can battle yours: the winner's weights must fit it.
+              </p>
+            )}
+          </div>
+        ) : (
+          <FindAgent onPick={onChange} pickLabel="Challenge" />
+        ))}
     </div>
   )
 }
@@ -417,6 +466,7 @@ function Dashboard({ battle, onReset }) {
   const [rubric, setRubric] = useState(draft.rubric ?? [])
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
   const [rounds, setRounds] = useState(draft.rounds ?? '3')
+  const [opponent, setOpponent] = useState(draft.opponent ?? null) // a battle's published rival; null: train one
   // A running one is refreshed by the effects below; a finished one no longer changes.
   const [training, setTraining] = useState(draft.training ?? null)
   const [pollError, setPollError] = useState('')
@@ -430,9 +480,10 @@ function Dashboard({ battle, onReset }) {
   const criteria = rubric.map((c) => c.trim()).filter(Boolean)
   const valid = [
     // A Claude agent needs Claude as the helper; a copied agent may need its model downloaded first.
-    Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false,
+    Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false &&
+      (!opponent || opponent.base_model === agent.base_model),
     criteria.length > 0,
-    inRange(Number(scenarios), 100) && inRange(Number(rounds), 50),
+    inRange(Number(scenarios), 100) && (Boolean(opponent) || inRange(Number(rounds), 50)),
   ]
   const completed = training?.status === 'completed'
   const reachable = (i) => (training ? i === 3 || (i === 4 && completed) : i < 3 && valid.slice(0, i).every(Boolean))
@@ -441,8 +492,8 @@ function Dashboard({ battle, onReset }) {
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
 
   useEffect(
-    () => storeDraft(draftKey(battle), { step, agentId, helper, rubric, scenarios, rounds, training }),
-    [battle, step, agentId, helper, rubric, scenarios, rounds, training],
+    () => storeDraft(draftKey(battle), { step, agentId, helper, rubric, scenarios, rounds, opponent, training }),
+    [battle, step, agentId, helper, rubric, scenarios, rounds, opponent, training],
   )
 
   useEffect(() => {
@@ -526,9 +577,10 @@ function Dashboard({ battle, onReset }) {
         agent_id: agentId,
         rubric: criteria,
         scenarios: Number(scenarios),
-        rounds: Number(rounds),
+        rounds: opponent ? 1 : Number(rounds), // a challenge has no rounds; the hidden field may hold anything
         helper,
         battle,
+        opponent_post_id: opponent?.id ?? null,
       }
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
       const t = await api.startTraining(config).catch(async (e) => {
@@ -589,6 +641,7 @@ function Dashboard({ battle, onReset }) {
           {CLAUDE_NOTE} Claude agents need Claude as the helper.
         </p>
       )}
+      {battle && <OpponentStep agent={agent} value={opponent} onChange={setOpponent} />}
     </div>,
     <RubricStep
       key="rubric"
@@ -612,7 +665,7 @@ function Dashboard({ battle, onReset }) {
             onChange={(e) => setScenarios(e.target.value)}
           />
         </div>
-        <div className="grid gap-2">
+        <div className="grid gap-2" hidden={Boolean(opponent)}>
           <Label htmlFor="train-rounds">Training rounds</Label>
           <Input
             id="train-rounds"
@@ -626,11 +679,14 @@ function Dashboard({ battle, onReset }) {
         </div>
       </div>
       {!valid[2] && <p className="m-0 text-sm text-muted-foreground">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
+      {opponent && <p className="m-0 text-sm text-muted-foreground">A challenge trains nothing: both agents answer this many new users.</p>}
       <dl className="m-0 grid grid-cols-3 gap-2 rounded-lg border p-4">
         {[
           ['Agent', agent?.name ?? '—'],
           ['Criteria', criteria.length],
-          ['Total runs', valid[2] ? Number(scenarios) * Number(rounds) : '—', 'total-runs'],
+          opponent
+            ? ['Opponent', opponent.name]
+            : ['Total runs', valid[2] ? Number(scenarios) * Number(rounds) : '—', 'total-runs'],
         ].map(([term, detail, testId]) => (
           <div key={term}>
             <dt className="text-xs text-muted-foreground">{term}</dt>
@@ -721,7 +777,7 @@ function Dashboard({ battle, onReset }) {
             </Button>
           ) : (
             <Button type="button" disabled={!valid.every(Boolean) || starting} onClick={start}>
-              {starting ? <Spinner /> : battle ? <Swords /> : <Play />}
+              {starting ? <Spinner /> : battle ? <Gem /> : <Play />}
               {battle ? 'Start battle' : 'Start training'}
             </Button>
           )}

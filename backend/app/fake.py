@@ -70,9 +70,6 @@ def fake_llm(system: str, message: str, schema: dict | None = None, effort: str 
         keys = schema["properties"]["personas"]["items"]["properties"]["attributes"]["required"]
         return {"personas": [{"attributes": dict.fromkeys(keys, rating), "prompt": brief}
                              for brief, rating, _, _ in PERSONAS]}
-    if key == "winner":  # judge: the longer reply, so swapping the two never changes the winner
-        a, b = len(_tag(message, "reply_a")), len(_tag(message, "reply_b"))
-        return {"winner": "A" if a > b else "B" if b > a else "tie"}
     raise ValueError(f"fake_llm has no answer for schema property {key!r}")
 
 

@@ -21,7 +21,7 @@ from app.auth import current_user
 from app.db import SessionLocal, get_db
 from app.llm import Helper, LLMError, Stopped, chosen_llm, get_llm, local_llm, unload_route_model
 from app.local_model import LocalModel, free_memory, list_local_models
-from app.models import ACTIVE, Agent, Scenario, TrainedModel, Training, User
+from app.models import ACTIVE, Agent, Post, Scenario, TrainedModel, Training, User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/trainings", tags=["training"])
@@ -158,11 +158,12 @@ def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
             for s in rows if s.target or s.score >= bars[s.round]][:REPLAY]
 
 
-def _battle(db: Session, t: Training, llm, model, respond) -> None:
-    """End a battle: the agent as it started (the champion, round 0) and the best model its rounds trained (the
-    challenger) answer the same new users, a judge picks each bout's winner, and the challenger replaces the agent
-    only if it wins more bouts. Either way the winner is the training's best model, so its downloads are the winner's.
-    Run in one go: a pause drops it and a resume redoes it."""
+def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -> None:
+    """End a battle: the agent as it started (the champion, round 0) and the challenger (the best model its rounds
+    trained, or the published agent it challenges, round 1) answer the same new users and are graded on the rubric,
+    and the challenger replaces the agent only if its mean grade is higher. Either way the winner is the training's
+    best model, so its downloads are the winner's. A side without weights runs on `base`, the base model's. Run in one
+    go: a pause drops it and a resume redoes it."""
     models = select(TrainedModel).where(TrainedModel.training_id == t.id)
     champion = db.scalar(models.where(TrainedModel.round == 0))
     challenger = db.scalar(models.where(TrainedModel.round > 0)
@@ -171,16 +172,17 @@ def _battle(db: Session, t: Training, llm, model, respond) -> None:
     # A local helper's personas are seeded by position, so its first n are round 1's users: the battle takes the next n.
     _, personas = _prepare_round(llm, t.rubric, 2 * n if getattr(llm, "local", False) else n, champion.prompt, None)
     messages = [p["message"] for p in personas[-n:]]
-    replies = []
+    sides = []
     for m in (champion, challenger):
         if model:
+            m.weights = m.weights or base  # saved, so the winner's download and the agent get real weights
             model.load_adapter(m.weights)
-        replies.append(respond([(m.prompt, x) for x in messages]))
-    verdicts = agents.judge_bouts(llm, list(zip(messages, *replies)), t.rubric)
-    won = sum(v > 0 for v in verdicts) > sum(v < 0 for v in verdicts)  # a tie keeps the champion
-    t.battle = {"winner": "challenger" if won else "champion",
-                "bouts": [{"message": m, "champion": a, "challenger": b, "verdict": v}
-                          for m, a, b, v in zip(messages, *replies, verdicts)]}
+        sides.append(_evaluate(llm, respond, [m.prompt], t.rubric, messages)[0])
+    grades = [fmean(row["score"] for row in rows) for rows in sides]
+    won = grades[1] > grades[0]  # a tie keeps the champion
+    t.battle = t.battle | {"winner": "challenger" if won else "champion", "grades": grades,
+                            "bouts": [{"message": a["input"], "champion": a["output"], "challenger": b["output"],
+                                       "grades": [a["score"], b["score"]]} for a, b in zip(*sides)]}
     t.best_model_id = (challenger if won else champion).id
     if won:
         agent_profiles.sync_agent(db, t, challenger.id)
@@ -206,11 +208,12 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
             if t.base_model == "claude":  # Claude's weights can't be fine-tuned: no teacher, no SFT, no weights
                 if not (llm and agent_llm):
                     raise LLMError("Claude agents need Claude as the helper")
-                model = weights = None
+                model = weights = base = None
                 agent = _checked(agent_llm, check)
                 respond = lambda pairs: agents.concurrently(agent, lambda pair: agent(*pair), pairs)  # noqa: E731
             else:
                 model = load_model(t.base_model)
+                base = model.adapter_bytes() if t.battle is not None else None  # its untrained adapter
                 # What the next round's scenarios run with: the best model's adapter, else the agent's starting one.
                 weights = t.best_model_id and db.scalar(select(TrainedModel.weights)
                                                         .where(TrainedModel.id == t.best_model_id))
@@ -311,7 +314,7 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                 t.personas = None
                 db.commit()
             if t.battle is not None:
-                _battle(db, t, llm, model, respond)
+                _battle(db, t, llm, model, respond, base)
             t.status = "completed"
             db.commit()
         except Exception as exc:
@@ -350,6 +353,7 @@ class TrainingIn(BaseModel):
     rounds: int = Field(ge=1, le=50)
     helper: Helper | None = None
     battle: bool = False  # optimise a challenger, then keep whichever of it and the agent wins a head to head
+    opponent_post_id: int | None = None  # a battle against this published agent instead: no rounds, no challenger
 
 
 def owned(db: Session, training_id: int, user: User) -> Training:
@@ -430,13 +434,26 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
     if agent.base_model != "claude" and agent.base_model not in {m["name"] for m in list_local_models(user.id)}:
         raise HTTPException(400, f"Unknown base model: {agent.base_model}")
     helper = _helper(agent.base_model, body.helper, llm)
+    post = body.opponent_post_id and db.get(Post, body.opponent_post_id)
+    if body.opponent_post_id and not post:
+        raise HTTPException(404, "Post not found")
+    if post and post.base_model != agent.base_model:  # its weights wouldn't fit your agent
+        raise HTTPException(400, f"Only an agent on {agent.base_model} can battle yours; this one is on "
+                                 f"{post.base_model}.")
 
     def insert():
         # The agent's weights are where it starts (see run_training).
         t = Training(user_id=user.id, agent_id=agent.id, base_model=agent.base_model, initial_prompt=agent.prompt,
                      adapter=agent.weights, rubric=body.rubric, scenarios_per_round=body.scenarios,
-                     rounds=body.rounds, helper=body.helper, battle={} if body.battle else None)
+                     rounds=0 if post else body.rounds, helper=body.helper,
+                     battle={"opponent": {"post_id": post.id, "name": post.name,
+                                          "author": db.scalar(select(User.username).where(User.id == post.user_id))}}
+                     if post else {} if body.battle else None)
         db.add(t)
+        if post:  # the two sides, copied now so later edits or deletes don't change the battle
+            db.flush()
+            db.add_all([TrainedModel(training_id=t.id, round=0, prompt=agent.prompt, weights=agent.weights),
+                        TrainedModel(training_id=t.id, round=1, prompt=post.prompt, weights=post.weights)])
         db.commit()
         return t
 
