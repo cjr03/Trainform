@@ -115,7 +115,8 @@ def test_create_runs_training_in_background(authed_client, fakes):
     assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
                       "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
                       "score_windows", "best_model_id", "best_score", "best_prompt", "baseline_score", "created_at",
-                      "helper", "agent_id", "agent_name"}
+                      "helper", "agent_id", "agent_name", "battle"}
+    assert d["battle"] is None
     assert (d["base_model"], d["initial_prompt"], d["agent_id"], d["agent_name"]) == ("tiny", "Be helpful.", 1,
                                                                                      "Helper")
     progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"], d["helper"])
@@ -155,7 +156,7 @@ def test_list_newest_first(authed_client, fakes, db, user):
     listed = authed_client.get("/api/trainings").json()
     assert [t["id"] for t in listed] == [first["id"] + 1, first["id"]]
     assert set(listed[0]) == {"id", "base_model", "status", "rounds", "scenarios_per_round", "current_round",
-                              "scenarios_done", "created_at", "best_score", "helper", "agent_id", "agent_name"}
+                              "scenarios_done", "created_at", "best_score", "helper", "agent_id", "agent_name", "battle"}
     assert (listed[0]["status"], listed[0]["best_score"], listed[0]["agent_name"]) == ("pending", None, None)
     assert (listed[1]["status"], listed[1]["best_score"]) == ("completed", 8.5)  # on the anchor user
     assert (listed[1]["agent_id"], listed[1]["agent_name"]) == (1, "Helper")
@@ -559,3 +560,10 @@ def test_training_syncs_its_agent(authed_client, fakes, db, agent):
     # The best model (round 2: the revised prompt, fine-tuned) is now the agent's.
     assert (agent.prompt, agent.weights) == ("Be helpful.?", b"PK\x03\x04trained")
     assert authed_client.get("/api/agents").json()[0]["overall"] == round(10 * d["best_score"]) == 85
+
+
+def test_create_a_battle(authed_client, fakes, monkeypatch, db):
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    r = authed_client.post("/api/trainings", json=BODY | {"battle": True})
+    assert (r.status_code, r.json()["battle"]) == (201, {})
+    assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [True]

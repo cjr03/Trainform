@@ -158,6 +158,34 @@ def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
             for s in rows if s.target or s.score >= bars[s.round]][:REPLAY]
 
 
+def _battle(db: Session, t: Training, llm, model, respond) -> None:
+    """End a battle: the agent as it started (the champion, round 0) and the best model its rounds trained (the
+    challenger) answer the same new users, a judge picks each bout's winner, and the challenger replaces the agent
+    only if it wins more bouts. Either way the winner is the training's best model, so its downloads are the winner's.
+    Run in one go: a pause drops it and a resume redoes it."""
+    models = select(TrainedModel).where(TrainedModel.training_id == t.id)
+    champion = db.scalar(models.where(TrainedModel.round == 0))
+    challenger = db.scalar(models.where(TrainedModel.round > 0)
+                           .order_by(TrainedModel.mean_score.desc(), TrainedModel.round.desc()).limit(1))
+    n = t.scenarios_per_round
+    # A local helper's personas are seeded by position, so its first n are round 1's users: the battle takes the next n.
+    _, personas = _prepare_round(llm, t.rubric, 2 * n if getattr(llm, "local", False) else n, champion.prompt, None)
+    messages = [p["message"] for p in personas[-n:]]
+    replies = []
+    for m in (champion, challenger):
+        if model:
+            model.load_adapter(m.weights)
+        replies.append(respond([(m.prompt, x) for x in messages]))
+    verdicts = agents.judge_bouts(llm, list(zip(messages, *replies)), t.rubric)
+    won = sum(v > 0 for v in verdicts) > sum(v < 0 for v in verdicts)  # a tie keeps the champion
+    t.battle = {"winner": "challenger" if won else "champion",
+                "bouts": [{"message": m, "champion": a, "challenger": b, "verdict": v}
+                          for m, a, b, v in zip(messages, *replies, verdicts)]}
+    t.best_model_id = (challenger if won else champion).id
+    if won:
+        agent_profiles.sync_agent(db, t, challenger.id)
+
+
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal, agent_llm=None) -> None:
     """Run a training's remaining rounds, continuing from its saved progress (models.Training.next_prompt and
     personas, the round's saved scenarios and its finished rounds' TrainedModels, the best of which holds the adapter
@@ -277,10 +305,13 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                     else:  # only the prompt is trained, so the best one is kept
                         prompt = t.next_prompt = db.scalar(select(TrainedModel.prompt)
                                                            .where(TrainedModel.id == best_id))
-                agent_profiles.sync_agent(db, t)
+                if t.battle is None:  # a battle's agent changes only if its challenger wins (see _battle)
+                    agent_profiles.sync_agent(db, t)
                 # Committed with the round's model, so a resume starts the next round on the kept adapter.
                 t.personas = None
                 db.commit()
+            if t.battle is not None:
+                _battle(db, t, llm, model, respond)
             t.status = "completed"
             db.commit()
         except Exception as exc:
@@ -318,6 +349,7 @@ class TrainingIn(BaseModel):
     scenarios: int = Field(ge=1, le=100)
     rounds: int = Field(ge=1, le=50)
     helper: Helper | None = None
+    battle: bool = False  # optimise a challenger, then keep whichever of it and the agent wins a head to head
 
 
 def owned(db: Session, training_id: int, user: User) -> Training:
@@ -350,6 +382,7 @@ def detail(db: Session, t: Training) -> dict:
         "score_windows": score_windows(scores), "best_model_id": t.best_model_id, "best_score": best_score,
         "best_prompt": best_prompt, "baseline_score": baseline_score, "created_at": t.created_at, "helper": t.helper,
         "agent_id": t.agent_id, "agent_name": db.scalar(select(Agent.name).where(Agent.id == t.agent_id)),
+        "battle": t.battle,
     }
 
 
@@ -402,7 +435,7 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
         # The agent's weights are where it starts (see run_training).
         t = Training(user_id=user.id, agent_id=agent.id, base_model=agent.base_model, initial_prompt=agent.prompt,
                      adapter=agent.weights, rubric=body.rubric, scenarios_per_round=body.scenarios,
-                     rounds=body.rounds, helper=body.helper)
+                     rounds=body.rounds, helper=body.helper, battle={} if body.battle else None)
         db.add(t)
         db.commit()
         return t
@@ -457,7 +490,7 @@ def list_trainings(agent_id: int | None = None, user: User = Depends(current_use
     return [{"id": t.id, "base_model": t.base_model, "status": t.status, "rounds": t.rounds,
              "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round,
              "scenarios_done": t.scenarios_done, "created_at": t.created_at, "best_score": best_score,
-             "helper": t.helper, "agent_id": t.agent_id, "agent_name": agent_name}
+             "helper": t.helper, "agent_id": t.agent_id, "agent_name": agent_name, "battle": t.battle is not None}
             for t, best_score, agent_name in rows]
 
 

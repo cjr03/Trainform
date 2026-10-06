@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { Gem, Hammer, LogOut, Map as MapIcon, Search, UserRound } from 'lucide-react'
+import { Gem, Hammer, LogOut, Map as MapIcon, Search, Swords, UserRound } from 'lucide-react'
 import { api, clearToken, getToken, setToken } from './api'
 import KnightHelmet from '@/components/KnightHelmet'
 import { Avatar } from '@/components/shared'
@@ -26,6 +26,7 @@ import TrainPage from './pages/TrainPage'
 const NAV = [
   ['Train', Hammer],
   ['Agents', KnightHelmet],
+  ['Battle', Swords],
   ['Inspect', Gem],
 ]
 const NAV_LINK =
@@ -120,6 +121,7 @@ export default function App() {
       <main className="w-full px-4 pt-8 pb-16">
         <Routes>
           <Route path="/train" element={<TrainPage />} />
+          <Route path="/battle" element={<TrainPage key="battle" battle />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/inspect" element={<InspectPage />} />
           <Route path="/account" element={<AccountPage onUser={setMe} />} />

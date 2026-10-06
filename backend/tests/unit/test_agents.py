@@ -492,3 +492,30 @@ def test_draw_image_sanitises_retries_a_bad_drawing_once_and_falls_back_to_the_e
     with pytest.raises(BadReply):
         agents.draw_image(FakeLLM({"svg": "<html/>"}, {"svg": "<!DOCTYPE x><svg/>"}), "s", "ada")
     assert agents.draw_image(None, "s", "ada") == agents.svg.sanitise(agents.svg.emblem("ada"))  # no model call without Claude
+
+
+def test_judge_counts_a_bout_only_when_both_orders_agree():
+    calls = []
+
+    def judge(system, message, schema=None, **_):
+        calls.append((system, message, schema))
+        a = re.search(r"<reply_a>\n(.*)\n</reply_a>", message).group(1)
+        # Bout 1: the challenger wins either way. Bout 2: the judge always picks reply A, so position decides: a tie.
+        # Bout 3: the champion wins either way.
+        return {"winner": "A" if a in ("chall1", "champ2", "chall2", "champ3") else "B"}
+
+    bouts = [("m1", "champ1", "chall1"), ("m2", "champ2", "chall2"), ("m3", "champ3", "chall3")]
+    assert agents.judge_bouts(judge, bouts, ["Clarity"]) == [1, 0, -1]
+    assert len(calls) == 6 and {(system, schema is agents.VERDICT_SCHEMA) for system, _, schema in calls} == {
+        (agents.JUDGE_SYSTEM, True)}
+    assert_strict(agents.VERDICT_SCHEMA)
+
+
+def test_local_judge_compares_rubric_scores(monkeypatch):
+    local = lambda *a, **k: None  # noqa: E731
+    local.local = True
+    means = {"champ1": 5, "chall1": 7, "champ2": 6, "chall2": 6, "champ3": 9, "chall3": 2}
+    monkeypatch.setattr(agents, "score_conversations", lambda llm, convs, rubric: [
+        [{"criterion": c, "score": means[conv.rpartition(": ")[2]]} for c in rubric] for conv in convs])
+    bouts = [("m1", "champ1", "chall1"), ("m2", "champ2", "chall2"), ("m3", "champ3", "chall3")]
+    assert agents.judge_bouts(local, bouts, ["Clarity", "Tone"]) == [1, 0, -1]

@@ -12,7 +12,7 @@ from app import training
 from app.agents import FOCUS_HEADER
 from app.db import SessionLocal
 from app.llm import Stopped
-from app.models import Scenario, TrainedModel, Training, User
+from app.models import Agent, Scenario, TrainedModel, Training, User
 
 RUBRIC = ["Clarity", "Tone"]
 CONVERSATION = re.compile(r"User: msg from persona (\d+)\nAssistant: reply to msg from persona \d+ under <(.*)> "
@@ -803,3 +803,63 @@ def test_score_windows():
         {"label": "n", "runs": 8, "score": 4.5}, {"label": "n/2", "runs": 4, "score": 6.5},
         {"label": "n/4", "runs": 2, "score": 7.5}, {"label": "last", "runs": 1, "score": 8.0},
     ]
+
+
+@pytest.fixture
+def battle(db, user, fake_agents, monkeypatch):
+    """A 2-round battle of an agent whose rounds improve on it (round 2, with prompt "PR", is the best), judged by
+    `battle.verdicts`."""
+    agent = Agent(user_id=user.id, name="A", base_model="tiny", prompt="P")
+    db.add(agent)
+    db.commit()
+    fake_agents.score = lambda k, prompt, adapter: {"PK-0": 6, "PK-1": 7, "PK-2": 8}[adapter] + (prompt == "PR")
+    state = SimpleNamespace(agent=agent, bouts=[], verdicts=[1, 1, -1])
+    monkeypatch.setattr(training.agents, "judge_bouts",
+                        lambda llm, bouts, rubric: state.bouts.extend(bouts) or state.verdicts)
+    state.training = make_training(db, user, rounds=2, scenarios=3, agent_id=agent.id, battle={})
+    return state
+
+
+def test_a_battle_keeps_the_agent_until_its_challenger_wins(db, battle):
+    t, _ = run(db, battle.training)
+    db.refresh(battle.agent)
+    challenger = db.query(TrainedModel).filter_by(training_id=t.id, round=2).one()
+    # The champion is the agent as it started; the challenger, the best round, answered the same messages.
+    assert [(m, a.rpartition(" under ")[2], b.rpartition(" under ")[2]) for m, a, b in battle.bouts] == [
+        (f"msg from persona {k}", "<P> with PK-0", "<PR> with PK-2") for k in (1, 2, 3)]
+    assert t.status == "completed" and t.battle["winner"] == "challenger"
+    assert [b["verdict"] for b in t.battle["bouts"]] == [1, 1, -1]
+    assert t.best_model_id == challenger.id
+    assert (battle.agent.prompt, battle.agent.weights) == ("PR", b"PK-2")
+
+
+@pytest.mark.parametrize("verdicts", [[-1, -1, 1], [1, -1, 0], [0, 0, 0]])
+def test_a_champion_that_wins_or_ties_keeps_the_agent_unchanged(db, battle, verdicts):
+    battle.verdicts = verdicts
+    t, _ = run(db, battle.training)
+    db.refresh(battle.agent)
+    assert t.battle["winner"] == "champion"
+    assert db.get(TrainedModel, t.best_model_id).round == 0  # its downloads are the agent as it was
+    assert (battle.agent.prompt, battle.agent.weights) == ("P", None)  # the rounds' better models never synced
+
+
+def test_a_pause_during_the_battle_redoes_it_on_resume(db, battle, monkeypatch):
+    judge = training.agents.judge_bouts
+
+    def pause_then_judge(llm, bouts, rubric):
+        request_pause()
+        llm("system", "message")  # the next Claude call sees the pause
+        return judge(llm, bouts, rubric)
+
+    monkeypatch.setattr(training.agents, "judge_bouts", pause_then_judge)
+    t, _ = run(db, battle.training, llm=lambda *a, **k: None)
+    assert (t.status, t.battle) == ("paused", {})
+    monkeypatch.setattr(training.agents, "judge_bouts", judge)
+    t, _ = resume(db, t)
+    assert t.status == "completed" and t.battle["winner"] == "challenger"
+
+
+def test_a_local_battle_meets_new_users_not_round_1s(db, battle, local_helper):
+    run(db, battle.training, llm=None)
+    # Local personas are seeded by position: round 1 met personas 1-3, so the battle meets 4-6.
+    assert [m for m, _, _ in battle.bouts] == [f"msg from persona {k}" for k in (4, 5, 6)]
