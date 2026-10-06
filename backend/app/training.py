@@ -507,7 +507,8 @@ def list_trainings(agent_id: int | None = None, user: User = Depends(current_use
     return [{"id": t.id, "base_model": t.base_model, "status": t.status, "rounds": t.rounds,
              "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round,
              "scenarios_done": t.scenarios_done, "created_at": t.created_at, "best_score": best_score,
-             "helper": t.helper, "agent_id": t.agent_id, "agent_name": agent_name, "battle": t.battle is not None}
+             "helper": t.helper, "agent_id": t.agent_id, "agent_name": agent_name,
+             "battle": t.battle and {k: v for k, v in t.battle.items() if k != "bouts"}}  # past battles' results
             for t, best_score, agent_name in rows]
 
 

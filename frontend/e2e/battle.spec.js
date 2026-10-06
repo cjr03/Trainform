@@ -26,6 +26,8 @@ test('battle an agent against its optimised challenger; level grades keep the ag
   await expect(page.getByText(/^Scenario \d: (\d+\.\d) – \1$/)).toHaveCount(2)
   const saved = await (await request.get(`/api/agents/${agent.id}`, { headers: user.auth })).json()
   expect(saved.prompt).toBe('You help bike shop customers.')
+  await expect(page.getByRole('region', { name: 'Past battles' }).getByRole('button')).toContainText(
+    'Challenger trained for 1 round · Your agent held')
 
   // The Train page doesn't pick up the battle.
   await page.getByRole('link', { name: 'Train', exact: true }).click()

@@ -566,7 +566,11 @@ def test_create_a_battle(authed_client, fakes, monkeypatch, db):
     monkeypatch.setattr(training, "run_training", lambda *args: None)
     r = authed_client.post("/api/trainings", json=BODY | {"battle": True})
     assert (r.status_code, r.json()["battle"]) == (201, {})
-    assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [True]
+    assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [{}]
+    # Once fought, the list has its result for past battles but not its bouts.
+    db.get(Training, r.json()["id"]).battle = {"winner": "champion", "grades": [7, 6], "bouts": [{"message": "Hi"}]}
+    db.commit()
+    assert authed_client.get("/api/trainings").json()[0]["battle"] == {"winner": "champion", "grades": [7, 6]}
 
 
 def test_challenge_a_published_agent(authed_client, fakes, monkeypatch, db, agent):
