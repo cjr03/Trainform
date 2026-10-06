@@ -60,7 +60,7 @@ it('lists the agents with a Madden-style overall, Unranked before any training',
   expect(within(bike).getByRole('img', { name: 'Overall 84' })).toHaveTextContent('84OVR')
   expect(bike).toHaveTextContent('qwen-0.5b · 2 trainings')
   const writer = await card('Claude Writer')
-  expect(within(writer).getByRole('img', { name: 'Unranked' })).toHaveTextContent('Unranked')
+  expect(within(writer).getByRole('img', { name: 'Unranked' })).toHaveTextContent('--')
   expect(writer).toHaveTextContent('Claude · 0 trainings')
 })
 

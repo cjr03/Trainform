@@ -47,7 +47,7 @@ export function Overall({ value, large, className }) {
     >
       {value == null ? (
         <span className={cn('font-semibold text-muted-foreground uppercase', large ? 'text-xs tracking-wider' : 'text-[0.6rem]')}>
-          Unranked
+          --
         </span>
       ) : (
         <>
