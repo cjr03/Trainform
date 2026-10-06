@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from statistics import fmean
+from statistics import fmean, median
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -24,9 +24,12 @@ from app.models import ACTIVE, Scenario, TrainedModel, Training, User
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/trainings", tags=["training"])
 
-HIGH_SCORE = 7.0  # scenarios scoring at least this are used as SFT examples
-RECENT_SCORES = 5  # latest scenario scores the prompt generator sees, to tell whether its edits help
-WEAKEST = 3  # lowest-scoring conversations a round review sees
+SFT_FLOOR = 6.0  # a reply scoring below this is never learned from, however it ranks in its round
+REPLAY = 24  # most examples a round's SFT trains on: this round's, then earlier rounds' best, so it doesn't forget them
+MINIBATCH = 4  # scenarios a revised prompt is tested on, against the current prompt, before it may replace it
+MIN_GAIN = 0.25  # how much higher a revision's mean score on the same messages must be to replace the prompt
+ANCHORS = 4  # round 1's first scenarios, held out of SFT and rerun after each round to compare models like for like
+WEAKEST = 3  # lowest-scoring conversations the prompt generator sees
 INTERNAL_ERROR = "Training failed; see the server logs."
 # Each run holds a loaded model and one of the 40 worker threads the sync routes share, so cap them process-wide.
 _SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
@@ -40,39 +43,75 @@ def _set_status(db: Session, t: Training, old: tuple, new: str, **values) -> boo
     return bool(changed)
 
 
-def _conversation(s: Scenario) -> str:
-    return f"User: {s.input}\nAssistant: {s.output}"
+def _conversation(message: str, reply: str) -> str:
+    return f"User: {message}\nAssistant: {reply}"
 
 
-def _review(rubric: list[str], last: list[Scenario]) -> tuple:
-    """A finished round's results for agents.review_round: its best-scoring prompt (earliest on a tie), its mean score
-    per criterion and its lowest-scoring conversations. Plain values, so another thread can use them."""
-    means = [fmean(s.scores[i]["score"] for s in last) for i in range(len(rubric))]
-    weakest = [(_conversation(s), s.score) for s in sorted(last, key=lambda s: s.score)[:WEAKEST]]
-    return max(last, key=lambda s: s.score).prompt, list(zip(rubric, means)), weakest
+def _evaluate(llm, model, prompt: str, rubric: list[str], messages: list[str]) -> list[dict]:
+    """The model's replies to `messages` under `prompt`, scored: [{"input", "output", "scores", "score"}]."""
+    replies = [agents.primary_respond(model.generate, prompt, m) for m in messages]  # one model: in turn
+    scores = agents.concurrently(llm, lambda c: agents.score_conversation(llm, c, rubric),
+                                 [_conversation(m, r) for m, r in zip(messages, replies)])
+    return [{"input": m, "output": r, "scores": sc, "score": fmean(x["score"] for x in sc)}
+            for m, r, sc in zip(messages, replies, scores)]
 
 
-def _prepare_round(llm, rubric: list[str], n: int, prompt: str, review: tuple | None) -> tuple[str, list[dict]]:
-    """A round's starting prompt and its personas with their messages ([{"persona", "message"}]). After the first
-    round, `review` (see _review) has the last round's results: the prompt generator revises its best prompt from them,
-    and the personas press hardest on its weakest criteria."""
-    last_scores = None
-    if review:
-        prompt, last_scores = review[0], [mean for _, mean in review[1]]
-    tasks = [lambda: agents.review_round(llm, *review) if review else prompt,
+def _review(rubric: list[str], rows: list[Scenario], prompt: str) -> tuple:
+    """`prompt` with its mean score per criterion and its lowest-scoring conversations over `rows`, for proposing a
+    revision of it. Plain values, so another thread can use them."""
+    means = [fmean(s.scores[i]["score"] for s in rows) for i in range(len(rubric))]
+    weakest = [(_conversation(s.input, s.output), s.score) for s in sorted(rows, key=lambda s: s.score)[:WEAKEST]]
+    return prompt, list(zip(rubric, means)), weakest
+
+
+def _propose(llm, review: tuple, rejected: int = 0) -> str:
+    """A revision of the reviewed prompt to test against it: Claude writes one; the local helper can't, so code does."""
+    if getattr(llm, "local", False):
+        return agents.propose_local(review[0], review[1], rejected)
+    return agents.review_round(llm, *review)
+
+
+def _prepare_round(llm, rubric: list[str], n: int, prompt: str, review: tuple | None) -> tuple[str | None, list[dict]]:
+    """A round's revision of `prompt` to test (None in round 1) and its personas with their messages
+    ([{"persona", "message"}]). After round 1, `review` (see _review) has the last round's results: the revision
+    targets its weakest criteria, and so do the personas."""
+    last_scores = [mean for _, mean in review[1]] if review else None
+    tasks = [lambda: _propose(llm, review) if review else None,
              lambda: agents.generate_personas(llm, prompt, n, rubric=rubric, last_scores=last_scores)]
-    # Personas need only the agent's role, which the review keeps, so with Claude both are written at once.
-    start, personas = agents.concurrently(llm, lambda task: task(), tasks)
-    # A persona's message depends only on the persona, so the round's messages are written at once. The rest of each
-    # scenario waits for the prompt the one before it produced, so it runs in order.
+    # Personas need only the agent's role, which a revision keeps, so with Claude both are written at once.
+    candidate, personas = agents.concurrently(llm, lambda task: task(), tasks)
+    # A persona's message depends only on the persona, so the round's messages are written at once.
     messages = agents.concurrently(llm, lambda p: agents.persona_respond(llm, p["attributes"], p["prompt"]), personas)
-    return start, [{"persona": p, "message": m} for p, m in zip(personas, messages)]
+    return candidate, [{"persona": p, "message": m} for p, m in zip(personas, messages)]
+
+
+def _anchors(db: Session, t: Training) -> list[Scenario]:
+    """Round 1's first scenarios: the same users every round's model is scored on (at most half of round 1, so it
+    still has scenarios to learn from)."""
+    k = min(ANCHORS, max(1, t.scenarios_per_round // 2))
+    return list(db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == 1,
+                                                  Scenario.scenario_number <= k).order_by(Scenario.scenario_number)))
+
+
+def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
+    """What a round's SFT learns: each round's teacher replies (for its weakest replies first) and its own replies
+    in its top half (and at least SFT_FLOOR, best first), the latest round first, up to REPLAY. Read from the saved
+    scenarios, so a resume trains the same."""
+    rows = sorted((s for s in db.scalars(select(Scenario).where(Scenario.training_id == t.id)) if s.id not in held_out),
+                  key=lambda s: (-s.round, s.score if s.target else -s.score, s.scenario_number))
+    bars = {r: max(SFT_FLOOR, median(s.score for s in rows if s.round == r)) for r in {s.round for s in rows}}
+    return [{"prompt": s.prompt, "input": s.input, "output": s.target or s.output}
+            for s in rows if s.target or s.score >= bars[s.round]][:REPLAY]
 
 
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal) -> None:
     """Run a training's remaining rounds, continuing from its saved progress (models.Training.next_prompt, personas
     and adapter, the round's saved scenarios and its finished rounds' TrainedModels). `load_model(name)` returns a
-    LocalModel-like object. The API writes status too ("pausing"), so this only changes it with targeted UPDATEs."""
+    LocalModel-like object. The API writes status too ("pausing"), so this only changes it with targeted UPDATEs.
+
+    The prompt only changes when a revision beats it on the same messages, and each round's adapter is scored on
+    the same anchor users as the ones before it and dropped if it scores lower than the best, so the model never
+    trains on from a worse one."""
     pool = ThreadPoolExecutor(1)
     with session_factory() as db:
         try:
@@ -85,64 +124,91 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
             else:
                 weights = model.adapter_bytes()
             llm = llm or local_llm(model)  # no Claude: the helpers share the loaded model, with its adapter off
-            prompt = t.next_prompt or t.initial_prompt
-            finished = db.scalar(select(func.count()).where(TrainedModel.training_id == t.id))
-            ahead = None  # with Claude, the next round's prompt and personas, prepared while the model trains
+            local = getattr(llm, "local", False)
+            rubric, prompt = t.rubric, t.next_prompt or t.initial_prompt
+            finished = db.scalar(select(func.count()).where(TrainedModel.training_id == t.id, TrainedModel.round > 0))
+            ahead = None  # with Claude, the next round's revision and personas, prepared while the model trains
             for r in range(finished + 1, t.rounds + 1):
+                candidate = None  # a revision of the prompt, tested on the next batch (not saved: a resume re-proposes)
                 if ahead:
-                    prompt, t.personas = ahead.result()
-                    t.next_prompt = prompt
+                    candidate, t.personas = ahead.result()
                     db.commit()
                 if _set_status(db, t, ("pausing",), "paused"):  # a safe point: progress is saved
                     return
                 t.current_round = r
-                if t.personas is None:
-                    last = db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r - 1)
-                                      .order_by(Scenario.scenario_number)).all()
-                    prompt, t.personas = _prepare_round(llm, t.rubric, t.scenarios_per_round, prompt,
-                                                        _review(t.rubric, last) if last else None)
-                    t.next_prompt = prompt
-                db.commit()
                 done = list(db.scalars(select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r)
                                        .order_by(Scenario.scenario_number)))
-                for number, p in enumerate(t.personas[len(done):], len(done) + 1):
+                if t.personas is None or (candidate is None and len(done) < len(t.personas)):
+                    # Resumed mid-round, the revision isn't saved: proposed again from the rows under this prompt.
+                    last = [s for s in done if s.prompt == prompt] or db.scalars(
+                        select(Scenario).where(Scenario.training_id == t.id, Scenario.round == r - 1)
+                        .order_by(Scenario.scenario_number)).all()
+                    review = _review(rubric, last, prompt) if last else None
+                    if t.personas is None:
+                        candidate, t.personas = _prepare_round(llm, rubric, t.scenarios_per_round, prompt, review)
+                    elif review:
+                        candidate = _propose(llm, review)
+                db.commit()
+                rejected = 0
+                while len(done) < len(t.personas):
                     if _set_status(db, t, ("pausing",), "paused"):
                         return
-                    message = p["message"]
-                    reply = agents.primary_respond(model.generate, prompt, message)  # same user turn SFT trains on
-                    conversation = f"User: {message}\nAssistant: {reply}"
-                    scores = agents.score_conversation(llm, conversation, t.rubric)
-                    s = Scenario(training_id=t.id, round=r, scenario_number=number, persona=p["persona"], prompt=prompt,
-                                 input=message, output=reply, scores=scores, score=fmean(x["score"] for x in scores))
-                    if number < len(t.personas):  # the next round starts from a review instead
-                        # Its track record, from the round's saved scenarios: the best earlier prompt, if it beat
-                        # this one, and the latest scores, so it builds on what worked and backs out what didn't.
-                        top = max(done, key=lambda x: x.score, default=None)
-                        best = (top.prompt, top.score) if top and top.score > s.score else None
-                        recent = [x.score for x in done[-(RECENT_SCORES - 1):]] + [s.score]
-                        prompt = agents.generate_improved_prompt(llm, prompt, conversation, scores, best, recent)
-                    # Saved together with the prompt it produced: a failure before this just redoes the scenario.
-                    db.add(s)
-                    t.scenarios_done += 1
+                    batch = t.personas[len(done):len(done) + MINIBATCH]
+                    messages = [p["message"] for p in batch]
+                    rows = _evaluate(llm, model, prompt, rubric, messages)
+                    if candidate and candidate != prompt:
+                        # A paired test: the same users, so a higher score is the prompt's doing, not theirs.
+                        tried = _evaluate(llm, model, candidate, rubric, messages)
+                        if fmean(x["score"] for x in tried) >= fmean(x["score"] for x in rows) + MIN_GAIN:
+                            prompt, rows = candidate, tried
+                        else:
+                            rejected += 1
+                    for p, row in zip(batch, rows):
+                        done.append(Scenario(training_id=t.id, round=r, scenario_number=len(done) + 1,
+                                             persona=p["persona"], prompt=prompt, **row))
+                        db.add(done[-1])
+                    # Saved together with the prompt they ran under: a failure before this just redoes the batch.
+                    t.scenarios_done += len(batch)
                     t.next_prompt = prompt
                     db.commit()
-                    done.append(s)
+                    if len(done) < len(t.personas):
+                        evidence = [s for s in done if s.prompt == prompt]
+                        candidate = _propose(llm, _review(rubric, evidence, prompt), rejected)
                 # A local model can't answer while it trains, so it prepares the next round at its start instead.
                 ahead = None
-                if r < t.rounds and not getattr(llm, "local", False):
-                    ahead = pool.submit(_prepare_round, llm, t.rubric, t.scenarios_per_round, prompt,
-                                        _review(t.rubric, done))
-                # Store what earned the score: the round's weights and its best-scoring scenario's prompt.
-                db.add(TrainedModel(training_id=t.id, round=r, prompt=max(done, key=lambda s: s.score).prompt,
-                                    weights=weights, mean_score=fmean(s.score for s in done)))
-                examples = [{"prompt": s.prompt, "input": s.input, "output": s.output}
-                            for s in done if s.score >= HIGH_SCORE]
+                if r < t.rounds and not local:
+                    ahead = pool.submit(_prepare_round, llm, rubric, t.scenarios_per_round, prompt,
+                                        _review(rubric, done, prompt))
+                anchors = _anchors(db, t)
+                held_out = {a.id for a in anchors}
+                if not local:  # Claude writes the replies the model should have sent; a resume skips written ones
+                    todo = [s for s in done if s.target is None and s.id not in held_out]
+                    targets = agents.concurrently(
+                        llm, lambda s: agents.teacher_reply(llm, s.prompt, s.input, rubric), todo)
+                    for s, target in zip(todo, targets):
+                        s.target = target
+                    db.commit()
+                if r == 1:  # the anchors ran under the initial prompt and weights: the baseline to beat, for free
+                    db.add(TrainedModel(training_id=t.id, round=0, prompt=t.initial_prompt, weights=weights,
+                                        mean_score=fmean(a.score for a in anchors)))
+                examples = _examples(db, t, held_out)
                 if examples:
-                    model.sft(examples)
+                    model.sft(examples, seed=r)
                     weights = model.adapter_bytes()
-                t.best_model_id = db.scalar(select(TrainedModel.id).where(TrainedModel.training_id == t.id)
-                                            .order_by(TrainedModel.mean_score.desc(), TrainedModel.round).limit(1))
-                # Committed with the round's model, so a resume starts the next round on the trained adapter.
+                score = fmean(x["score"] for x in _evaluate(llm, model, prompt, rubric, [a.input for a in anchors]))
+                db.add(trained := TrainedModel(training_id=t.id, round=r, prompt=prompt, weights=weights,
+                                               mean_score=score))
+                db.flush()
+                # A training started before the anchor eval has no baseline and practice means as its scores: no gate.
+                best = db.scalars(select(TrainedModel).where(TrainedModel.training_id == t.id)
+                                  .order_by(TrainedModel.mean_score.desc(), TrainedModel.round.desc()).limit(1)).one()
+                if not db.scalar(select(func.count()).where(TrainedModel.training_id == t.id, TrainedModel.round == 0)):
+                    best = trained
+                t.best_model_id = best.id
+                if best.round != r:  # worse than the best so far (a tie keeps the newer): train on from that one
+                    weights = best.weights
+                    model.load_adapter(weights)
+                # Committed with the round's model, so a resume starts the next round on the kept adapter.
                 t.adapter, t.personas = weights, None
                 db.commit()
             t.status = "completed"
@@ -201,13 +267,15 @@ def detail(db: Session, t: Training) -> dict:
                               .order_by(TrainedModel.round.desc()).limit(1))
     best_score, best_prompt = db.execute(select(TrainedModel.mean_score, TrainedModel.prompt)
                                          .where(TrainedModel.id == t.best_model_id)).first() or (None, None)
+    baseline_score = db.scalar(select(TrainedModel.mean_score).where(TrainedModel.training_id == t.id,
+                                                                     TrainedModel.round == 0))
     return {
         "id": t.id, "status": t.status, "error": t.error, "base_model": t.base_model,
         "initial_prompt": t.initial_prompt, "rubric": t.rubric, "rounds": t.rounds,
         "scenarios_per_round": t.scenarios_per_round, "current_round": t.current_round, "scenarios_done": t.scenarios_done,
         "total_scenarios": t.rounds * t.scenarios_per_round, "latest_prompt": latest_prompt or t.initial_prompt,
         "score_windows": score_windows(scores), "best_model_id": t.best_model_id, "best_score": best_score,
-        "best_prompt": best_prompt, "created_at": t.created_at, "helper": t.helper,
+        "best_prompt": best_prompt, "baseline_score": baseline_score, "created_at": t.created_at, "helper": t.helper,
     }
 
 
@@ -312,12 +380,14 @@ def get_training(training_id: int, user: User = Depends(current_user), db: Sessi
 @router.get("/{training_id}/rounds")
 def list_rounds(training_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     t = owned(db, training_id, user)
-    model_ids = dict(db.execute(select(TrainedModel.round, TrainedModel.id)
-                                .where(TrainedModel.training_id == t.id)).all())
+    models = {r: (i, score) for r, i, score in db.execute(
+        select(TrainedModel.round, TrainedModel.id, TrainedModel.mean_score).where(TrainedModel.training_id == t.id))}
     rows = db.execute(select(Scenario.round, func.avg(Scenario.score), func.count()).where(Scenario.training_id == t.id)
                       .group_by(Scenario.round).order_by(Scenario.round)).all()
-    return [{"round": r, "mean_score": mean, "scenarios": count, "model_id": model_ids.get(r)}
-            for r, mean, count in rows]
+    # mean_score: the round's practice users, who press harder on its weak spots each round; eval_score: its model on
+    # the same anchor users as every other round, so it is the one to compare.
+    return [{"round": r, "mean_score": mean, "scenarios": count, "model_id": models.get(r, (None, None))[0],
+             "eval_score": models.get(r, (None, None))[1]} for r, mean, count in rows]
 
 
 @router.get("/{training_id}/rounds/{round}/scenarios")

@@ -369,20 +369,41 @@ def test_sft_masks_prompt_tokens(tiny, forward_spy):
     tiny.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}])
     prompt = tiny._prompt_ids("be helpful", "hi")
     output = tiny.tokenizer("hello there", add_special_tokens=False)["input_ids"] + [tiny.tokenizer.eos_token_id]
-    [(ids, labels)] = forward_spy
-    assert ids == prompt + output
-    assert labels == [-100] * len(prompt) + output
+    assert forward_spy == [(prompt + output, [-100] * len(prompt) + output)] * 2  # one per epoch
 
 
-def test_sft_truncates_to_1024_tokens(tiny, forward_spy):
-    assert tiny.sft([{"prompt": "be helpful", "input": "hi " * 1100, "output": "hello"}]) == 0.0
-    assert forward_spy == []  # output truncated away entirely: skipped
-    prompt_len = len(tiny._prompt_ids("be helpful", "hi " * 1000))
-    loss = tiny.sft([{"prompt": "be helpful", "input": "hi " * 1000, "output": "hello " * 100}])
+def test_sft_learns_from_a_long_prompt(tiny, forward_spy):
+    # Generated prompts run to ~1000 words. A 1024-token cap cut every reply away, so SFT trained on nothing.
+    loss = tiny.sft([{"prompt": "be helpful " * 600, "input": "hi", "output": "hello there"}])
     assert math.isfinite(loss) and loss > 0
-    [(ids, labels)] = forward_spy
-    assert len(ids) == len(labels) == 1024
-    assert labels[:prompt_len] == [-100] * prompt_len and -100 not in labels[prompt_len:]
+    ids, labels = forward_spy[0]
+    assert len(ids) > 1024 and labels[-3:] != [-100] * 3
+
+
+def test_sft_drops_an_example_over_the_cap_instead_of_truncating_its_reply(tiny, forward_spy, caplog):
+    too_long = {"prompt": "be helpful", "input": "hi " * local_model.MAX_SFT_TOKENS, "output": "hello"}
+    assert tiny.sft([too_long]) == 0.0
+    assert forward_spy == [] and "1 of 1" in caplog.text
+
+
+def test_sft_steps_on_accumulated_clipped_gradients_over_shuffled_epochs(tiny, monkeypatch):
+    steps, clips = [], []
+    real_clip = torch.nn.utils.clip_grad_norm_
+    monkeypatch.setattr(torch.optim.AdamW, "step", lambda self, *a, **k: steps.append(1))
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", lambda params, max_norm: clips.append(max_norm) or
+                        real_clip(params, max_norm))
+    examples = [{"prompt": "be helpful", "input": w, "output": "hello there"} for w in ("hi", "hello", "there")] * 2
+    tiny.sft(examples, epochs=2, accum=4)
+    assert len(steps) == len(clips) == 4  # 6 examples per epoch: a step after 4, then after the last 2
+    assert set(clips) == {1.0}
+
+
+def test_sft_loss_falls_as_it_trains(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
+    model = LocalModel("tiny")
+    examples = [{"prompt": "be helpful", "input": "hi", "output": "hello there"}] * 4
+    losses = [model.sft(examples, seed=k) for k in range(3)]
+    assert losses[-1] < losses[0]
 
 
 def test_sft_no_examples(tiny):

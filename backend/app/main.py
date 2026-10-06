@@ -16,6 +16,7 @@ async def lifespan(_app: FastAPI):
     with engine.begin() as conn:
         # Added after the first release; create_all never alters existing tables.
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS target text"))
         conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
                           "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea, "
                           "ADD COLUMN IF NOT EXISTS helper varchar(16)"))

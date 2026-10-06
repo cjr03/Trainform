@@ -6,11 +6,11 @@ import zipfile
 
 import pytest
 
-from app import fake, local_model, training
+from app import agents, fake, local_model, training
 from app.local_model import LocalModel
 from app.main import app
 from app.models import Scenario, TrainedModel, Training
-from app.training import HIGH_SCORE
+from app.training import SFT_FLOOR
 
 ACCOUNT = {"email": "ada@example.com", "username": "ada", "password": "password1", "password_confirm": "password1"}
 INITIAL_PROMPT = "You help Acme customers track their orders."
@@ -55,14 +55,16 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
     d = client.get(f"/api/trainings/{tid}", headers=auth).json()
     assert (d["status"], d["error"], d["current_round"], d["scenarios_done"]) == ("completed", None, 2, 6)
     assert [(w["label"], w["runs"]) for w in d["score_windows"]] == [("n", 6), ("n/2", 3), ("n/4", 1), ("last", 1)]
-    assert d["latest_prompt"] != INITIAL_PROMPT and d["latest_prompt"].startswith(INITIAL_PROMPT)
+    # Fake scores ignore the prompt, so no revision beats it and none is kept.
+    assert d["latest_prompt"] == INITIAL_PROMPT
 
     rounds = client.get(f"/api/trainings/{tid}/rounds", headers=auth).json()
     assert [(x["round"], x["scenarios"]) for x in rounds] == [(1, 3), (2, 3)]
     assert all(x["model_id"] for x in rounds)
-    top = max(x["mean_score"] for x in rounds)
-    assert d["best_score"] == pytest.approx(top)
-    assert d["best_model_id"] == next(x["model_id"] for x in rounds if x["mean_score"] == pytest.approx(top))
+    # The best model is the one that scored highest on the anchor users, the newest on a tie.
+    top = max(x["eval_score"] for x in rounds)
+    assert d["best_score"] == pytest.approx(max(top, d["baseline_score"]))
+    assert d["best_model_id"] == [x["model_id"] for x in rounds if x["eval_score"] == pytest.approx(top)][-1]
 
     scenarios = client.get(f"/api/trainings/{tid}/rounds/1/scenarios", headers=auth).json()
     assert [s["scenario_number"] for s in scenarios] == [1, 2, 3]
@@ -73,7 +75,7 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
         assert [x["criterion"] for x in s["scores"]] == rubric
         assert s["score"] == pytest.approx(sum(x["score"] for x in s["scores"]) / len(rubric))
     assert scenarios[0]["prompt"] == INITIAL_PROMPT
-    assert max(s["score"] for s in scenarios) >= HIGH_SCORE > min(s["score"] for s in scenarios)
+    assert max(s["score"] for s in scenarios) >= SFT_FLOOR > min(s["score"] for s in scenarios)
 
     r = client.get(f"/api/trainings/{tid}/download/prompt", headers=auth)
     assert r.status_code == 200 and r.text == db.get(TrainedModel, d["best_model_id"]).prompt
@@ -100,7 +102,8 @@ def test_fake_llm_with_real_local_model(db, user, tiny_model_dir, monkeypatch):
     monkeypatch.setattr(local_model, "MODELS_DIR", tiny_model_dir.parent)
     sft_batches = []
     real_sft = LocalModel.sft
-    monkeypatch.setattr(LocalModel, "sft", lambda self, examples: sft_batches.append(examples) or real_sft(self, examples))
+    monkeypatch.setattr(LocalModel, "sft", lambda self, examples, **kw: sft_batches.append(examples) or
+                        real_sft(self, examples, **kw))
     rubric = ["Greets the user.", "Asks one clarifying question.", "Never invents facts."]
     t = Training(user_id=user.id, base_model="tiny", initial_prompt="be helpful", rubric=rubric,
                  scenarios_per_round=3, rounds=2)
@@ -114,12 +117,12 @@ def test_fake_llm_with_real_local_model(db, user, tiny_model_dir, monkeypatch):
     scenarios = db.query(Scenario).order_by(Scenario.round, Scenario.scenario_number).all()
     assert len(scenarios) == 6
     assert all([a["criterion"] for a in s.persona["attributes"]] == rubric for s in scenarios)
-    high = [[{"prompt": s.prompt, "input": s.input, "output": s.output} for s in scenarios
-             if s.round == r and s.score >= HIGH_SCORE] for r in (1, 2)]
-    assert all(high) and len(high[0]) < 3  # some scenarios scored high, some did not
-    assert sft_batches == high
+    # Scenario 1 is the held-out anchor; the rest learn from the teacher's replies, and round 2 replays round 1's.
+    assert [(s.round, s.scenario_number) for s in scenarios if s.target] == [(1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]
+    teacher = fake.fake_llm("", "", agents.REPLY_SCHEMA)["reply"]
+    assert [len(b) for b in sft_batches] == [2, 5] and {ex["output"] for b in sft_batches for ex in b} == {teacher}
     models = db.query(TrainedModel).order_by(TrainedModel.round).all()
-    assert len(models) == 2
+    assert [m.round for m in models] == [0, 1, 2]  # round 0: the baseline on the anchor
     for m in models:
         names, config = zip_names(m.weights)
         assert "adapter_config.json" in names and config["peft_type"] == "LORA"
@@ -130,9 +133,9 @@ def test_fake_mode_pause_and_resume_over_http(client, db, fake_mode, monkeypatch
     auth = signup(client)
     sft = fake.FakeLocalModel.sft
 
-    def pause_during_round_1_sft(self, examples):
+    def pause_during_round_1_sft(self, examples, **kw):
         client.post(f"/api/trainings/{db.query(Training.id).scalar()}/pause", headers=auth)
-        return sft(self, examples)
+        return sft(self, examples, **kw)
 
     monkeypatch.setattr(fake.FakeLocalModel, "sft", pause_during_round_1_sft)
     body = {"base_model": "demo", "prompt": INITIAL_PROMPT, "rubric": ["Greets the user."], "scenarios": 3, "rounds": 2}
@@ -144,6 +147,7 @@ def test_fake_mode_pause_and_resume_over_http(client, db, fake_mode, monkeypatch
     assert client.post(f"/api/trainings/{tid}/resume", headers=auth).status_code == 200
     d = client.get(f"/api/trainings/{tid}", headers=auth).json()
     assert (d["status"], d["current_round"], d["scenarios_done"]) == ("completed", 2, 6)
-    # Round 2 ran on the adapter round 1 trained, restored in the resumed run's fresh model.
-    round1, round2 = db.query(TrainedModel).order_by(TrainedModel.round)
-    assert zip_names(round1.weights)[1]["examples_seen"] == 0 < zip_names(round2.weights)[1]["examples_seen"]
+    # Round 2 trained on from the adapter round 1 trained, restored in the resumed run's fresh model.
+    baseline, round1, round2 = (zip_names(m.weights)[1]["examples_seen"]
+                                for m in db.query(TrainedModel).order_by(TrainedModel.round))
+    assert baseline == 0 < round1 < round2

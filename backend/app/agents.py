@@ -61,39 +61,33 @@ Put the behaviours that matter most to this agent's success first. Never write v
 PROMPT_GENERATOR_SYSTEM = """\
 You improve system prompts for AI agents using evaluation evidence. You will receive:
 - <current_prompt>: the agent's current system prompt.
-- <conversation>: the latest conversation the agent had while running under that prompt.
-- <scores>: a grader's score for the agent's reply on each criterion, from 1 (failed) to 10 (fully met).
-- <recent_scores>: the mean scores of the agent's latest conversations, oldest first. Each ran under the prompt your \
-revision before it produced, and the last is the conversation above, so the last two show whether your latest edit \
-helped.
-- <best_prompt> and <best_score>, only when an earlier version scored higher than the current prompt: that version \
-and its mean score.
+- <round_scores>: the agent's mean score on each criterion over its latest conversations under that prompt, from 1 \
+(failed) to 10 (fully met).
+- <weakest_conversations>: the lowest-scoring of those conversations, each with its mean score.
 
-Every conversation is with a different simulated user, and harder users earn lower scores, so treat one score as \
-noisy evidence and trust a trend across several more.
-
-Rewrite the prompt so the agent scores higher next time:
-1. Choose what to build on. When <best_prompt> is given, start from it: carry over only the later edits the scores \
-support, and back out an edit that was followed by lower scores. Otherwise build on the current prompt.
-2. Start with the lowest-scoring criteria. Use the conversation to diagnose why the agent fell short: a missing \
+Your revision is tested against the current prompt on the same new users and kept only if it scores higher, so make \
+the changes most likely to raise the scores:
+1. Start with the lowest-scoring criteria. Use the conversations to diagnose why the agent fell short: a missing \
 instruction, a vague or conflicting one, a rule buried where it is easy to overlook, or no guidance for this kind of user.
-3. Fix those causes directly. Add or sharpen the instruction, say when it applies, and where it helps add a short \
-example of the desired behaviour.
-4. Keep what works. Do not remove or weaken the instructions behind high scores, and do not change the agent's role, \
+2. Fix those causes directly. Add or sharpen the instruction, say when it applies, and where it helps add a short \
+example of the desired behaviour. Treat a failure that recurs across the conversations as the most important.
+3. Keep what works. Do not remove or weaken the instructions behind high scores, and do not change the agent's role, \
 scope or factual content.
-5. Generalise. The next conversation will be with a different user, so fix the class of failure rather than this one \
-transcript, and never quote or refer to this conversation in the prompt.
-
-At the end of a training round you receive a round review instead: <current_prompt> holds the round's best-scoring \
-prompt, <round_scores> the agent's mean score on each criterion over the whole round, and <weakest_conversations> \
-the round's lowest-scoring conversations with their mean scores (some ran under earlier versions of the prompt). \
-Revise for the patterns across the round rather than any one conversation: fix the weakest criteria first, and treat \
-a failure that recurs across the weakest conversations as the most important; steps 4 and 5 still apply.
+4. Generalise. The next conversations are with different users, so fix the class of failure rather than one \
+transcript, and never quote or refer to these conversations in the prompt.
 
 The agent runs on a small open-weight language model, so keep the instructions plain and unambiguous. If the prompt \
-grows, tighten wording elsewhere so it stays under about 1000 words.
+grows, tighten wording elsewhere so it stays under about 800 words.
 
 Put the complete revised prompt in the "prompt" field: the whole prompt, not a diff, with no commentary."""
+
+# With Claude, the model learns from the reply it should have sent rather than only from its own best ones.
+TEACHER_SYSTEM = """\
+You write the reply an AI agent should have sent. You will receive the agent's system prompt in <agent_prompt>, a \
+customer's message in <message> and, in <rubric>, the criteria every reply is graded on. Write the one reply that \
+follows the prompt and fully meets every criterion, in the agent's own voice: plain, direct and no longer than the \
+message needs. A small model will be trained to imitate it, so make it a clear example to copy. Put only the reply \
+in the "reply" field."""
 
 SCORING_SYSTEM = """\
 You are a strict, calibrated grader of AI agent replies. You will receive a conversation inside <conversation> tags and \
@@ -223,6 +217,7 @@ def _array(items):
 
 STRING, INTEGER = {"type": "string"}, {"type": "integer"}
 PROMPT_SCHEMA = _schema(prompt=STRING)
+REPLY_SCHEMA = _schema(reply=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
 SCORE_SCHEMA = _schema(score=INTEGER)
 
@@ -301,32 +296,37 @@ def create_rubric(llm, agent_prompt: str) -> list[str]:
     return criteria
 
 
-def generate_improved_prompt(llm, agent_prompt: str, conversation: str, scores: list[dict],
-                             best: tuple[str, float] | None = None, recent: list[float] = ()) -> str:
-    """Prompt generator agent: current prompt + last conversation + [{"criterion", "score"}] -> improved prompt.
-
-    Its track record lets it hill-climb: `recent` is the latest scenarios' mean scores, oldest first, ending with this
-    conversation's, and `best` the (prompt, mean score) of an earlier version that scored higher than this one."""
-    lines = "\n".join(f"- {s['criterion']}: {s['score']}/10" for s in scores)
-    parts = [_tag("current_prompt", agent_prompt), _tag("conversation", conversation), _tag("scores", lines)]
-    if recent:
-        parts.append(_tag("recent_scores", ", ".join(f"{x:.1f}" for x in recent)))
-    if best:
-        parts += [_tag("best_prompt", best[0]), _tag("best_score", f"{best[1]:.1f}")]
-    return _ask(llm, PROMPT_GENERATOR_SYSTEM, "\n\n".join(parts), PROMPT_SCHEMA,
-                _prompt)
-
-
 def review_round(llm, agent_prompt: str, criterion_means: list[tuple[str, float]],
                  weakest: list[tuple[str, float]]) -> str:
-    """Prompt generator agent, between rounds: the round's best prompt + its mean score per criterion + its
-    lowest-scoring (conversation, mean score)s -> the next round's starting prompt."""
+    """Prompt generator agent: a prompt + its mean score per criterion over its latest conversations + the
+    lowest-scoring (conversation, mean score)s -> a revision to test against it."""
     means = "\n".join(f"- {c}: {m:.1f}/10" for c, m in criterion_means)
     conversations = "\n\n".join(f"Conversation {i} (mean score {score:.1f}/10):\n{c}"
                                  for i, (c, score) in enumerate(weakest, 1))
     message = "\n\n".join([_tag("current_prompt", agent_prompt), _tag("round_scores", means),
                             _tag("weakest_conversations", conversations)])
     return _ask(llm, PROMPT_GENERATOR_SYSTEM, message, PROMPT_SCHEMA, _prompt)
+
+
+FOCUS_HEADER = "\n\n## Most important\n"
+
+
+def propose_local(agent_prompt: str, criterion_means: list[tuple[str, float]], rejected: int = 0) -> str:
+    """A prompt revision without a model, for the local helper: the prompt with its two weakest criteria restated as
+    its last section. A ~0.6B model can't revise a prompt (it copies it, or pastes in the scores), so code does. Each
+    earlier `rejected` candidate moves the pick on to the next-weakest criteria."""
+    ranked = [c for c, _ in sorted(criterion_means, key=lambda cm: cm[1])]
+    k = 2 * rejected % len(ranked)
+    picked = (ranked[k:] + ranked[:k])[:2]
+    return agent_prompt.split(FOCUS_HEADER)[0] + FOCUS_HEADER + "\n".join(f"- {c}" for c in picked)
+
+
+def teacher_reply(llm, agent_prompt: str, message: str, rubric: list[str]) -> str:
+    """Teacher agent: the reply the agent should have sent to `message`, for the model to be fine-tuned on."""
+    criteria = "\n".join(f"- {c}" for c in rubric)
+    return _ask(llm, TEACHER_SYSTEM, "\n\n".join([_tag("agent_prompt", agent_prompt), _tag("message", message),
+                                                  _tag("rubric", criteria)]), REPLY_SCHEMA,
+                lambda out: _text(out["reply"], "reply"))
 
 
 def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:

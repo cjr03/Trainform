@@ -366,9 +366,11 @@ export default function InspectPage() {
             {rounds.data?.map((r) => (
               <Option key={r.round} selected={r.round === round} onSelect={() => pickRound(r.round)}>
                 <span className={OPTION_MAIN}>Round {r.round}</span>
-                <span className={OPTION_META}>{r.scenarios} scenarios</span>
-                <span className={OPTION_SCORE} title="Mean score">
-                  {fmt(r.mean_score)}
+                <span className={OPTION_META}>
+                  {r.scenarios} scenarios · practice {fmt(r.mean_score)}
+                </span>
+                <span className={OPTION_SCORE} title="Score on the eval users, the same every round">
+                  {fmt(r.eval_score)}
                 </span>
               </Option>
             ))}
