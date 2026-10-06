@@ -54,7 +54,7 @@ def test_fake_mode_training_over_http(client, db, fake_mode):
     assert 3 <= len(r.json()["criteria"]) <= 4
     rubric = r.json()["criteria"][:2] + ["Offers to book a repair."]  # edited on the Rubric slide
 
-    assert [a["name"] for a in client.get("/api/agents", headers=auth).json()] == ["Bike Repair Agent"]
+    assert client.get("/api/agents", headers=auth).json() == []  # a new account starts with no agents
     agent_id = new_agent(client, auth)
     body = {"agent_id": agent_id, "rubric": rubric, "scenarios": 3, "rounds": 2}
     r = client.post("/api/trainings", json=body, headers=auth)

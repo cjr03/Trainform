@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 from app import agent_profiles
 from app.main import app
-from app.models import DEFAULT_BASE_MODEL, SEED_AGENT, Agent, TrainedModel, Training, User
+from app.models import SEED_AGENT, Agent, TrainedModel, Training, User
 
 BODY = {"name": "  Support  ", "base_model": "tiny", "prompt": "Be helpful."}
 
@@ -192,35 +192,35 @@ def test_sync_agent_skips_a_training_on_another_base_model(db, user):
     assert (a.prompt, a.weights) == ("Be helpful.", None)
 
 
-def test_signup_seeds_the_bike_repair_agent(client):
+def test_signup_gives_no_agent(client):
     r = client.post("/api/auth/signup", json={"email": "ada@example.com", "username": "ada", "password": "password1",
                                               "password_confirm": "password1"})
-    auth = {"Authorization": f"Bearer {r.json()['token']}"}
-    [seeded] = client.get("/api/agents", headers=auth).json()
-    assert (seeded["name"], seeded["base_model"], seeded["prompt"], seeded["overall"]) == (
-        "Bike Repair Agent", DEFAULT_BASE_MODEL, SEED_AGENT["prompt"], None)
+    assert client.get("/api/agents", headers={"Authorization": f"Bearer {r.json()['token']}"}).json() == []
 
 
-def test_startup_seeds_agents_and_attaches_old_trainings(db, user):
+def test_startup_seeds_only_old_trainings_and_drops_untrained_seed_agents(db, user):
     db.execute(text("ALTER TABLE trainings DROP COLUMN agent_id"))  # a database from before agents
     db.commit()
     db.execute(text("INSERT INTO trainings (user_id, base_model, initial_prompt, rubric, scenarios_per_round, rounds,"
                     " status, current_round, scenarios_done) VALUES (:u, 'first', 'P', '[]', 1, 1, 'completed', 0, 0),"
                     " (:u, 'latest', 'P', '[]', 1, 1, 'completed', 0, 0)"), {"u": user.id})
-    carol = User(email="carol@example.com", username="carol", password_hash="x")
-    dave = User(email="dave@example.com", username="dave", password_hash="x")
-    db.add_all([carol, dave])
+    carol, dave, erin = (User(email=f"{n}@example.com", username=n, password_hash="x") for n in ("carol", "dave", "erin"))
+    db.add_all([carol, dave, erin])
     db.commit()
-    db.execute(text("INSERT INTO agents (user_id, name, base_model, prompt) VALUES (:u, 'Mine', 'tiny', 'P')"),
-               {"u": dave.id})
+    db.add_all([
+        Agent(user_id=dave.id, name="Mine", base_model="tiny", prompt="P"),
+        Agent(user_id=carol.id, base_model="tiny", **SEED_AGENT),  # seeded by an older signup, never trained
+        Agent(user_id=erin.id, base_model="tiny", name=SEED_AGENT["name"], prompt="Edited."),  # theirs now
+    ])
     db.commit()
     for _ in range(2):  # idempotent
         with TestClient(app):
             pass
     db.expire_all()
     agents = {a.user_id: a for a in db.query(Agent)}
-    assert len(agents) == 3 and agents[dave.id].name == "Mine"  # a user with an agent gets none
+    # Only the user with trainings from before agents gets the seed agent, for them; carol's untouched one is gone.
+    assert set(agents) == {user.id, dave.id, erin.id} and agents[dave.id].name == "Mine"
+    assert agents[erin.id].prompt == "Edited."
     assert (agents[user.id].name, agents[user.id].base_model, agents[user.id].prompt) == (
         "Bike Repair Agent", "latest", SEED_AGENT["prompt"])
-    assert agents[carol.id].base_model == DEFAULT_BASE_MODEL
     assert {t.agent_id for t in db.query(Training)} == {agents[user.id].id}

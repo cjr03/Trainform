@@ -9,10 +9,10 @@ test('make an agent from a model upload, train it and see its overall', async ({
   await signIn(page, user)
   page.on('dialog', (dialog) => dialog.accept()) // "Replace your prompt?"
 
-  // Agents: a new user has the seeded Bike Repair Agent, unranked.
+  // Agents: a new user starts with none.
   await page.getByRole('link', { name: 'Agents', exact: true }).click()
+  await expect(page.getByText('No agents yet. Make your first one.')).toBeVisible()
   const agents = page.getByRole('list', { name: 'Your agents' })
-  await expect(agents.getByRole('button', { name: /^Bike Repair Agent .* Unranked$/ })).toBeVisible()
 
   // New agent: upload a model zip through the UI and select it.
   const name = uid('agent')

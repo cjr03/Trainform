@@ -26,11 +26,10 @@ class User(Base):
     trainings: Mapped[list["Training"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
-# Every user gets this agent (see main.lifespan and auth.signup); trainings from before agents existed belong to it.
+# Trainings from before agents existed belong to this agent (see main.lifespan); no one else gets it.
 SEED_AGENT = {"name": "Bike Repair Agent",
               "prompt": "You are the support assistant for Spoke & Chain, a bike repair shop. Help customers with "
                         "repairs, maintenance and booking. Be friendly and clear."}
-DEFAULT_BASE_MODEL = "Qwen--Qwen3-0.6B"
 
 
 class Agent(Base):
