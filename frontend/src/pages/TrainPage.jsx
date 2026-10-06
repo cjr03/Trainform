@@ -590,7 +590,10 @@ function Dashboard({ onReset }) {
       training={training}
       pollError={pollError}
       onReset={onReset}
-      onPause={() => runControl(async () => setTraining(await api.pauseTraining(id)))}
+      onPause={() => {
+        setTraining((t) => ({ ...t, status: 'pausing' }))
+        runControl(async () => setTraining(await api.pauseTraining(id)))
+      }}
       onResume={() => runControl(async () => setTraining(await api.resumeTraining(id)))}
       busy={controlling}
       error={controlError}
