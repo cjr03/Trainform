@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 from app import agent_profiles, agents, fake
 from app.auth import current_user
 from app.db import SessionLocal, get_db
-from app.llm import Helper, LLMError, Stopped, chosen_llm, get_llm, local_llm
-from app.local_model import LocalModel, list_local_models
+from app.llm import Helper, LLMError, Stopped, chosen_llm, get_llm, local_llm, unload_route_model
+from app.local_model import LocalModel, free_memory, list_local_models
 from app.models import ACTIVE, Agent, Scenario, TrainedModel, Training, User
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,8 @@ PAUSE_POLL = 0.25  # seconds
 # Claude calls run here while their caller watches for a pause; a dropped call finishes here unwatched.
 _CALLS = ThreadPoolExecutor(32)  # ponytail: shared by all runs; per-run pools if many users pause at once between a run's checks for a pause request
 # Each run holds a loaded model and one of the 40 worker threads the sync routes share, so cap them process-wide.
-_SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "2")))
+# One at a time by default: two local trainings at once don't fit in 16 GiB.
+_SLOTS = threading.BoundedSemaphore(int(os.environ.get("TRAINFORM_MAX_TRAININGS", "1")))
 
 
 def _set_status(db: Session, t: Training, old: tuple, new: str, **values) -> bool:
@@ -375,9 +376,11 @@ def _start(background: BackgroundTasks, db: Session, llm, write, agent_llm) -> d
 
 def _run_in_slot(*args) -> None:
     try:
+        unload_route_model()  # the run loads its own copy
         run_training(*args)
     finally:
         _SLOTS.release()
+        free_memory()  # else torch keeps the run's peak cached, unusable by anything else
 
 
 def _helper(base_model: str, helper: Helper | None, llm):

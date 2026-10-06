@@ -1,5 +1,6 @@
 """Hugging Face Hub access, local model storage, generation, and LoRA SFT."""
 
+import gc
 import io
 import json
 import logging
@@ -193,6 +194,15 @@ def list_local_models(user_id: int) -> list[dict]:
     return models
 
 
+def free_memory() -> None:
+    """Return the memory torch caches after freeing tensors to the OS: on unified memory it is the whole machine's."""
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 class LocalModel:
     """A local causal LM wrapped with a LoRA adapter, so SFT updates stay small enough to store in Postgres."""
 
@@ -209,8 +219,12 @@ class LocalModel:
         # LoRA adapter in float32, so SFT updates are not lost to rounding.
         dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
         base = AutoModelForCausalLM.from_pretrained(path, use_safetensors=True, dtype=dtype)
-        lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, target_modules="all-linear", task_type="CAUSAL_LM")
+        # No LoRA dropout: each dropout keeps a copy of its input for backward, ~3 GiB at MAX_SFT_TOKENS.
+        lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.0, target_modules="all-linear", task_type="CAUSAL_LM")
         self.model = get_peft_model(base, lora).to(self.device)
+        # SFT recomputes each layer's activations in backward instead of keeping all 28: 20+ GiB down to ~4 GiB for
+        # ~1.3x the time. Only in train mode, so generation is unaffected.
+        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         self.model.eval()
 
     def _prompt_ids(self, system_prompt: str, conversation: str) -> list[int]:
@@ -323,6 +337,8 @@ class LocalModel:
                     optimizer.zero_grad()
         finally:
             self.model.eval()
+            del optimizer
+            free_memory()
         return sum(losses) / len(losses) if losses else 0.0
 
     def _losses(self, batch: list[tuple[list[int], list[int]]]) -> torch.Tensor:
@@ -331,9 +347,13 @@ class LocalModel:
         def pad(rows, value):
             return torch.tensor([r + [value] * (width - len(r)) for r in rows], device=self.device)
 
-        labels = pad([labels for _, labels in batch], -100)[:, 1:]
+        # Logits only from the shortest prompt's last token on: the full vocabulary (~152k) over a long prompt whose
+        # tokens carry no label is most of a step's memory.
+        start = min(next(i for i, t in enumerate(labels) if t != -100) for _, labels in batch)
+        labels = pad([labels for _, labels in batch], -100)[:, start:]
         logits = self.model(input_ids=pad([ids for ids, _ in batch], self.tokenizer.pad_token_id),
-                            attention_mask=pad([[1] * len(ids) for ids, _ in batch], 0)).logits[:, :-1]
+                            attention_mask=pad([[1] * len(ids) for ids, _ in batch], 0),
+                            logits_to_keep=width - start + 1).logits[:, :-1]
         token_losses = torch.nn.functional.cross_entropy(logits.transpose(1, 2).float(), labels, reduction="none")
         return token_losses.sum(1) / (labels != -100).sum(1)  # cross_entropy gives -100 labels a loss of 0
 

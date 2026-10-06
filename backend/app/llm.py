@@ -106,6 +106,25 @@ def chosen_llm(helper: Helper | None, llm):
 LOCAL_WAIT = 60  # seconds an agent request waits for the shared local model before giving up
 _ROUTE_MODEL = threading.Lock()  # the agent routes share one loaded model, which replies to one request at a time
 _loaded = {}
+ROUTE_IDLE = 120  # seconds the routes' model stays loaded after its last reply
+_idle = [None]  # the timer that unloads it
+
+
+def unload_route_model() -> None:
+    """Free the routes' model: it sat idle, or a training needs the memory."""
+    with _ROUTE_MODEL:
+        _loaded.clear()
+    local_model.free_memory()
+
+
+def _unload_when_idle() -> None:
+    # ponytail: unlocked, so two replies ending at once can leave two timers, and a timer that fired during a reply
+    # unloads right after it; either just costs the next request a reload.
+    if _idle[0]:
+        _idle[0].cancel()
+    _idle[0] = threading.Timer(ROUTE_IDLE, unload_route_model)
+    _idle[0].daemon = True
+    _idle[0].start()
 
 
 def _local_replies(model, pairs, schema, stop):
@@ -151,8 +170,9 @@ def local_llm(model, lock=None, stop=None):
             log.exception("Local model failed to reply")
             raise LLMError("The local model failed to reply") from e
         finally:
-            if lock:
+            if lock:  # the routes' model
                 lock.release()
+                _unload_when_idle()
 
     def llm(system, message, schema=None, effort=None):
         return many([(system, message)], schema)[0]
