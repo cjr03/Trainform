@@ -1,5 +1,6 @@
 import { CircleAlert, CircleUser, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Tooltip } from 'radix-ui'
 import KnightHelmet from '@/components/KnightHelmet'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -7,6 +8,25 @@ import { cn } from '@/lib/utils'
 import { api } from '../api'
 
 export const Spinner = () => <Loader2 className="animate-spin" />
+
+// The text an icon-only control shows on hover or keyboard focus; the control carries the same name as aria-label.
+export function Hint({ label, children }) {
+  return (
+    <Tooltip.Provider delayDuration={150}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            sideOffset={6}
+            className="z-50 rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background shadow-md"
+          >
+            {label}
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  )
+}
 
 export const ErrorAlert = ({ children }) =>
   children ? (

@@ -3,7 +3,7 @@ import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { Gem, Hammer, LogOut, Map as MapIcon, Search, Swords, UserRound } from 'lucide-react'
 import { api, clearToken, getToken, setToken } from './api'
 import KnightHelmet from '@/components/KnightHelmet'
-import { Avatar } from '@/components/shared'
+import { Avatar, Hint } from '@/components/shared'
 import { PublishDialog } from '@/components/social'
 import { profilePath } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -24,13 +24,15 @@ import SearchPage from './pages/SearchPage'
 import TrainPage from './pages/TrainPage'
 
 const NAV = [
-  ['Agents', Hammer],
-  ['Inspect', KnightHelmet],
-  ['Train', Swords],
-  ['Battle', Gem],
+  ['Agents', KnightHelmet],
+  ['Inspect', Gem],
+  ['Train', Hammer],
+  ['Battle', Swords],
 ]
+// Icon-only tabs: a full-height cell of the phone's bottom bar (a 48px touch target), a 36px button from sm up.
 const NAV_LINK =
-  'inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-center text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground lg:flex-none aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary'
+  'inline-flex h-12 flex-1 items-center justify-center rounded-md text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:size-9 sm:flex-none aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary'
+const ACTION = 'text-foreground sm:size-9 aria-[current=page]:text-primary'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => Boolean(getToken()))
@@ -68,63 +70,72 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-lg">
-        {/* The logo in the middle column; the tabs and icons share the right one on wide screens, and below lg the
-            tabs take a second row (the wrapper's `contents` lets them join the outer grid). */}
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-4 gap-y-2 px-4 py-2.5">
-          <span className="col-start-2 row-start-1 font-brand text-base font-bold tracking-[0.3em] text-gradient">
+      {/* Tabs left, logo centred, actions right: one row from sm up. On phones the tabs move to a bottom tab bar, in
+          thumb reach, and the logo goes left (centred, it would collide with the actions). The header blurs only from
+          sm up: a backdrop filter would make it the fixed bar's containing block. */}
+      <header className="sticky top-0 z-10 border-b bg-background sm:bg-background/80 sm:backdrop-blur-lg">
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 px-3 py-2 sm:gap-x-4 sm:px-4">
+          <nav
+            aria-label="Main"
+            className="fixed inset-x-0 bottom-0 z-10 flex border-t bg-background px-2 pb-[env(safe-area-inset-bottom)] sm:static sm:col-start-1 sm:row-start-1 sm:gap-1 sm:border-0 sm:bg-transparent sm:p-0"
+          >
+            {NAV.map(([name, Icon]) => (
+              <Hint key={name} label={name}>
+                <NavLink to={`/${name.toLowerCase()}`} aria-label={name} className={NAV_LINK}>
+                  <Icon aria-hidden="true" className="size-5" />
+                </NavLink>
+              </Hint>
+            ))}
+          </nav>
+          <span className="col-start-1 row-start-1 justify-self-start font-brand text-sm font-bold tracking-[0.2em] text-gradient sm:col-start-2 sm:justify-self-auto sm:text-base sm:tracking-[0.3em]">
             TRAINFORM
           </span>
-          <div className="contents lg:col-start-3 lg:row-start-1 lg:flex lg:items-center lg:justify-end lg:gap-1">
-            <nav aria-label="Main" className="col-span-3 row-start-2 flex gap-1">
-              {NAV.map(([name, Icon]) => (
-                <NavLink key={name} to={`/${name.toLowerCase()}`} className={NAV_LINK}>
-                  <Icon aria-hidden="true" className="size-4" />
-                  {name}
-                </NavLink>
-              ))}
-            </nav>
-            <div className="col-start-3 row-start-1 flex items-center justify-self-end">
-              <PublishDialog username={me?.username} />
-              <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
-                <NavLink to="/feed" aria-label="Feed" title="Feed">
-                  <MapIcon aria-hidden="true" />
+          <div className="col-start-3 row-start-1 flex items-center gap-0.5 justify-self-end sm:gap-1">
+            <PublishDialog username={me?.username} />
+            <Hint label="Feed">
+              <Button asChild variant="ghost" size="icon-sm" className={ACTION}>
+                <NavLink to="/feed" aria-label="Feed">
+                  <MapIcon aria-hidden="true" className="size-5" />
                 </NavLink>
               </Button>
-              <Button asChild variant="ghost" size="icon-sm" className="text-foreground aria-[current=page]:text-primary">
-                <NavLink to="/search" aria-label="Search Trainformers" title="Search Trainformers">
-                  <Search aria-hidden="true" />
+            </Hint>
+            <Hint label="Search Trainformers">
+              <Button asChild variant="ghost" size="icon-sm" className={ACTION}>
+                <NavLink to="/search" aria-label="Search Trainformers">
+                  <Search aria-hidden="true" className="size-5" />
                 </NavLink>
               </Button>
-              <DropdownMenu>
+            </Hint>
+            <DropdownMenu>
+              <Hint label="Account">
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label="Account menu" title="Account">
+                  <Button variant="ghost" size="icon-sm" className={ACTION} aria-label="Account menu">
                     <Avatar url={me?.avatar_url} />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="max-w-[calc(100vw-2rem)]">
-                  {me && (
-                    <DropdownMenuItem onSelect={() => navigate(profilePath(me.username))}>
-                      <Avatar url={me.avatar_url} />
-                      <span className="font-semibold wrap-anywhere">{me.username}</span>
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => navigate('/account')}>
-                    <UserRound aria-hidden="true" />
-                    Account
+              </Hint>
+              <DropdownMenuContent align="end" className="max-w-[calc(100vw-2rem)]">
+                {me && (
+                  <DropdownMenuItem onSelect={() => navigate(profilePath(me.username))}>
+                    <Avatar url={me.avatar_url} />
+                    <span className="font-semibold wrap-anywhere">{me.username}</span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={logout}>
-                    <LogOut aria-hidden="true" />
-                    Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => navigate('/account')}>
+                  <UserRound aria-hidden="true" />
+                  Account
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={logout}>
+                  <LogOut aria-hidden="true" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
-      <main className="w-full px-4 pt-8 pb-16">
+      <main className="w-full px-4 pt-8 pb-28 sm:pb-16">
         <Routes>
           <Route path="/train" element={<TrainPage />} />
           <Route path="/battle" element={<TrainPage key="battle" battle />} />
