@@ -35,6 +35,21 @@ it('routes signed-in users and defaults to Train', () => {
   expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
 })
 
+it('shows the tabs as icons in order, each named on hover and on keyboard focus', async () => {
+  setToken('tok')
+  renderAt('/train')
+  const tabs = screen.getAllByRole('link').filter((l) => l.closest('nav'))
+  expect(tabs.map((l) => l.getAttribute('aria-label'))).toEqual(['Agents', 'Inspect', 'Train', 'Battle'])
+  expect(tabs.map((l) => l.textContent)).toEqual(['', '', '', '']) // icons only
+  expect(screen.getByRole('link', { name: 'Train' })).toHaveAttribute('aria-current', 'page')
+  const user = userEvent.setup()
+  await user.hover(screen.getByRole('link', { name: 'Battle' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Battle')
+  await user.unhover(screen.getByRole('link', { name: 'Battle' }))
+  await user.tab() // the first control in the header: the Agents tab
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Agents')
+})
+
 it('opens the account menu: your profile, Account and Sign out', async () => {
   const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
   const bodies = {

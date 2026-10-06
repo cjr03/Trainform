@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
-import { AgentImage, Avatar, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { AgentImage, Avatar, ErrorAlert, Hint, Overall, Spinner } from '@/components/shared'
 import { cn, profilePath, replacePost, useAction } from '@/lib/utils'
 import { api } from '../api'
 
@@ -256,11 +256,13 @@ export function PublishDialog({ username }) {
 
   return (
     <Dialog.Root open={open} onOpenChange={toggle}>
-      <Dialog.Trigger asChild>
-        <Button variant="ghost" size="icon-sm" aria-label="Publish an agent" title="Publish an agent">
-          <Plus aria-hidden="true" />
-        </Button>
-      </Dialog.Trigger>
+      <Hint label="Publish an agent">
+        <Dialog.Trigger asChild>
+          <Button variant="ghost" size="icon-sm" className="sm:size-9" aria-label="Publish an agent">
+            <Plus aria-hidden="true" className="size-5" />
+          </Button>
+        </Dialog.Trigger>
+      </Hint>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <Dialog.Content className="fixed top-[50%] left-[50%] z-50 grid max-h-[90dvh] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-lg border bg-background p-6 shadow-lg sm:max-w-lg">
