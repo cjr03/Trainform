@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { createAgent, createTraining, createUser, openScenario, signIn } from './helpers'
+import { accountMenu, createAgent, createTraining, createUser, openScenario, signIn } from './helpers'
 
 test.use({ viewport: { width: 390, height: 844 } })
 
@@ -32,7 +32,7 @@ test('the signed-in pages fit a phone', async ({ page, request }) => {
   await expect(page.getByText('No trainings yet')).toBeVisible()
   expect(await fits(page)).toBe(true)
 
-  await page.getByRole('link', { name: 'Account', exact: true }).click()
+  await accountMenu(page, 'Account')
   await expect(page.getByRole('heading', { name: 'Claude linkage' })).toBeVisible()
   expect(await fits(page)).toBe(true)
 })

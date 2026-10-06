@@ -28,6 +28,7 @@ def test_fake_llm_satisfies_every_agent():
     assert improved != prompt and improved.startswith(prompt)
     assert agents.review_round(fake.fake_llm, improved, [], []) == improved  # does not keep growing
     assert agents.teacher_reply(fake.fake_llm, prompt, "hi", RUBRIC)
+    assert agents.draw_image(fake.fake_llm, "<username>\nada\n</username>", "ada").startswith("<svg")
 
 
 def test_fake_local_model():

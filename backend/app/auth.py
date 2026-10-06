@@ -133,10 +133,16 @@ def shared_key(user: User) -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
 
 
+def avatar_url(username: str, avatar_type: str | None) -> str | None:
+    """The API path (under /api) of a Trainformer's picture (see social.get_avatar), or None when they have none."""
+    return avatar_type and f"/social/users/{username}/avatar"
+
+
 def user_out(user: User) -> dict:
     linked = user.anthropic_key_encrypted is not None
     return {"id": user.id, "email": user.email, "username": user.username, "claude_linked": linked,
-            "claude_available": linked or bool(shared_key(user)) or fake.enabled()}  # what Train can offer
+            "claude_available": linked or bool(shared_key(user)) or fake.enabled(),  # what Train can offer
+            "avatar_url": avatar_url(user.username, user.avatar_type)}
 
 
 def _session(user: User) -> dict:

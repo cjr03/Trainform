@@ -84,6 +84,28 @@ export const api = {
   createAgent: (agent) => post('/agents', agent),
   updateAgent: (id, patch) => request(`/agents/${id}`, { method: 'PATCH', body: patch }),
   deleteAgent: (id) => request(`/agents/${id}`, { method: 'DELETE' }),
+  generateAgentImage: (id, helper) => post(`/agents/${id}/image/generate`, { helper }),
+  setAgentImage: (id, svg) => request(`/agents/${id}/image`, { method: 'PUT', body: { svg } }),
+
+  // Profile pictures: `avatar_url` is an API path, fetched with the token as a blob.
+  generateAvatar: (helper) => post('/me/avatar/generate', { helper }),
+  uploadAvatar: (blob) => {
+    const form = new FormData()
+    form.append('file', blob, 'avatar.png')
+    return request('/me/avatar', { method: 'PUT', form })
+  },
+  removeAvatar: () => request('/me/avatar', { method: 'DELETE' }),
+  avatar: (url) => request(url.replace(/^\/api/, '')),
+
+  searchUsers: (q) => request(`/social/users?${new URLSearchParams({ q })}`),
+  getProfile: (username) => request(`/social/users/${encodeURIComponent(username)}`),
+  follow: (username) => post(`/social/users/${encodeURIComponent(username)}/follow`),
+  unfollow: (username) => request(`/social/users/${encodeURIComponent(username)}/follow`, { method: 'DELETE' }),
+  publishPost: (agent_id, caption) => post('/social/posts', { agent_id, caption }),
+  feed: (before, limit = 20) => request(`/social/feed?${new URLSearchParams(before == null ? { limit } : { before, limit })}`),
+  deletePost: (id) => request(`/social/posts/${id}`, { method: 'DELETE' }),
+  vote: (id, value) => request(`/social/posts/${id}/vote`, { method: 'PUT', body: { value } }),
+  copyPost: (id) => post(`/social/posts/${id}/copy`),
 
   // `config`: {agent_id, rubric, scenarios, rounds, helper}
   startTraining: (config) => post('/trainings', config),

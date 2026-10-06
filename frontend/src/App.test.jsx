@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -26,15 +26,40 @@ it('routes signed-in users and defaults to Train', () => {
   renderAt('/')
   expect(screen.getByRole('navigation')).toBeInTheDocument()
   expect(screen.getByTestId('train-page')).toBeInTheDocument()
-  for (const name of ['Train', 'Agents', 'Inspect', 'Account']) {
+  for (const name of ['Train', 'Agents', 'Inspect', 'Feed', 'Search Trainformers']) {
     expect(screen.getByRole('link', { name })).toBeInTheDocument()
   }
+  for (const name of ['Publish an agent', 'Account menu']) {
+    expect(screen.getByRole('button', { name })).toBeInTheDocument()
+  }
+  expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+})
+
+it('opens the account menu: your profile, Account and Sign out', async () => {
+  const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
+  const bodies = {
+    '/api/me': { username: 'ada', avatar_url: null },
+    '/api/social/users/ada': { username: 'ada', followers: 0, following_count: 0, following: false, posts: [] },
+  }
+  vi.stubGlobal('fetch', vi.fn(async (url) => json(bodies[url] ?? [])))
+  setToken('tok')
+  renderAt('/train')
+  const user = userEvent.setup()
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/me', expect.anything()))
+  await user.click(screen.getByRole('button', { name: 'Account menu' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Account' }))
+  expect(await screen.findByTestId('account-page')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Account menu' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'ada' }))
+  expect(await screen.findByTestId('profile-page')).toBeInTheDocument()
 })
 
 it.each([
   ['/agents', 'agents-page'],
   ['/inspect', 'inspect-page'],
   ['/account', 'account-page'],
+  ['/feed', 'feed-page'],
+  ['/search', 'search-page'],
 ])('renders %s', (path, testId) => {
   setToken('tok')
   renderAt(path)
@@ -84,7 +109,8 @@ it('clears the token and the Train draft on Sign out', async () => {
   setToken('tok')
   renderAt('/train')
   expect(sessionStorage.getItem('trainform_train_draft')).not.toBeNull()
-  await userEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Account menu' }))
+  await userEvent.click(await screen.findByRole('menuitem', { name: 'Sign out' }))
   expect(screen.getByTestId('auth-page')).toBeInTheDocument()
   expect(getToken()).toBeNull()
   expect(sessionStorage.getItem('trainform_train_draft')).toBeNull()

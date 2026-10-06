@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import (JSON, CheckConstraint, ForeignKey, Index, LargeBinary, SmallInteger, String, Text,
+                        UniqueConstraint, func)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -16,6 +17,9 @@ class User(Base):
     token_version: Mapped[int] = mapped_column(server_default="0")  # bumped to revoke all of the user's tokens
     # Fernet ciphertext of the user's Anthropic API key ("Claude linkage"); never stored in plaintext.
     anthropic_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    # Profile picture: sanitised SVG or a PNG/JPEG/WebP checked by its magic bytes (see social.put_avatar).
+    avatar: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    avatar_type: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     # The user's list of training_ids.
@@ -40,6 +44,7 @@ class Agent(Base):
     prompt: Mapped[str] = mapped_column(Text)
     # Zipped LoRA adapter of its best trained model so far (see agent_profiles.sync_agent); None: the base weights.
     weights: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    image: Mapped[str | None] = mapped_column(Text)  # SVG markup that passed svg.sanitise
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -111,3 +116,38 @@ class TrainedModel(Base):
     weights: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     mean_score: Mapped[float]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Follow(Base):
+    __tablename__ = "follows"
+    __table_args__ = (CheckConstraint("follower_id <> followee_id"),)
+
+    follower_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    followee_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Post(Base):
+    """A published agent: a snapshot taken at publish time, so later edits or deleting the agent don't change it."""
+    __tablename__ = "posts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"))
+    caption: Mapped[str | None] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(String(100))
+    base_model: Mapped[str] = mapped_column(String(255))
+    prompt: Mapped[str] = mapped_column(Text)
+    weights: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    overall: Mapped[int | None]
+    image: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Vote(Base):
+    __tablename__ = "votes"
+    __table_args__ = (CheckConstraint("value IN (-1, 1)"),)
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True, index=True)
+    value: Mapped[int] = mapped_column(SmallInteger)

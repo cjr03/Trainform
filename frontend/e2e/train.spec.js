@@ -12,7 +12,7 @@ test('make an agent from a model upload, train it and see its overall', async ({
   // Agents: a new user has the seeded Bike Repair Agent, unranked.
   await page.getByRole('link', { name: 'Agents', exact: true }).click()
   const agents = page.getByRole('list', { name: 'Your agents' })
-  await expect(agents.getByRole('button', { name: /Unranked\s*Bike Repair Agent/ })).toBeVisible()
+  await expect(agents.getByRole('button', { name: /^Bike Repair Agent .* Unranked$/ })).toBeVisible()
 
   // New agent: upload a model zip through the UI and select it.
   const name = uid('agent')
@@ -115,7 +115,7 @@ test('make an agent from a model upload, train it and see its overall', async ({
   // The agent's overall is its best score x 10, and its past trainings list this one.
   const best = Number((await page.getByTestId('best-score').textContent()).split('/')[0])
   await page.getByRole('link', { name: 'Agents', exact: true }).click()
-  await expect(agents.getByRole('button', { name: new RegExp(`^Overall ${Math.round(best * 10)}\\s*${name}`) })).toBeVisible()
+  await expect(agents.getByRole('button', { name: new RegExp(`^${name} .* Overall ${Math.round(best * 10)}$`) })).toBeVisible()
   await agents.getByRole('button', { name: new RegExp(name) }).click()
   await expect(detail.getByRole('region', { name: 'Past trainings' })).toContainText(`#${id}`)
 })

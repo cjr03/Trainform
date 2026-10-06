@@ -19,7 +19,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
-import { Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { AgentImage, Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { FindAgent } from '@/components/social'
 import { cn, useAction } from '@/lib/utils'
 import { api } from '../api'
 
@@ -301,6 +302,7 @@ function NewAgent({ claudeAvailable, onCreated, onCancel }) {
   const [kind, setKind] = useState('local')
   const [model, setModel] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [source, setSource] = useState('own')
   const [run, busy, error] = useAction()
   const baseModel = kind === 'claude' ? 'claude' : model
   const create = () =>
@@ -311,56 +313,74 @@ function NewAgent({ claudeAvailable, onCreated, onCancel }) {
       <CardHeader className="max-sm:px-5">
         <h2 className="m-0 text-xl">New agent</h2>
         <CardDescription className="max-w-prose">
-          Name it, choose the model it runs on and write the system prompt it starts from.
+          Use your own: name it, choose the model it runs on and write the system prompt it starts from. Or find one
+          another Trainformer published and copy it.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-6 max-sm:px-5">
-        <div className="grid gap-2">
-          <Label htmlFor="agent-name">Name</Label>
-          <Input id="agent-name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div className="grid gap-3">
-          <span className="text-sm font-medium" id="agent-model">
-            Model
-          </span>
-          <Choice
-            aria-labelledby="agent-model"
-            value={kind}
-            onValueChange={setKind}
-            options={[
-              ['local', 'Local model'],
-              [
-                'claude',
-                'Claude',
-                { disabled: !claudeAvailable, 'aria-describedby': claudeAvailable === false ? 'agent-claude-hint' : undefined },
-              ],
-            ]}
-          />
-          {claudeAvailable === false && (
-            <p id="agent-claude-hint" className="m-0 text-sm text-muted-foreground">
-              Link your Claude API key on the{' '}
-              <Link to="/account" className="text-primary underline-offset-4 hover:underline">
-                Account
-              </Link>{' '}
-              page to make a Claude agent.
-            </p>
-          )}
-          {kind === 'claude' ? (
-            <p className="m-0 text-sm text-muted-foreground">{CLAUDE_NOTE}</p>
-          ) : (
-            <ModelPicker value={model} onChange={setModel} />
-          )}
-        </div>
-        <PromptEditor value={prompt} onChange={setPrompt} model={baseModel} />
+        <Choice
+          aria-label="Agent source"
+          value={source}
+          onValueChange={setSource}
+          options={[
+            ['own', 'Use my own'],
+            ['find', 'Find an agent'],
+          ]}
+        />
+        {source === 'find' ? (
+          <FindAgent onCopied={onCreated} />
+        ) : (
+          <>
+            <div className="grid gap-2">
+              <Label htmlFor="agent-name">Name</Label>
+              <Input id="agent-name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="grid gap-3">
+              <span className="text-sm font-medium" id="agent-model">
+                Model
+              </span>
+              <Choice
+                aria-labelledby="agent-model"
+                value={kind}
+                onValueChange={setKind}
+                options={[
+                  ['local', 'Local model'],
+                  [
+                    'claude',
+                    'Claude',
+                    { disabled: !claudeAvailable, 'aria-describedby': claudeAvailable === false ? 'agent-claude-hint' : undefined },
+                  ],
+                ]}
+              />
+              {claudeAvailable === false && (
+                <p id="agent-claude-hint" className="m-0 text-sm text-muted-foreground">
+                  Link your Claude API key on the{' '}
+                  <Link to="/account" className="text-primary underline-offset-4 hover:underline">
+                    Account
+                  </Link>{' '}
+                  page to make a Claude agent.
+                </p>
+              )}
+              {kind === 'claude' ? (
+                <p className="m-0 text-sm text-muted-foreground">{CLAUDE_NOTE}</p>
+              ) : (
+                <ModelPicker value={model} onChange={setModel} />
+              )}
+            </div>
+            <PromptEditor value={prompt} onChange={setPrompt} model={baseModel} />
+          </>
+        )}
         <ErrorAlert>{error}</ErrorAlert>
         {/* Not a form: the model picker holds forms of its own. */}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onCancel}>
             Cancel
           </Button>
-          <Button type="button" disabled={!name.trim() || !baseModel || !prompt.trim() || busy} onClick={create}>
-            {busy ? <Spinner /> : <Plus />}Create agent
-          </Button>
+          {source === 'own' && (
+            <Button type="button" disabled={!name.trim() || !baseModel || !prompt.trim() || busy} onClick={create}>
+              {busy ? <Spinner /> : <Plus />}Create agent
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -371,7 +391,9 @@ function AgentDetail({ id, onChanged, onDeleted }) {
   const [agent, setAgent] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [draft, setDraft] = useState(null) // the prompt being edited
+  const [svg, setSvg] = useState(null) // the image's SVG code being edited
   const [run, busy, error] = useAction()
+  const [runImage, imageBusy, imageError] = useAction()
 
   useEffect(() => {
     let live = true
@@ -389,8 +411,16 @@ function AgentDetail({ id, onChanged, onDeleted }) {
   const active = agent.trainings.some((t) => ACTIVE.includes(t.status))
   const save = () =>
     run(async () => {
-      setAgent({ ...agent, prompt: (await api.updateAgent(id, { prompt: draft.trim() })).prompt })
+      const { prompt } = await api.updateAgent(id, { prompt: draft.trim() })
+      setAgent((a) => ({ ...a, prompt }))
       setDraft(null)
+      onChanged()
+    })
+  const image = (call) =>
+    runImage(async () => {
+      const { image } = await call()
+      setAgent((a) => ({ ...a, image }))
+      setSvg(null)
       onChanged()
     })
   const remove = () =>
@@ -403,6 +433,7 @@ function AgentDetail({ id, onChanged, onDeleted }) {
     <Card role="region" aria-labelledby="agent-detail-name" className="gap-5 max-sm:py-5">
       <CardContent className="grid gap-5 max-sm:px-5">
         <div className="flex items-center gap-4">
+          <AgentImage svg={agent.image} alt={`${agent.name} image`} className="size-16 sm:size-24" />
           <Overall value={agent.overall} large />
           <div className="grid min-w-0 gap-1">
             <h2 id="agent-detail-name" className="m-0 text-2xl wrap-anywhere">
@@ -441,6 +472,45 @@ function AgentDetail({ id, onChanged, onDeleted }) {
               </div>
             </>
           )}
+        </section>
+
+        <section aria-label="Image" className="grid gap-2">
+          <h3 className="m-0 text-base">Image</h3>
+          {svg == null ? (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" disabled={imageBusy} onClick={() => image(() => api.generateAgentImage(id))}>
+                {imageBusy ? <Spinner /> : <Sparkles />}Generate image
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setSvg(agent.image ?? '')}>
+                Edit SVG
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto]">
+                <Textarea
+                  aria-label="SVG code"
+                  className="min-h-48 font-mono text-xs"
+                  placeholder={'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">…</svg>'}
+                  value={svg}
+                  onChange={(e) => setSvg(e.target.value)}
+                />
+                <AgentImage svg={svg.trim()} alt="Preview" className="size-32" />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" disabled={!svg.trim() || imageBusy} onClick={() => image(() => api.setAgentImage(id, svg.trim()))}>
+                  {imageBusy && <Spinner />}Save image
+                </Button>
+                <Button type="button" variant="outline" disabled={imageBusy} onClick={() => image(() => api.setAgentImage(id, null))}>
+                  Clear image
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setSvg(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </>
+          )}
+          <ErrorAlert>{imageError}</ErrorAlert>
         </section>
 
         <section aria-label="Past trainings" className="grid gap-2">
@@ -564,13 +634,14 @@ export default function AgentsPage() {
                   'aria-pressed:border-border-strong aria-pressed:bg-brand/8 aria-pressed:shadow-glow',
                 )}
               >
-                <Overall value={a.overall} />
-                <span className="grid min-w-0 gap-1">
+                <AgentImage svg={a.image} />
+                <span className="mr-auto grid min-w-0 gap-1">
                   <span className="font-semibold wrap-anywhere">{a.name}</span>
                   <span className="text-[0.8rem] text-muted-foreground wrap-anywhere">
                     {modelName(a.base_model)} · {count(a.trainings)}
                   </span>
                 </span>
+                <Overall value={a.overall} />
               </button>
             </li>
           ))}

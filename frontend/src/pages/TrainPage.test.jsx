@@ -20,6 +20,8 @@ vi.mock('../api', () => ({
     resumeTraining: vi.fn(),
     downloadPrompt: vi.fn(),
     downloadWeights: vi.fn(),
+    feed: vi.fn(),
+    copyPost: vi.fn(),
   },
   saveBlob: vi.fn(),
 }))
@@ -643,4 +645,31 @@ it('leaves how it works to the signed-out landing page', () => {
   render(<TrainPage />)
   expect(screen.getByRole('heading', { level: 1, name: 'Train an agent' })).toHaveClass('text-center')
   expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
+})
+
+it('finds an agent: copies a feed post into my agents and selects it', async () => {
+  const user = userEvent.setup()
+  const copy = { id: 3, name: 'Fixer', base_model: 'qwen-0.5b', prompt: 'Fix.', overall: 90, trainings: 0, model_available: true, image: '<svg/>' }
+  api.feed.mockResolvedValue([
+    { id: 5, author: 'bea', name: 'Fixer', base_model: 'qwen-0.5b', prompt: 'Fix.', overall: 90, score: 0, my_vote: 0, created_at: '2026-10-05T10:00:00Z' },
+  ])
+  api.copyPost.mockResolvedValue(copy)
+  render(<TrainPage />)
+  await bike()
+  await user.click(screen.getByRole('radio', { name: 'Find an agent' }))
+  api.listAgents.mockResolvedValue([...AGENTS, copy])
+  await user.click(await screen.findByRole('button', { name: 'Use this agent' }))
+  expect(api.copyPost).toHaveBeenCalledWith(5)
+  expect(await screen.findByRole('radio', { name: /Fixer/ })).toBeChecked()
+  expect(screen.getByRole('radio', { name: 'Use my own' })).toBeChecked()
+  expect(nextButton()).toBeEnabled()
+})
+
+it("won't train a copied agent until its base model is downloaded", async () => {
+  api.listAgents.mockResolvedValue([{ ...AGENTS[0], model_available: false }])
+  const user = userEvent.setup()
+  render(<TrainPage />)
+  await user.click(await bike())
+  expect(screen.getByRole('status')).toHaveTextContent("qwen-0.5b isn't downloaded yet")
+  expect(nextButton()).toBeDisabled()
 })

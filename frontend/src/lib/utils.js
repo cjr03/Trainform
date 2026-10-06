@@ -23,3 +23,7 @@ export function useAction() {
   }
   return [run, busy, error]
 }
+
+export const profilePath = (username) => `/u/${encodeURIComponent(username)}`
+// Swaps the updated post into a list of posts.
+export const replacePost = (post) => (posts) => posts.map((p) => (p.id === post.id ? post : p))

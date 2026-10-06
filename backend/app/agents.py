@@ -1,4 +1,4 @@
-"""The seven Trainform agents. Each helper takes `llm(system, message, schema=None, effort="medium")` as its first
+"""The eight Trainform agents. Each helper takes `llm(system, message, schema=None, effort="medium")` as its first
 argument."""
 
 import random
@@ -10,6 +10,7 @@ from statistics import fmean
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app import svg
 from app.auth import current_user
 from app.llm import BadReply, Helper, LLMError, chosen_llm, get_llm, llm_or_local
 from app.models import User
@@ -194,6 +195,21 @@ Customer: a busy parent who is impatient and blunt. Need: I'm angry that you cha
 Message: You charged my card twice for the same order. This is ridiculous. Fix it today.
 
 Write only the message."""
+IMAGE_SYSTEM = """\
+You are a game artist who draws avatars as SVG code.
+
+You will receive a subject inside tags: an AI agent (its name and system prompt) or a Trainformer (a user of an app \
+for training AI agents, by username). Draw its avatar: a square game-character portrait or heraldic crest that \
+captures who it is and what it does.
+
+Rules:
+- One <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"> root.
+- Flat shapes only: g, defs, path, circle, ellipse, rect, line, polyline, polygon, linearGradient, radialGradient, \
+stop, clipPath, mask and use with "#id" references. Gradients are welcome; text is not needed.
+- No script, style element, event handler, foreignObject, image, animation, external reference or link.
+- Bold, readable at 48 pixels, a full background, under 12 KB.
+
+Reply with the SVG markup."""
 CUSTOMERS = (
     "a student who types short, casual messages with typos", "a retired teacher who writes politely and in full "
     "sentences", "a busy parent who is impatient and blunt", "a first-timer who is unsure and a little nervous",
@@ -218,6 +234,7 @@ def _array(items):
 STRING, INTEGER = {"type": "string"}, {"type": "integer"}
 PROMPT_SCHEMA = _schema(prompt=STRING)
 REPLY_SCHEMA = _schema(reply=STRING)
+SVG_SCHEMA = _schema(svg=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
 SCORE_SCHEMA = _schema(score=INTEGER)
 
@@ -408,6 +425,15 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
         raise LLMError("The model returned no personas")
     return [{"attributes": [{"criterion": c, "rating": r} for c, r in zip(rubric, ratings)], "prompt": prompt}
             for ratings, prompt in (personas[i % len(personas)] for i in range(n))]
+
+
+def draw_image(llm, subject: str, seed: str) -> str:
+    """Image agent: a subject (_tag sections) -> sanitised avatar SVG. An unusable drawing is asked for again once
+    (svg.sanitise's ValueError becomes a BadReply in _parse). Without Claude (`llm` None), the code-drawn emblem
+    seeded by `seed`: the small local model can't draw."""
+    if not llm:
+        return svg.sanitise(svg.emblem(seed))
+    return _ask(partial(llm, effort="low"), IMAGE_SYSTEM, subject, SVG_SCHEMA, lambda out: svg.sanitise(out["svg"]))
 
 
 def _voiced(context: str, message: str) -> str:

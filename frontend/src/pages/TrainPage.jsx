@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { AgentImage, Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { FindAgent } from '@/components/social'
 import { cn, useAction } from '@/lib/utils'
 import { api, saveBlob } from '../api'
 import { CLAUDE_NOTE } from './AgentsPage'
@@ -281,7 +282,10 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
-function AgentStep({ agents, error, value, onChange }) {
+// "Use my own" picks one of your agents; "Find an agent" copies a published one into them and picks it.
+function AgentStep({ agents, error, value, onChange, onCopied }) {
+  const [source, setSource] = useState('own')
+  const agent = agents?.find((a) => a.id === value)
   const link = (
     <Link to="/agents" className="text-primary underline-offset-4 hover:underline">
       Agents page
@@ -292,32 +296,58 @@ function AgentStep({ agents, error, value, onChange }) {
       <span id="train-agents" className="text-sm font-medium">
         Agent
       </span>
-      {!agents && !error && <Spinner />}
-      <ErrorAlert>{error}</ErrorAlert>
-      {agents?.length === 0 && <p className="m-0 text-sm text-muted-foreground">No agents yet. Make one on the {link}.</p>}
-      <RadioGroup
-        aria-labelledby="train-agents"
-        value={value == null ? '' : String(value)}
-        onValueChange={(v) => onChange(Number(v))}
-        className="grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2"
-      >
-        {agents?.map((a) => (
-          <label
-            key={a.id}
-            className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
+      <Choice
+        aria-label="Agent source"
+        value={source}
+        onValueChange={setSource}
+        options={[
+          ['own', 'Use my own'],
+          ['find', 'Find an agent'],
+        ]}
+      />
+      {source === 'find' ? (
+        <FindAgent
+          onCopied={(a) => {
+            setSource('own')
+            onCopied(a)
+          }}
+        />
+      ) : (
+        <>
+          {!agents && !error && <Spinner />}
+          <ErrorAlert>{error}</ErrorAlert>
+          {agents?.length === 0 && <p className="m-0 text-sm text-muted-foreground">No agents yet. Make one on the {link}.</p>}
+          <RadioGroup
+            aria-labelledby="train-agents"
+            value={value == null ? '' : String(value)}
+            onValueChange={(v) => onChange(Number(v))}
+            className="grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2"
           >
-            <RadioGroupItem value={String(a.id)} />
-            <span className="mr-auto grid min-w-0 gap-0.5">
-              <span className="font-semibold wrap-anywhere">{a.name}</span>
-              <span className="text-xs text-muted-foreground wrap-anywhere">
-                {a.base_model === 'claude' ? 'Claude' : a.base_model}
-              </span>
-            </span>
-            <Overall value={a.overall} />
-          </label>
-        ))}
-      </RadioGroup>
-      {agents?.length > 0 && <p className="m-0 text-sm text-muted-foreground">Make or edit agents on the {link}.</p>}
+            {agents?.map((a) => (
+              <label
+                key={a.id}
+                className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
+              >
+                <RadioGroupItem value={String(a.id)} />
+                <AgentImage svg={a.image} className="size-8" />
+                <span className="mr-auto grid min-w-0 gap-0.5">
+                  <span className="font-semibold wrap-anywhere">{a.name}</span>
+                  <span className="text-xs text-muted-foreground wrap-anywhere">
+                    {a.base_model === 'claude' ? 'Claude' : a.base_model}
+                  </span>
+                </span>
+                <Overall value={a.overall} />
+              </label>
+            ))}
+          </RadioGroup>
+          {agent?.model_available === false && (
+            <p role="status" className="m-0 text-sm text-warning">
+              {agent.base_model} isn't downloaded yet. Download it from the Hub (Agents page, New agent) before training.
+            </p>
+          )}
+          {agents?.length > 0 && <p className="m-0 text-sm text-muted-foreground">Make or edit agents on the {link}.</p>}
+        </>
+      )}
     </div>
   )
 }
@@ -345,7 +375,8 @@ function Dashboard({ onReset }) {
   const claudeAgent = agent?.base_model === 'claude'
   const criteria = rubric.map((c) => c.trim()).filter(Boolean)
   const valid = [
-    Boolean(agent) && !(claudeAgent && helper === 'local'), // a Claude agent needs Claude as the helper
+    // A Claude agent needs Claude as the helper; a copied agent may need its model downloaded first.
+    Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false,
     criteria.length > 0,
     inRange(Number(scenarios), 100) && inRange(Number(rounds), 50),
   ]
@@ -456,7 +487,16 @@ function Dashboard({ onReset }) {
 
   const content = [
     <div key="agent" className="grid gap-6">
-      <AgentStep agents={agents} error={agentsError} value={agentId} onChange={setAgentId} />
+      <AgentStep
+        agents={agents}
+        error={agentsError}
+        value={agentId}
+        onChange={setAgentId}
+        onCopied={(a) => {
+          api.listAgents().then(setAgents, (e) => setAgentsError(e.message))
+          setAgentId(a.id)
+        }}
+      />
       <div className="grid gap-2">
         <span className="text-sm font-medium" id="train-helper">
           Train with

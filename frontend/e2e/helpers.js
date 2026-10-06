@@ -80,3 +80,9 @@ export async function openScenario(page, training) {
   await page.getByRole('region', { name: 'Scenarios' }).getByRole('button', { name: /^Scenario 1/ }).click()
   return page.getByRole('region', { name: 'Scenario 1', exact: true })
 }
+
+// Picks `item` ("Account", "Sign out" or your username) from the header's account menu.
+export async function accountMenu(page, item) {
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('menuitem', { name: item, exact: true }).click()
+}

@@ -10,6 +10,8 @@ import re
 import time
 import zipfile
 
+from app import svg
+
 
 def enabled() -> bool:
     return os.environ.get("TRAINFORM_FAKE_LLM") == "1"
@@ -55,6 +57,8 @@ def fake_llm(system: str, message: str, schema: dict | None = None, effort: str 
         return {"prompt": f"You are an AI agent for: {about}\n\nHelp users with that, briefly and politely."}
     if key == "reply":  # teacher
         return {"reply": "Thanks for reaching out! Could you tell me a little more so I can help?"}
+    if key == "svg":
+        return {"svg": svg.emblem(message)}
     if key == "criteria":
         return {"criteria": CRITERIA}
     if key == "scores":  # one score per criterion key (c1, c2, ...) the schema requires

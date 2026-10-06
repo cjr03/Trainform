@@ -9,9 +9,11 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
+from app import svg
+from app.agents import _tag, draw_image
 from app.auth import current_user
 from app.db import get_db
-from app.llm import chosen_llm, get_llm
+from app.llm import Helper, LLMError, chosen_llm, get_llm
 from app.local_model import list_local_models
 from app.models import ACTIVE, Agent, TrainedModel, Training, User
 
@@ -30,6 +32,14 @@ class AgentIn(BaseModel):
 class AgentPatch(BaseModel):
     name: Name | None = None
     prompt: Prompt | None = None
+
+
+class ImageIn(BaseModel):
+    svg: str | None  # None clears it
+
+
+class GenerateIn(BaseModel):
+    helper: Helper | None = None
 
 
 def owned(db: Session, agent_id: int, user: User) -> Agent:
@@ -52,10 +62,17 @@ def sync_agent(db: Session, t: Training) -> None:
     db.execute(update(Agent).where(Agent.id == t.agent_id, Agent.base_model == t.base_model).values(**values))
 
 
-def _out(a: Agent, best: float | None, trainings) -> dict:
-    """`best`: the agent's highest score over its trainings' trained rounds, as a 0-100 "overall" (None: Unranked)."""
-    return {"id": a.id, "name": a.name, "base_model": a.base_model, "prompt": a.prompt,
-            "overall": None if best is None else round(10 * best), "trainings": trainings, "created_at": a.created_at}
+def available_models(user: User) -> set[str]:
+    """The base models the user's agents can run on: "claude" and the user's local models."""
+    return {"claude"} | {m["name"] for m in list_local_models(user.id)}
+
+
+def _out(models: set[str], a: Agent, best: float | None, trainings) -> dict:
+    """`best`: the agent's highest score over its trainings' trained rounds, as a 0-100 "overall" (None: Unranked).
+    `models`: available_models; an agent copied from a post may be on a model the user has yet to download."""
+    return {"id": a.id, "name": a.name, "base_model": a.base_model, "prompt": a.prompt, "image": a.image,
+            "model_available": a.base_model in models, "overall": None if best is None else round(10 * best),
+            "trainings": trainings, "created_at": a.created_at}
 
 
 def _rows(db: Session, user: User, agent_id: int | None = None) -> list:
@@ -79,14 +96,15 @@ def _name_taken(db: Session) -> HTTPException:
 
 @router.get("")
 def list_agents(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return [_out(*row) for row in _rows(db, user)]
+    models = available_models(user)
+    return [_out(models, *row) for row in _rows(db, user)]
 
 
 @router.post("", status_code=201)
 def create_agent(body: AgentIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if body.base_model == "claude":
         chosen_llm("claude", get_llm(user))  # 400 unless the user can call Claude
-    elif body.base_model not in {m["name"] for m in list_local_models(user.id)}:
+    elif body.base_model not in available_models(user):
         raise HTTPException(400, f"Unknown base model: {body.base_model}")
     a = Agent(user_id=user.id, name=body.name, base_model=body.base_model, prompt=body.prompt)
     db.add(a)
@@ -94,7 +112,7 @@ def create_agent(body: AgentIn, user: User = Depends(current_user), db: Session 
         db.commit()
     except IntegrityError:
         raise _name_taken(db) from None
-    return _out(a, None, 0)
+    return _out({body.base_model}, a, None, 0)
 
 
 @router.get("/{agent_id}")
@@ -108,7 +126,7 @@ def get_agent(agent_id: int, user: User = Depends(current_user), db: Session = D
         .outerjoin(best, best.id == Training.best_model_id)
         .outerjoin(baseline, (baseline.training_id == Training.id) & (baseline.round == 0))
         .where(Training.agent_id == agent_id).order_by(Training.id.desc())).mappings().all()
-    return _out(*row) | {"trainings": [dict(t) for t in trainings]}
+    return _out(available_models(user), *row) | {"trainings": [dict(t) for t in trainings]}
 
 
 @router.patch("/{agent_id}")
@@ -123,7 +141,35 @@ def update_agent(agent_id: int, body: AgentPatch, user: User = Depends(current_u
         if not changed:
             raise HTTPException(409, "Wait for the agent's training to pause or finish first.")
         db.commit()
-    return _out(*_rows(db, user, agent_id)[0])
+    return _out(available_models(user), *_rows(db, user, agent_id)[0])
+
+
+def _set_image(db: Session, user: User, a: Agent, image: str | None) -> dict:
+    a.image = image
+    db.commit()
+    return _out(available_models(user), *_rows(db, user, a.id)[0])
+
+
+@router.put("/{agent_id}/image")
+def put_image(agent_id: int, body: ImageIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    a = owned(db, agent_id, user)
+    try:
+        image = None if body.svg is None else svg.sanitise(body.svg)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return _set_image(db, user, a, image)
+
+
+@router.post("/{agent_id}/image/generate")
+def generate_image(agent_id: int, body: GenerateIn, user: User = Depends(current_user),
+                   db: Session = Depends(get_db), llm=Depends(get_llm)):
+    a = owned(db, agent_id, user)
+    subject = f"{_tag('agent_name', a.name)}\n\n{_tag('agent_prompt', a.prompt[:4000])}"
+    try:
+        image = draw_image(chosen_llm(body.helper, llm), subject, a.name)
+    except LLMError as e:
+        raise HTTPException(502, str(e)) from e
+    return _set_image(db, user, a, image)
 
 
 @router.delete("/{agent_id}", status_code=204)

@@ -547,3 +547,11 @@ it('offers no weights for a completed Claude training', async () => {
   expect(screen.getByRole('button', { name: 'Download prompt' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Download weights' })).not.toBeInTheDocument()
 })
+
+it("shows each agent's image in the picker, the knight helmet without one", async () => {
+  api.listAgents.mockResolvedValue([{ ...agents[0], image: '<svg/>' }, agents[1]])
+  renderPage()
+  const bike = await screen.findByRole('button', { name: /Bike Repair Agent/ })
+  expect(bike.querySelector('img')).toHaveAttribute('src', `data:image/svg+xml;utf8,${encodeURIComponent('<svg/>')}`)
+  expect(screen.getByRole('button', { name: /Writer/ }).querySelector('img')).toBeNull()
+})

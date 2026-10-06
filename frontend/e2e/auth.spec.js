@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { createUser, signIn, uid } from './helpers'
+import { accountMenu, createUser, signIn, uid } from './helpers'
 
 test('the auth card offers sign in and create account', async ({ page }) => {
   await page.goto('/')
@@ -35,7 +35,7 @@ test('sign up through every phase, skip Claude, land on Train and sign out', asy
   await expect(page).toHaveURL(/\/train$/)
   await expect(page.getByRole('heading', { name: 'Train an agent' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Sign out' }).click()
+  await accountMenu(page, 'Sign out')
   await expect(page.getByRole('tab', { name: 'Sign in' })).toBeVisible()
 })
 

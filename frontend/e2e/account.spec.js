@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test'
-import { createUser, signIn } from './helpers'
+import { accountMenu, createUser, signIn } from './helpers'
 
 let user
 test.beforeEach(async ({ page, request }) => {
   user = await createUser(request)
   await signIn(page, user)
-  await page.getByRole('link', { name: 'Account', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible()
+  await accountMenu(page, 'Account')
+  await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
 })
 
 test('shows the profile with a masked password', async ({ page }) => {
@@ -22,7 +22,7 @@ test('change the password, then sign in with the new one', async ({ page }) => {
   await page.getByRole('button', { name: 'Change password' }).click()
   await expect(page.getByRole('status')).toHaveText('Password changed.')
 
-  await page.getByRole('button', { name: 'Sign out' }).click()
+  await accountMenu(page, 'Sign out')
   await signIn(page, { ...user, password: 'new-password-e2e' })
 })
 
@@ -38,4 +38,19 @@ test('link and unlink a Claude key', async ({ page }) => {
   await card.getByRole('button', { name: 'Unlink' }).click()
   await expect(card.getByRole('status')).toHaveText('Key removed.')
   await expect(card.getByText('Not linked')).toBeVisible()
+})
+
+test('upload a profile picture, see it in the header, then remove it', async ({ page, request }) => {
+  const card = page.getByRole('region', { name: 'Profile picture' })
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), card.getByRole('button', { name: 'Upload' }).click()])
+  await chooser.setFiles({ name: 'me.png', mimeType: 'image/png', buffer: png })
+  await expect(card.getByRole('img', { name: 'Your profile picture' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Account menu' }).locator('img')).toBeVisible()
+  const avatar = await request.get(`/api/social/users/${user.username}/avatar`, { headers: user.auth })
+  expect(avatar.headers()['content-type']).toBe('image/png')
+
+  await card.getByRole('button', { name: 'Remove' }).click()
+  await expect(card.getByRole('img', { name: 'Your profile picture' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Account menu' }).locator('img')).toHaveCount(0)
 })

@@ -44,7 +44,8 @@ def test_create_and_list(authed_client, models, db, user):
     assert r.status_code == 201
     created = r.json()
     assert created == {"id": created["id"], "name": "Support", "base_model": "tiny", "prompt": "Be helpful.",
-                       "overall": None, "trainings": 0, "created_at": created["created_at"]}
+                       "image": None, "model_available": True, "overall": None, "trainings": 0,
+                       "created_at": created["created_at"]}
     a = add_agent(db, user, name="Another")
     add_training(db, a, scores=[6.0, 7.24, 6.5])
     add_training(db, a, scores=[5.0, 8.26])

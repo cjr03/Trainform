@@ -16,7 +16,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Overall } from '@/components/shared'
+import { AgentImage, Overall } from '@/components/shared'
 import { cn } from '@/lib/utils'
 import { api, saveBlob } from '../api'
 import './InspectPage.css'
@@ -363,7 +363,10 @@ export default function InspectPage() {
         >
           {agents.data?.map((a) => (
             <Option key={a.id} selected={a.id === agentId} onSelect={() => pickAgent(a.id)}>
-              <span className={OPTION_MAIN}>{a.name}</span>
+              <span className={cn(OPTION_MAIN, 'flex items-center gap-2')}>
+                <AgentImage svg={a.image} className="size-6 rounded-md" />
+                {a.name}
+              </span>
               <span className={OPTION_META}>
                 {a.base_model === 'claude' ? 'Claude' : a.base_model} · {a.trainings}{' '}
                 {a.trainings === 1 ? 'training' : 'trainings'}

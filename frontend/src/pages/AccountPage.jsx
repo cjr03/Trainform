@@ -1,12 +1,13 @@
-import { CircleAlert, Laptop, Loader2, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { CircleAlert, Laptop, Loader2, Sparkles, Trash2, Upload } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { cn } from '@/lib/utils'
+import { Avatar } from '@/components/shared'
+import { cn, useAction } from '@/lib/utils'
 import { api } from '../api'
 
 const spinner = <Loader2 className="animate-spin" aria-hidden="true" />
@@ -37,7 +38,7 @@ function Field({ label, ...props }) {
   )
 }
 
-export default function AccountPage() {
+export default function AccountPage({ onUser }) {
   const [user, setUser] = useState(null)
   const [error, setError] = useState('')
 
@@ -75,11 +76,87 @@ export default function AccountPage() {
               </dl>
             </CardContent>
           </Card>
+          <ProfilePicture
+            user={user}
+            onChange={(u) => {
+              setUser(u)
+              onUser?.(u)
+            }}
+          />
           <PasswordForm />
           <ClaudeLink user={user} setUser={setUser} />
         </div>
       )}
     </div>
+  )
+}
+
+// Any picked image becomes a 256x256 PNG (centre-cropped square), so uploads stay small.
+async function toPng(file) {
+  const img = new Image()
+  img.src = URL.createObjectURL(file)
+  try {
+    await img.decode()
+  } finally {
+    URL.revokeObjectURL(img.src)
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 256
+  const w = img.naturalWidth || 256
+  const h = img.naturalHeight || 256
+  const side = Math.min(w, h)
+  canvas.getContext('2d').drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, 256, 256)
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+}
+
+function ProfilePicture({ user, onChange }) {
+  const file = useRef(null)
+  const [runAction, busy, error] = useAction()
+  // A changed picture comes with a fresh URL (?v=), so no cache keeps showing the old one.
+  const run = (call) => runAction(async () => onChange({ ...user, avatar_url: (await call())?.avatar_url ?? null }))
+  const upload = (e) => {
+    const picked = e.target.files[0]
+    e.target.value = '' // so picking the same file again still uploads it
+    if (picked)
+      run(async () => {
+        const png = await toPng(picked).catch(() => null)
+        if (!png) throw new Error("That file isn't an image we can read.")
+        return api.uploadAvatar(png)
+      })
+  }
+
+  return (
+    <Card aria-labelledby="picture-title" role="region">
+      <CardHeader>
+        <CardTitle>
+          <h2 id="picture-title" className="m-0 text-lg">Profile picture</h2>
+        </CardTitle>
+        <CardDescription>Shown to other Trainformers on your profile and posts.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap items-center gap-5">
+        <Avatar url={user.avatar_url} alt="Your profile picture" className="size-24" />
+        <div className="grid gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" disabled={busy} onClick={() => run(() => api.generateAvatar())}>
+              {busy ? spinner : <Sparkles aria-hidden="true" />}
+              Generate
+            </Button>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => file.current.click()}>
+              <Upload aria-hidden="true" />
+              Upload
+            </Button>
+            <input ref={file} type="file" accept="image/*" aria-label="Picture file" hidden onChange={upload} />
+            {user.avatar_url && (
+              <Button type="button" variant="ghost" className="text-destructive" disabled={busy} onClick={() => run(api.removeAvatar)}>
+                <Trash2 aria-hidden="true" />
+                Remove
+              </Button>
+            )}
+          </div>
+          {error && <ErrorAlert>{error}</ErrorAlert>}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

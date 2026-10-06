@@ -479,3 +479,16 @@ def test_concurrently_runs_local_model_calls_in_turn():
     threads = []
     assert agents.concurrently(LocalLLM(), lambda x: threads.append(threading.get_ident()) or x, [1, 2, 3]) == [1, 2, 3]
     assert threads == [threading.get_ident()] * 3
+
+
+def test_draw_image_sanitises_retries_a_bad_drawing_once_and_falls_back_to_the_emblem():
+    good = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1" onload="x()"/><script>x()</script></svg>'
+    llm = FakeLLM({"svg": "<html/>"}, {"svg": good})
+    assert agents.draw_image(llm, "<username>\nada\n</username>", "ada") == (
+        '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1" /></svg>')
+    assert llm.calls[0][:2] == (agents.IMAGE_SYSTEM, "<username>\nada\n</username>")
+    assert_strict(llm.calls[0][2])
+    assert llm.kwargs[0] == {"effort": "low"}
+    with pytest.raises(BadReply):
+        agents.draw_image(FakeLLM({"svg": "<html/>"}, {"svg": "<!DOCTYPE x><svg/>"}), "s", "ada")
+    assert agents.draw_image(None, "s", "ada") == agents.svg.sanitise(agents.svg.emblem("ada"))  # no model call without Claude

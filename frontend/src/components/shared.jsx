@@ -1,7 +1,10 @@
-import { CircleAlert, Loader2 } from 'lucide-react'
+import { CircleAlert, CircleUser, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import KnightHelmet from '@/components/KnightHelmet'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { cn } from '@/lib/utils'
+import { api } from '../api'
 
 export const Spinner = () => <Loader2 className="animate-spin" />
 
@@ -55,5 +58,39 @@ export function Overall({ value, large, className }) {
         </>
       )}
     </span>
+  )
+}
+
+// An agent's SVG image, only ever as an <img> data URL so no script in it can run. The knight helmet stands in without one.
+export function AgentImage({ svg, alt = '', className }) {
+  const box = cn('size-12 shrink-0 rounded-lg', className)
+  return svg ? (
+    <img src={`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`} alt={alt} className={cn(box, 'bg-background/40')} />
+  ) : (
+    <KnightHelmet className={cn(box, 'border bg-brand/8 p-1.5 text-brand')} />
+  )
+}
+
+// A Trainformer's profile picture: `url` is an API path fetched with the token, so it shows from an object URL.
+export function Avatar({ url, alt = '', className }) {
+  const [shown, setShown] = useState({})
+  useEffect(() => {
+    if (!url) return
+    let live = true
+    let src
+    api.avatar(url).then(
+      (blob) => live && setShown({ url, src: (src = URL.createObjectURL(blob)) }),
+      () => {}, // the icon stays
+    )
+    return () => {
+      live = false
+      if (src) URL.revokeObjectURL(src)
+    }
+  }, [url])
+  const box = cn('size-6 shrink-0 rounded-full', className)
+  return url && shown.url === url ? (
+    <img src={shown.src} alt={alt} className={cn(box, 'object-cover')} />
+  ) : (
+    <CircleUser aria-hidden="true" className={box} />
   )
 }

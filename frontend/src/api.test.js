@@ -132,6 +132,24 @@ describe('api', () => {
     ['pauseTraining', [3], 'POST', '/trainings/3/pause'],
     ['resumeTraining', [3], 'POST', '/trainings/3/resume'],
     ['deleteTraining', [3], 'DELETE', '/trainings/3'],
+    ['generateAgentImage', [4, 'local'], 'POST', '/agents/4/image/generate', { helper: 'local' }],
+    ['generateAgentImage', [4], 'POST', '/agents/4/image/generate', {}],
+    ['setAgentImage', [4, '<svg/>'], 'PUT', '/agents/4/image', { svg: '<svg/>' }],
+    ['setAgentImage', [4, null], 'PUT', '/agents/4/image', { svg: null }],
+    ['generateAvatar', ['claude'], 'POST', '/me/avatar/generate', { helper: 'claude' }],
+    ['removeAvatar', [], 'DELETE', '/me/avatar'],
+    ['avatar', ['/social/users/ada/avatar?v=2'], 'GET', '/social/users/ada/avatar?v=2'],
+    ['avatar', ['/api/social/users/ada/avatar'], 'GET', '/social/users/ada/avatar'],
+    ['searchUsers', ['a b'], 'GET', '/social/users?q=a+b'],
+    ['getProfile', ['a/b'], 'GET', '/social/users/a%2Fb'],
+    ['follow', ['ada'], 'POST', '/social/users/ada/follow'],
+    ['unfollow', ['ada'], 'DELETE', '/social/users/ada/follow'],
+    ['publishPost', [4, 'Hi'], 'POST', '/social/posts', { agent_id: 4, caption: 'Hi' }],
+    ['feed', [], 'GET', '/social/feed?limit=20'],
+    ['feed', [9, 5], 'GET', '/social/feed?before=9&limit=5'],
+    ['deletePost', [9], 'DELETE', '/social/posts/9'],
+    ['vote', [9, -1], 'PUT', '/social/posts/9/vote', { value: -1 }],
+    ['copyPost', [9], 'POST', '/social/posts/9/copy'],
   ])('%s sends %s %s', async (name, args, method, path, body) => {
     const fetch = respond(200, {})
     vi.stubGlobal('fetch', fetch)
@@ -150,6 +168,15 @@ describe('api', () => {
     expect(init.body).toBeInstanceOf(FormData)
     expect(init.body.get('name')).toBe('mine')
     expect(init.headers['Content-Type']).toBeUndefined()
+  })
+
+  it('uploads a profile picture as a multipart PNG', async () => {
+    const fetch = respond(200, { avatar_url: '/social/users/ada/avatar' })
+    vi.stubGlobal('fetch', fetch)
+    expect(await api.uploadAvatar(new Blob(['png'], { type: 'image/png' }))).toEqual({ avatar_url: '/social/users/ada/avatar' })
+    const [url, init] = fetch.mock.calls[0]
+    expect([url, init.method]).toEqual(['/api/me/avatar', 'PUT'])
+    expect(init.body.get('file').name).toBe('avatar.png')
   })
 
   it('keeps the session with the fresh token a password change returns', async () => {

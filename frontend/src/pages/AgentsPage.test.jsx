@@ -18,6 +18,10 @@ vi.mock('../api', () => ({
     downloadHubModel: vi.fn(),
     uploadModel: vi.fn(),
     generatePrompt: vi.fn(),
+    generateAgentImage: vi.fn(),
+    setAgentImage: vi.fn(),
+    feed: vi.fn(),
+    copyPost: vi.fn(),
   },
 }))
 
@@ -129,6 +133,26 @@ it('edits the prompt, saves it and refreshes the list', async () => {
   expect(api.updateAgent).toHaveBeenCalledWith(1, { prompt: 'New prompt.' })
   expect(await screen.findByText('New prompt.', { selector: 'pre' })).toBeInTheDocument()
   expect(api.listAgents).toHaveBeenCalledTimes(2)
+})
+
+it('a prompt saved while an image generates keeps both', async () => {
+  const user = userEvent.setup()
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>'
+  let finishImage
+  api.generateAgentImage.mockReturnValue(new Promise((resolve) => (finishImage = resolve)))
+  api.updateAgent.mockResolvedValue({ ...AGENTS[0], prompt: 'New prompt.' })
+  render(<AgentsPage />)
+  await user.click(await card('Bike Repair Agent'))
+  const detail = await screen.findByRole('region', { name: 'Bike Repair Agent' })
+  await user.click(within(detail).getByRole('button', { name: 'Generate image' }))
+  await user.click(within(detail).getByRole('button', { name: 'Edit prompt' }))
+  await user.clear(within(detail).getByRole('textbox', { name: 'Agent prompt' }))
+  await user.type(within(detail).getByRole('textbox', { name: 'Agent prompt' }), 'New prompt.')
+  await user.click(within(detail).getByRole('button', { name: 'Save prompt' }))
+  expect(await within(detail).findByText('New prompt.', { selector: 'pre' })).toBeInTheDocument()
+  finishImage(agent({ image: svg }))
+  expect(await within(detail).findByAltText('Bike Repair Agent image')).toBeInTheDocument()
+  expect(within(detail).getByText('New prompt.', { selector: 'pre' })).toBeInTheDocument()
 })
 
 it('shows why a save was refused', async () => {
@@ -333,4 +357,58 @@ it('uploads a zipped model and selects it, and shows model list errors', async (
   expect(api.uploadModel).toHaveBeenCalledWith(file, 'mine')
   expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('finds an agent from the feed as a new agent and opens it', async () => {
+  const user = userEvent.setup()
+  api.feed.mockResolvedValue([
+    { id: 5, author: 'bea', name: 'Fixer', base_model: 'claude', prompt: 'Fix.', overall: 90, score: 0, my_vote: 0, created_at: '2026-10-05T10:00:00Z' },
+  ])
+  api.copyPost.mockResolvedValue({ id: 3, name: 'Fixer' })
+  await openNew(user)
+  await user.click(screen.getByRole('radio', { name: 'Find an agent' }))
+  expect(screen.queryByRole('button', { name: 'Create agent' })).not.toBeInTheDocument()
+  await user.click(await screen.findByRole('button', { name: 'Use this agent' }))
+  expect(api.copyPost).toHaveBeenCalledWith(5)
+  expect(api.getAgent).toHaveBeenCalledWith(3)
+  expect(screen.queryByRole('heading', { name: 'New agent' })).not.toBeInTheDocument()
+})
+
+it('shows agent images on cards (helmet without one) and generates, edits and clears one', async () => {
+  const user = userEvent.setup()
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>'
+  api.listAgents.mockResolvedValue([{ ...AGENTS[0], image: svg }, AGENTS[1]])
+  api.getAgent.mockResolvedValue(agent({ image: null }))
+  render(<AgentsPage />)
+  const bike = await card('Bike Repair Agent')
+  expect(bike.querySelector('img').getAttribute('src')).toBe(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`)
+  expect((await card('Claude Writer')).querySelector('img')).toBeNull()
+
+  await user.click(bike)
+  const detail = await screen.findByRole('region', { name: 'Bike Repair Agent' })
+  api.generateAgentImage.mockResolvedValue(agent({ image: svg }))
+  await user.click(within(detail).getByRole('button', { name: 'Generate image' }))
+  expect(api.generateAgentImage).toHaveBeenCalledWith(1)
+  expect(await within(detail).findByAltText('Bike Repair Agent image')).toBeInTheDocument()
+
+  await user.click(within(detail).getByRole('button', { name: 'Edit SVG' }))
+  const code = within(detail).getByRole('textbox', { name: 'SVG code' })
+  expect(code).toHaveValue(svg)
+  await user.clear(code)
+  await user.type(code, '<svg><circle r="2"/></svg>')
+  expect(within(detail).getByAltText('Preview').getAttribute('src')).toContain(encodeURIComponent('<circle r="2"/>'))
+  api.setAgentImage.mockRejectedValue(new Error('SVG element not allowed: script'))
+  await user.click(within(detail).getByRole('button', { name: 'Save image' }))
+  expect(api.setAgentImage).toHaveBeenCalledWith(1, '<svg><circle r="2"/></svg>')
+  expect(await within(detail).findByRole('alert')).toHaveTextContent('SVG element not allowed: script')
+
+  api.setAgentImage.mockResolvedValue(agent({ image: null }))
+  await user.click(within(detail).getByRole('button', { name: 'Clear image' }))
+  expect(api.setAgentImage).toHaveBeenLastCalledWith(1, null)
+  expect(await within(detail).findByRole('button', { name: 'Edit SVG' })).toBeInTheDocument()
+  expect(within(detail).queryByAltText('Bike Repair Agent image')).toBeNull()
+
+  await user.click(within(detail).getByRole('button', { name: 'Edit SVG' }))
+  await user.click(within(detail).getByRole('button', { name: 'Cancel' }))
+  expect(within(detail).queryByRole('textbox', { name: 'SVG code' })).toBeNull()
 })
