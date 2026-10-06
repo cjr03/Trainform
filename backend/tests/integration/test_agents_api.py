@@ -84,8 +84,8 @@ class StubModel:
     def __init__(self, reply):
         self.reply = reply
 
-    def complete(self, system, message, digits=False):
-        return self.reply
+    def complete_many(self, pairs, digits=False, stop=None):
+        return [self.reply] * len(pairs)
 
 
 @pytest.fixture

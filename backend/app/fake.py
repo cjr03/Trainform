@@ -10,6 +10,8 @@ import re
 import time
 import zipfile
 
+from app import svg
+
 
 def enabled() -> bool:
     return os.environ.get("TRAINFORM_FAKE_LLM") == "1"
@@ -55,6 +57,8 @@ def fake_llm(system: str, message: str, schema: dict | None = None, effort: str 
         return {"prompt": f"You are an AI agent for: {about}\n\nHelp users with that, briefly and politely."}
     if key == "reply":  # teacher
         return {"reply": "Thanks for reaching out! Could you tell me a little more so I can help?"}
+    if key == "svg":
+        return {"svg": svg.emblem(message)}
     if key == "criteria":
         return {"criteria": CRITERIA}
     if key == "scores":  # one score per criterion key (c1, c2, ...) the schema requires
@@ -75,11 +79,17 @@ class FakeLocalModel:
     def __init__(self, name: str):
         self.name, self.examples_seen = name, 0
 
-    def generate(self, system_prompt: str, conversation: str) -> str:
-        time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))  # E2E sets it so a run is slow enough to pause
-        return "Hello! Happy to help. Could you tell me a little more about what you need?"
+    def generate_many(self, pairs: list[tuple[str, str]], stop, **_) -> list[str]:
+        replies = []
+        for _ in pairs:
+            stop()
+            # E2E sets it so a run is slow enough to pause.
+            time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))
+            replies.append("Hello! Happy to help. Could you tell me a little more about what you need?")
+        return replies
 
-    def sft(self, examples: list[dict], **_) -> float:
+    def sft(self, examples: list[dict], stop, **_) -> float:
+        stop()
         self.examples_seen += len(examples)
         return 1 / (1 + self.examples_seen)
 

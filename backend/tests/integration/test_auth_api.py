@@ -41,7 +41,8 @@ def test_full_account_flow(client):
     assert r.status_code == 201
     body = r.json()
     assert body["user"] == {"id": body["user"]["id"], "email": "ada@example.com", "username": "ada",
-                            "claude_linked": False, "claude_available": False}
+                            "claude_linked": False, "claude_available": False,
+                            "avatar_url": None}
     assert client.get("/api/me", headers=bearer(body["token"])).json() == body["user"]
 
     r = client.post("/api/auth/login", json={"username": "ada", "password": "password1"})

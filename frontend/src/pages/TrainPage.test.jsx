@@ -11,12 +11,8 @@ const render = (ui) => rtlRender(ui, { wrapper: MemoryRouter })
 vi.mock('../api', () => ({
   api: {
     me: vi.fn(),
-    searchHubModels: vi.fn(),
-    downloadHubModel: vi.fn(),
-    uploadModel: vi.fn(),
-    listLocalModels: vi.fn(),
+    listAgents: vi.fn(),
     listTrainings: vi.fn(),
-    generatePrompt: vi.fn(),
     generateRubric: vi.fn(),
     startTraining: vi.fn(),
     getTraining: vi.fn(),
@@ -24,11 +20,16 @@ vi.mock('../api', () => ({
     resumeTraining: vi.fn(),
     downloadPrompt: vi.fn(),
     downloadWeights: vi.fn(),
+    feed: vi.fn(),
+    copyPost: vi.fn(),
   },
   saveBlob: vi.fn(),
 }))
 
-const HUB_MODEL = { id: 'Qwen/Qwen2.5-0.5B', downloads: 512, likes: 34, last_modified: '2026-09-01T00:00:00Z' }
+const AGENTS = [
+  { id: 1, name: 'Bike Repair Agent', base_model: 'qwen-0.5b', prompt: 'Be helpful.', overall: 84, trainings: 1 },
+  { id: 2, name: 'Claude Writer', base_model: 'claude', prompt: 'Write well.', overall: null, trainings: 0 },
+]
 const detail = (over = {}) => ({
   id: 7,
   status: 'running',
@@ -53,7 +54,7 @@ const detail = (over = {}) => ({
 beforeEach(() => {
   vi.resetAllMocks()
   sessionStorage.clear()
-  api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
+  api.listAgents.mockResolvedValue(AGENTS)
   api.listTrainings.mockResolvedValue([])
   api.me.mockResolvedValue({ claude_available: false })
 })
@@ -65,14 +66,13 @@ const nextButton = () => screen.getByRole('button', { name: 'Next' })
 
 async function reachScenarios(user) {
   const view = render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(await screen.findByRole('radio', { name: /Bike Repair Agent/ }))
   await user.click(nextButton())
   await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
   await user.click(nextButton())
   return view
 }
+const bike = () => screen.findByRole('radio', { name: /Bike Repair Agent/ })
 
 function polling() {
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -103,23 +103,18 @@ it('unlocks each step only once the previous ones are valid', async () => {
   const user = userEvent.setup()
   render(<TrainPage />)
   expect(screen.getByTestId('train-page')).toBeInTheDocument()
-  expect(step('Model')).toHaveAttribute('aria-current', 'step')
+  expect(step('Agent')).toHaveAttribute('aria-current', 'step')
   expect(nextButton()).toBeDisabled()
-  expect(step('Prompt')).toBeDisabled()
-
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  expect(step('Prompt')).toBeEnabled()
   expect(step('Rubric')).toBeDisabled()
-  await user.click(nextButton())
-  expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
-  // Next is now disabled, so focus must move into the new slide rather than drop to <body>.
-  expect(screen.getByRole('region', { name: 'Prompt' })).toHaveFocus()
+  expect(stepper().queryByRole('button', { name: /Model|Prompt/ })).not.toBeInTheDocument()
 
-  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
-  await user.type(prompt, '   ')
-  expect(nextButton()).toBeDisabled()
-  await user.type(prompt, 'Be helpful.')
+  await user.click(await bike())
+  expect(step('Rubric')).toBeEnabled()
+  expect(step('Scenarios')).toBeDisabled()
   await user.click(nextButton())
+  expect(step('Rubric')).toHaveAttribute('aria-current', 'step')
+  // Next is now disabled, so focus must move into the new slide rather than drop to <body>.
+  expect(screen.getByRole('region', { name: 'Rubric' })).toHaveFocus()
 
   expect(nextButton()).toBeDisabled()
   await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
@@ -128,96 +123,46 @@ it('unlocks each step only once the previous ones are valid', async () => {
   expect(step('Training')).toBeDisabled()
 
   await user.click(screen.getByRole('button', { name: 'Back' }))
-  expect(step('Prompt')).toHaveAttribute('aria-current', 'step')
-  await user.click(step('Model'))
-  expect(step('Model')).toHaveAttribute('aria-current', 'step')
-  expect(step('Prompt')).toHaveAccessibleName(/done/)
+  expect(step('Agent')).toHaveAttribute('aria-current', 'step')
   expect(step('Rubric')).toHaveAccessibleName(/done/)
   expect(step('Training').closest('li')).toHaveAttribute('data-state', 'locked')
 })
 
-it('searches the hub with the chosen sort', async () => {
-  const user = userEvent.setup()
-  api.searchHubModels.mockResolvedValue([HUB_MODEL])
+it('lists the agents with their overall and links to the Agents page', async () => {
   render(<TrainPage />)
-  await user.type(screen.getByRole('searchbox', { name: 'Search models' }), 'qwen')
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Sort by' }), 'Latest')
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  expect(api.searchHubModels).toHaveBeenCalledWith('qwen', 'lastModified')
-
-  const card = (await screen.findByRole('heading', { name: HUB_MODEL.id })).closest('li')
-  expect(card).toHaveTextContent('512')
-  expect(card).toHaveTextContent('34')
-  expect(within(card).getByRole('button', { name: `Download ${HUB_MODEL.id}` })).toBeInTheDocument()
-
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Sort by' }), 'Most downloaded')
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  expect(api.searchHubModels).toHaveBeenLastCalledWith('qwen', 'downloads')
+  const option = (await bike()).closest('label')
+  expect(option).toHaveTextContent('qwen-0.5b')
+  expect(within(option).getByRole('img', { name: 'Overall 84' })).toBeInTheDocument()
+  const claude = screen.getByRole('radio', { name: /Claude Writer/ }).closest('label')
+  expect(within(claude).getByRole('img', { name: 'Unranked' })).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Agents page' })).toHaveAttribute('href', '/agents')
 })
 
-it('shows hub errors inline', async () => {
-  const user = userEvent.setup()
-  api.searchHubModels.mockRejectedValue(new Error('Hub unreachable'))
-  render(<TrainPage />)
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Hub unreachable')
-})
-
-it('clears stale model errors once a later action succeeds', async () => {
-  const user = userEvent.setup()
-  const model = { name: 'Qwen2.5-0.5B', source: 'hub' }
-  api.listLocalModels.mockRejectedValueOnce(new Error('Server down')).mockResolvedValue([model])
-  api.searchHubModels.mockResolvedValue([HUB_MODEL])
-  api.downloadHubModel.mockRejectedValueOnce(new Error('Disk full')).mockResolvedValue(model)
+it('points to the Agents page when there are no agents, and shows load errors', async () => {
+  api.listAgents.mockResolvedValue([])
+  const view = render(<TrainPage />)
+  expect(await screen.findByText(/No agents yet/)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Agents page' })).toHaveAttribute('href', '/agents')
+  view.unmount()
+  api.listAgents.mockRejectedValue(new Error('Server down'))
   render(<TrainPage />)
   expect(await screen.findByRole('alert')).toHaveTextContent('Server down')
-
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  await user.click(await screen.findByRole('button', { name: `Download ${HUB_MODEL.id}` }))
-  await waitFor(() => expect(screen.getByText('Disk full')).toBeInTheDocument())
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  await waitFor(() => expect(screen.queryByText('Disk full')).not.toBeInTheDocument())
-
-  await user.click(screen.getByRole('button', { name: `Download ${HUB_MODEL.id}` }))
-  expect(await screen.findByRole('radio', { name: /Qwen2.5-0.5B/ })).toBeChecked()
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
 
-it('downloads a hub model, refreshes local models and selects it', async () => {
+it('trains a Claude agent only with Claude as the helper, and only its prompt', async () => {
   const user = userEvent.setup()
-  let finish
-  api.searchHubModels.mockResolvedValue([HUB_MODEL])
-  api.downloadHubModel.mockReturnValue(new Promise((resolve) => (finish = resolve)))
-  api.listLocalModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'Qwen2.5-0.5B', source: 'hub' }])
+  api.me.mockResolvedValue({ claude_available: true })
+  api.generateRubric.mockResolvedValue({ criteria: ['Clarity'] })
   render(<TrainPage />)
-  await user.click(screen.getByRole('button', { name: 'Search' }))
-  const download = await screen.findByRole('button', { name: `Download ${HUB_MODEL.id}` })
-  await user.click(download)
-
-  expect(api.downloadHubModel).toHaveBeenCalledWith(HUB_MODEL.id)
-  expect(download).toBeDisabled()
-  expect(download).toHaveTextContent('Downloading')
-
-  await act(async () => finish({ name: 'Qwen2.5-0.5B', source: 'hub' }))
-  expect(await screen.findByRole('radio', { name: /Qwen2.5-0.5B/ })).toBeChecked()
-  expect(api.listLocalModels).toHaveBeenCalledTimes(2)
-  expect(step('Prompt')).toBeEnabled()
-})
-
-it('uploads a zipped model and selects it', async () => {
-  const user = userEvent.setup()
-  api.uploadModel.mockResolvedValue({ name: 'mine', source: 'upload' })
-  api.listLocalModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'mine', source: 'upload' }])
-  render(<TrainPage />)
-  expect(screen.getByRole('radio', { name: 'Hugging Face Hub' })).toBeChecked()
-  await user.click(screen.getByRole('radio', { name: 'Upload' }))
-  const file = new File(['zip'], 'model.zip', { type: 'application/zip' })
-  await user.upload(screen.getByLabelText('Model archive (.zip)'), file)
-  await user.type(screen.getByRole('textbox', { name: 'Model name' }), 'mine')
-  await user.click(screen.getByRole('button', { name: 'Upload model' }))
-
-  expect(api.uploadModel).toHaveBeenCalledWith(file, 'mine')
-  expect(await screen.findByRole('radio', { name: /mine/ })).toBeChecked()
+  await waitFor(() => expect(helper().getByRole('radio', { name: 'Claude' })).toBeChecked())
+  await user.click(screen.getByRole('radio', { name: /Claude Writer/ }))
+  expect(screen.getByText(/training will only improve its prompt. Claude agents need Claude as the helper./)).toBeInTheDocument()
+  await user.click(helper().getByRole('radio', { name: 'Local model' }))
+  expect(nextButton()).toBeDisabled()
+  await user.click(helper().getByRole('radio', { name: 'Claude' }))
+  await user.click(nextButton())
+  await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
+  expect(api.generateRubric).toHaveBeenCalledWith('Write well.', null, 'claude')
 })
 
 const helper = () => within(screen.getByRole('radiogroup', { name: 'Train with' }))
@@ -225,18 +170,16 @@ const helper = () => within(screen.getByRole('radiogroup', { name: 'Train with' 
 it('trains with Claude by default when it is linked, or with the chosen local model', async () => {
   const user = userEvent.setup()
   api.me.mockResolvedValue({ claude_available: true })
-  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
+  api.generateRubric.mockResolvedValue({ criteria: ['Clarity'] })
   const view = render(<TrainPage />)
   await waitFor(() => expect(helper().getByRole('radio', { name: 'Claude' })).toBeChecked())
   expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
+  await user.click(await bike())
   await user.click(nextButton())
-  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
-  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
-  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
-  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b', 'claude')
+  await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
+  expect(api.generateRubric).toHaveBeenLastCalledWith('Be helpful.', 'qwen-0.5b', 'claude')
 
-  await user.click(step('Model'))
+  await user.click(step('Agent'))
   await user.click(helper().getByRole('radio', { name: 'Local model' }))
   view.unmount() // the choice is kept with the rest of the draft
   render(<TrainPage />)
@@ -262,62 +205,13 @@ it('leaves the helper to the server when the account cannot be read', async () =
   expect(helper().getByRole('radio', { name: 'Claude' })).not.toBeChecked()
 })
 
-it('generates a prompt from a description into the editable prompt', async () => {
-  const user = userEvent.setup()
-  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
-  render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
-  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
-  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
-
-  expect(api.generatePrompt).toHaveBeenCalledWith('A support bot', 'qwen-0.5b', 'local') // no Claude: the local model
-  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
-  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
-  await user.type(prompt, ' Be kind.')
-  expect(prompt).toHaveValue('You are a support bot. Be kind.')
-  expect(nextButton()).toBeEnabled()
-})
-
-it('asks before a generated prompt replaces a written one', async () => {
-  const user = userEvent.setup()
-  api.generatePrompt.mockResolvedValue({ prompt: 'You are a support bot.' })
-  render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
-  await user.type(prompt, 'My own prompt.')
-  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
-  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
-
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
-  expect(confirm).toHaveBeenCalledOnce()
-  expect(api.generatePrompt).not.toHaveBeenCalled()
-  expect(prompt).toHaveValue('My own prompt.')
-
-  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
-  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
-  confirm.mockRestore()
-})
-
-it('shows no source badge for a model without one', async () => {
-  api.listLocalModels.mockResolvedValue([{ name: 'demo', source: null }])
-  render(<TrainPage />)
-  const option = (await screen.findByRole('radio', { name: 'demo' })).closest('label')
-  expect(option.querySelector('[data-slot="badge"]')).toBeNull()
-})
-
 it('generates the rubric and supports add, edit, delete and confirmed regenerate', async () => {
   const user = userEvent.setup()
   api.generateRubric
     .mockResolvedValueOnce({ criteria: ['Clarity', 'Empathy'] })
     .mockResolvedValueOnce({ criteria: ['Speed'] })
   render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(await bike())
   await user.click(nextButton())
   await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
   expect(api.generateRubric).toHaveBeenCalledWith('Be helpful.', 'qwen-0.5b', 'local')
@@ -370,16 +264,16 @@ it('starts training with the exact config and locks the setup steps', async () =
   api.startTraining.mockResolvedValue(detail({ status: 'pending' }))
   api.getTraining.mockResolvedValue(detail())
   await user.click(start)
+  expect(screen.getByText('Bike Repair Agent', { selector: 'dd' })).toBeInTheDocument()
   expect(api.startTraining).toHaveBeenCalledWith({
-    base_model: 'qwen-0.5b',
-    prompt: 'Be helpful.',
+    agent_id: 1,
     rubric: ['Clarity'],
     scenarios: 8,
     rounds: 4,
     helper: 'local',
   })
   await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
-  for (const name of ['Model', 'Prompt', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
+  for (const name of ['Agent', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
 })
 
 it('shows a failed start inline on the Scenarios slide', async () => {
@@ -410,7 +304,7 @@ it('reopens a training that is still running', async () => {
   await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
   expect(api.getTraining).toHaveBeenCalledWith(7)
   expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '4')
-  expect(step('Model')).toBeDisabled()
+  expect(step('Agent')).toBeDisabled()
 })
 
 it('polls exactly every 2 s and never overlaps requests', async () => {
@@ -536,13 +430,13 @@ it('resets the dashboard for a new training', async () => {
   await startTraining(user, completed)
   await user.click(screen.getByRole('button', { name: 'Start a new training' }))
 
-  expect(step('Model')).toHaveAttribute('aria-current', 'step')
-  expect(step('Prompt')).toBeDisabled()
-  const model = await screen.findByRole('radio', { name: /qwen-0.5b/ })
-  expect(model).not.toBeChecked()
-  await user.click(model)
+  expect(step('Agent')).toHaveAttribute('aria-current', 'step')
+  expect(step('Rubric')).toBeDisabled()
+  const agent = await bike()
+  expect(agent).not.toBeChecked()
+  await user.click(agent)
   await user.click(nextButton())
-  expect(screen.getByRole('textbox', { name: 'Agent prompt' })).toHaveValue('')
+  expect(screen.queryByRole('textbox', { name: 'Criterion 1' })).not.toBeInTheDocument()
   const calls = api.getTraining.mock.calls.length
   await tick(6000)
   expect(api.getTraining).toHaveBeenCalledTimes(calls)
@@ -550,13 +444,7 @@ it('resets the dashboard for a new training', async () => {
 
 it('keeps the setup when the page is left and reopened', async () => {
   const user = userEvent.setup()
-  const view = render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
-  await user.click(nextButton())
-  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
-  await user.click(nextButton())
+  const view = await reachScenarios(user)
   await user.clear(screen.getByRole('spinbutton', { name: 'Training rounds' }))
   await user.type(screen.getByRole('spinbutton', { name: 'Training rounds' }), '4')
   view.unmount() // what navigating to Inspect or Account does
@@ -565,12 +453,11 @@ it('keeps the setup when the page is left and reopened', async () => {
   expect(step('Scenarios')).toHaveAttribute('aria-current', 'step')
   expect(screen.getByRole('spinbutton', { name: 'Training rounds' })).toHaveValue(4)
   expect(screen.getByTestId('total-runs')).toHaveTextContent('20')
+  expect(await screen.findByText('Bike Repair Agent', { selector: 'dd' })).toBeInTheDocument()
   await user.click(step('Rubric'))
   expect(screen.getByRole('textbox', { name: 'Criterion 1' })).toHaveValue('Clarity')
-  await user.click(step('Prompt'))
-  expect(screen.getByRole('textbox', { name: 'Agent prompt' })).toHaveValue('Be helpful.')
-  await user.click(step('Model'))
-  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).toBeChecked()
+  await user.click(step('Agent'))
+  expect(await bike()).toBeChecked()
 })
 
 it('reopens the finished training it was showing', async () => {
@@ -588,8 +475,8 @@ it('starts the next setup from scratch after a reset', async () => {
   await user.click(screen.getByRole('button', { name: 'Start a new training' }))
   view.unmount()
   render(<TrainPage />)
-  expect(step('Model')).toHaveAttribute('aria-current', 'step')
-  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).not.toBeChecked()
+  expect(step('Agent')).toHaveAttribute('aria-current', 'step')
+  expect(await bike()).not.toBeChecked()
 })
 
 it('still works when session storage is unavailable', async () => {
@@ -605,38 +492,11 @@ it('still works when session storage is unavailable', async () => {
   for (const spy of [get, set, del]) spy.mockRestore()
 })
 
-it('retries a failed prompt generation without asking again', async () => {
-  const user = userEvent.setup()
-  api.generatePrompt.mockRejectedValueOnce(new Error('Claude is overloaded')).mockResolvedValue({ prompt: 'You are a support bot.' })
-  render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  const prompt = screen.getByRole('textbox', { name: 'Agent prompt' })
-  await user.type(prompt, 'My own prompt.')
-  await user.click(screen.getByRole('radio', { name: 'Describe my agent' }))
-  await user.type(screen.getByRole('textbox', { name: 'Agent description' }), 'A support bot')
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-  await user.click(screen.getByRole('button', { name: 'Generate prompt' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Claude is overloaded')
-  expect(prompt).toHaveValue('My own prompt.')
-
-  await user.click(screen.getByRole('button', { name: 'Retry' }))
-  await waitFor(() => expect(prompt).toHaveValue('You are a support bot.'))
-  expect(api.generatePrompt).toHaveBeenCalledTimes(2)
-  expect(api.generatePrompt).toHaveBeenLastCalledWith('A support bot', 'qwen-0.5b', 'local')
-  expect(confirm).toHaveBeenCalledOnce()
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
-  confirm.mockRestore()
-})
-
 it('retries a failed rubric generation', async () => {
   const user = userEvent.setup()
   api.generateRubric.mockRejectedValueOnce(new Error('Claude is overloaded')).mockResolvedValue({ criteria: ['Clarity'] })
   render(<TrainPage />)
-  await user.click(await screen.findByRole('radio', { name: /qwen-0.5b/ }))
-  await user.click(nextButton())
-  await user.type(screen.getByRole('textbox', { name: 'Agent prompt' }), 'Be helpful.')
+  await user.click(await bike())
   await user.click(nextButton())
   await user.click(screen.getByRole('button', { name: 'Generate from prompt' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('Claude is overloaded')
@@ -658,7 +518,7 @@ it('pauses a running training, polls until it is paused, then resumes it to comp
   api.getTraining.mockResolvedValue(detail({ status: 'paused', current_round: 1, scenarios_done: 3 }))
   await tick()
   expect(screen.getByRole('status')).toHaveTextContent('paused')
-  expect(screen.getByText(/progress is saved/i)).toBeInTheDocument()
+  expect(screen.getByText(/step in progress was dropped; resuming redoes it/i)).toBeInTheDocument()
   expect(screen.getByRole('progressbar', { name: 'Scenarios tested' })).toHaveAttribute('aria-valuenow', '3')
   expect(screen.queryByRole('button', { name: /Paus/ })).not.toBeInTheDocument()
   const calls = api.getTraining.mock.calls.length
@@ -724,7 +584,7 @@ it('reopens the active training even when a newer one has finished', async () =>
 })
 
 it('refreshes the saved training from the server when the page opens', async () => {
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: detail() }))
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 3, training: detail() }))
   api.listTrainings.mockResolvedValue([{ id: 7, status: 'paused' }])
   api.getTraining.mockResolvedValue(detail({ status: 'paused', scenarios_done: 3 }))
   render(<TrainPage />)
@@ -735,7 +595,7 @@ it('refreshes the saved training from the server when the page opens', async () 
 })
 
 it('shows the Complete step when the saved training finished elsewhere', async () => {
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: detail({ status: 'paused' }) }))
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 3, training: detail({ status: 'paused' }) }))
   api.listTrainings.mockResolvedValue([{ id: 7, status: 'completed' }])
   api.getTraining.mockResolvedValue(completed)
   render(<TrainPage />)
@@ -743,21 +603,30 @@ it('shows the Complete step when the saved training finished elsewhere', async (
 })
 
 it('starts a fresh setup when the saved training was deleted', async () => {
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, baseModel: 'qwen-0.5b', training: completed }))
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, agentId: 1, training: completed }))
   api.getTraining.mockRejectedValue(Object.assign(new Error('Training not found'), { status: 404 }))
   render(<TrainPage />)
-  await waitFor(() => expect(step('Model')).toHaveAttribute('aria-current', 'step'))
-  expect(await screen.findByRole('radio', { name: /qwen-0.5b/ })).not.toBeChecked()
+  await waitFor(() => expect(step('Agent')).toHaveAttribute('aria-current', 'step'))
+  expect(await bike()).not.toBeChecked()
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
 
 it('keeps the saved training when refreshing it fails for another reason', async () => {
-  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 5, training: completed }))
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: completed }))
   api.getTraining.mockRejectedValue(Object.assign(new Error('Server down'), { status: 500 }))
   render(<TrainPage />)
   await waitFor(() => expect(api.getTraining).toHaveBeenCalledWith(7))
   expect(step('Complete')).toHaveAttribute('aria-current', 'step')
   expect(screen.getByTestId('best-prompt')).toHaveTextContent('Be kind.')
+})
+
+it('offers no weights to download for a Claude agent', async () => {
+  sessionStorage.setItem('trainform_train_draft', JSON.stringify({ step: 4, training: { ...completed, base_model: 'claude' } }))
+  api.getTraining.mockResolvedValue({ ...completed, base_model: 'claude' })
+  render(<TrainPage />)
+  await waitFor(() => expect(api.getTraining).toHaveBeenCalledWith(7))
+  expect(screen.getByRole('button', { name: 'Download prompt' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Download weights' })).not.toBeInTheDocument()
 })
 
 it('defines no CSS classes that another page stylesheet also defines', () => {
@@ -776,4 +645,31 @@ it('leaves how it works to the signed-out landing page', () => {
   render(<TrainPage />)
   expect(screen.getByRole('heading', { level: 1, name: 'Train an agent' })).toHaveClass('text-center')
   expect(screen.queryByRole('region', { name: 'How it works' })).not.toBeInTheDocument()
+})
+
+it('finds an agent: copies a feed post into my agents and selects it', async () => {
+  const user = userEvent.setup()
+  const copy = { id: 3, name: 'Fixer', base_model: 'qwen-0.5b', prompt: 'Fix.', overall: 90, trainings: 0, model_available: true, image: '<svg/>' }
+  api.feed.mockResolvedValue([
+    { id: 5, author: 'bea', name: 'Fixer', base_model: 'qwen-0.5b', prompt: 'Fix.', overall: 90, score: 0, my_vote: 0, created_at: '2026-10-05T10:00:00Z' },
+  ])
+  api.copyPost.mockResolvedValue(copy)
+  render(<TrainPage />)
+  await bike()
+  await user.click(screen.getByRole('radio', { name: 'Find an agent' }))
+  api.listAgents.mockResolvedValue([...AGENTS, copy])
+  await user.click(await screen.findByRole('button', { name: 'Use this agent' }))
+  expect(api.copyPost).toHaveBeenCalledWith(5)
+  expect(await screen.findByRole('radio', { name: /Fixer/ })).toBeChecked()
+  expect(screen.getByRole('radio', { name: 'Use my own' })).toBeChecked()
+  expect(nextButton()).toBeEnabled()
+})
+
+it("won't train a copied agent until its base model is downloaded", async () => {
+  api.listAgents.mockResolvedValue([{ ...AGENTS[0], model_available: false }])
+  const user = userEvent.setup()
+  render(<TrainPage />)
+  await user.click(await bike())
+  expect(screen.getByRole('status')).toHaveTextContent("qwen-0.5b isn't downloaded yet")
+  expect(nextButton()).toBeDisabled()
 })

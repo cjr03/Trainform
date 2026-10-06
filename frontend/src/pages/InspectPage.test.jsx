@@ -1,12 +1,13 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, saveBlob } from '../api'
 import InspectPage from './InspectPage'
 
 vi.mock('../api', () => ({
   api: {
+    listAgents: vi.fn(),
     listTrainings: vi.fn(),
     getTraining: vi.fn(),
     listRounds: vi.fn(),
@@ -21,6 +22,10 @@ vi.mock('../api', () => ({
 }))
 Element.prototype.scrollIntoView = vi.fn() // jsdom has no layout
 
+const agents = [
+  { id: 1, name: 'Bike Repair Agent', base_model: 'tiny-lm', prompt: 'Fix bikes.', overall: 83, trainings: 2 },
+  { id: 3, name: 'Writer', base_model: 'claude', prompt: 'Write.', overall: null, trainings: 0 },
+]
 const trainings = [
   { id: 2, base_model: 'qwen-0.5b', status: 'completed', best_score: 8.25, created_at: '2026-09-30T10:00:00Z', helper: 'claude' },
   { id: 1, base_model: 'llama-1b', status: 'running', best_score: null, created_at: '2026-09-29T10:00:00Z', helper: 'local' },
@@ -53,11 +58,28 @@ const scenario = {
   score: 7.5,
 }
 
-const renderPage = () =>
+function Location() {
+  const { search } = useLocation()
+  return (
+    <>
+      <p data-testid="location">{search}</p>
+      <Link to="/inspect">Inspect without agent</Link>
+    </>
+  )
+}
+const renderPage = (path = '/inspect?agent=1') =>
   render(
-    <MemoryRouter initialEntries={['/inspect']}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/inspect" element={<InspectPage />} />
+        <Route
+          path="/inspect"
+          element={
+            <>
+              <InspectPage />
+              <Location />
+            </>
+          }
+        />
         <Route path="/train" element={<p>Train page stub</p>} />
       </Routes>
     </MemoryRouter>,
@@ -65,6 +87,7 @@ const renderPage = () =>
 
 beforeEach(() => {
   vi.resetAllMocks()
+  api.listAgents.mockResolvedValue(agents)
   api.listTrainings.mockResolvedValue(trainings)
   api.listRounds.mockImplementation(async (id) => rounds[id])
   api.getTraining.mockImplementation(async (id) => details[id])
@@ -82,7 +105,7 @@ it('lists trainings with id, status, best score, date and helper', async () => {
   renderPage()
   expect(screen.getByTestId('inspect-page')).toBeInTheDocument()
   expect(screen.getByText(/Loading trainings/)).toBeInTheDocument()
-  const buttons = await screen.findAllByRole('button', { pressed: false })
+  const buttons = await within(screen.getByRole('region', { name: 'Trainings' })).findAllByRole('button')
   expect(buttons.map((b) => b.textContent)).toEqual([expect.stringContaining('qwen-0.5b'), expect.stringContaining('llama-1b')])
   expect(buttons[0]).toHaveTextContent('#2')
   expect(buttons[1]).toHaveTextContent('#1')
@@ -141,6 +164,16 @@ it('changing the training clears the round and scenario', async () => {
   expect(screen.queryByRole('article', { name: 'Persona' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /Scenario 1/ })).not.toBeInTheDocument()
   expect(await screen.findByRole('button', { name: /Round 1/, pressed: false })).toHaveTextContent('4')
+  expect(screen.queryByRole('button', { name: /Round 2/ })).not.toBeInTheDocument()
+})
+
+it('dropping the agent from the URL clears the selection under it', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await openScenario(user)
+  await user.click(screen.getByRole('link', { name: 'Inspect without agent' }))
+  expect(screen.getByTestId('location')).toHaveTextContent('')
+  expect(screen.queryByRole('article', { name: 'Persona' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /Round 2/ })).not.toBeInTheDocument()
 })
 
@@ -267,7 +300,7 @@ it('brings each new panel into view and focuses the transcript', async () => {
   await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
   await user.click(await screen.findByRole('button', { name: /Round 2/ }))
   await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
-  expect(revealed()).toEqual(['Rounds', 'Scenarios', 'Scenario 1'])
+  expect(revealed()).toEqual(['Trainings', 'Rounds', 'Scenarios', 'Scenario 1'])
   expect(screen.getByRole('region', { name: 'Scenario 1' })).toHaveFocus()
 })
 
@@ -462,4 +495,63 @@ it('keeps working where scrollIntoView returns a promise (current Chromium)', as
   await user.click(await option(/llama-1b/))
   expect(await screen.findByRole('button', { name: /Round 1/ })).toHaveTextContent('4')
   expect(screen.getByRole('button', { name: /llama-1b/, pressed: true })).toBeInTheDocument()
+})
+
+it('starts with the agents, their overall, and no trainings until one is picked', async () => {
+  const user = userEvent.setup()
+  renderPage('/inspect')
+  const bike = await screen.findByRole('button', { name: /Bike Repair Agent/ })
+  expect(within(bike).getByRole('img', { name: 'Overall 83' })).toHaveTextContent('83')
+  expect(bike).toHaveTextContent('tiny-lm · 2 trainings')
+  const writer = screen.getByRole('button', { name: /Writer/ })
+  expect(within(writer).getByRole('img', { name: 'Unranked' })).toBeInTheDocument()
+  expect(writer).toHaveTextContent('Claude · 0 trainings')
+  expect(screen.queryByRole('region', { name: 'Trainings' })).not.toBeInTheDocument()
+  expect(api.listTrainings).not.toHaveBeenCalled()
+
+  await user.click(bike)
+  expect(api.listTrainings).toHaveBeenCalledWith(1)
+  expect(screen.getByTestId('location')).toHaveTextContent('?agent=1')
+  expect(screen.getByRole('button', { name: /Bike Repair Agent/, pressed: true })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: /qwen-0\.5b/ })).toBeInTheDocument()
+})
+
+it('opens the agent named in the URL and clears the training when the agent changes', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  expect(await screen.findByRole('button', { name: /Bike Repair Agent/, pressed: true })).toBeInTheDocument()
+  expect(api.listTrainings).toHaveBeenCalledWith(1)
+  await user.click(await screen.findByRole('button', { name: /qwen-0\.5b/ }))
+  expect(await screen.findByRole('region', { name: 'Rounds' })).toBeInTheDocument()
+
+  api.listTrainings.mockResolvedValue([])
+  await user.click(screen.getByRole('button', { name: /Writer/ }))
+  expect(api.listTrainings).toHaveBeenLastCalledWith(3)
+  expect(await screen.findByText(/No trainings yet/)).toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Rounds' })).not.toBeInTheDocument()
+  expect(screen.getByTestId('location')).toHaveTextContent('?agent=3')
+})
+
+it('links to the Agents page when there are no agents', async () => {
+  api.listAgents.mockResolvedValue([])
+  renderPage('/inspect')
+  expect(await screen.findByText(/No agents yet — make one on the/)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Agents page' })).toHaveAttribute('href', '/agents')
+})
+
+it('offers no weights for a completed Claude training', async () => {
+  api.listTrainings.mockResolvedValue([{ ...trainings[0], base_model: 'claude' }])
+  const user = userEvent.setup()
+  renderPage('/inspect?agent=3')
+  await user.click(await screen.findByRole('button', { name: /#2/ }))
+  expect(screen.getByRole('button', { name: 'Download prompt' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Download weights' })).not.toBeInTheDocument()
+})
+
+it("shows each agent's image in the picker, the knight helmet without one", async () => {
+  api.listAgents.mockResolvedValue([{ ...agents[0], image: '<svg/>' }, agents[1]])
+  renderPage()
+  const bike = await screen.findByRole('button', { name: /Bike Repair Agent/ })
+  expect(bike.querySelector('img')).toHaveAttribute('src', `data:image/svg+xml;utf8,${encodeURIComponent('<svg/>')}`)
+  expect(screen.getByRole('button', { name: /Writer/ }).querySelector('img')).toBeNull()
 })

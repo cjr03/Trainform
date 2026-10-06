@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app import fake
 from app.db import get_db
-from app.models import User
+from app.models import DEFAULT_BASE_MODEL, SEED_AGENT, Agent, User
 
 router = APIRouter(tags=["auth"])
 
@@ -133,10 +133,16 @@ def shared_key(user: User) -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") if user.username in shared else None
 
 
+def avatar_url(username: str, avatar_type: str | None) -> str | None:
+    """The API path (under /api) of a Trainformer's picture (see social.get_avatar), or None when they have none."""
+    return avatar_type and f"/social/users/{username}/avatar"
+
+
 def user_out(user: User) -> dict:
     linked = user.anthropic_key_encrypted is not None
     return {"id": user.id, "email": user.email, "username": user.username, "claude_linked": linked,
-            "claude_available": linked or bool(shared_key(user)) or fake.enabled()}  # what Train can offer
+            "claude_available": linked or bool(shared_key(user)) or fake.enabled(),  # what Train can offer
+            "avatar_url": avatar_url(user.username, user.avatar_type)}
 
 
 def _session(user: User) -> dict:
@@ -166,6 +172,7 @@ def signup(body: Signup, db: Session = Depends(get_db)):
     except IntegrityError:  # lost a race with a concurrent signup
         db.rollback()
         raise HTTPException(409, _conflict(db, body.username, email) or "Username already taken")
+    db.add(Agent(user_id=user.id, base_model=DEFAULT_BASE_MODEL, **SEED_AGENT))
     session = _session(user)  # before commit: a missing TRAINFORM_SECRET must not leave an account behind
     db.commit()
     return session

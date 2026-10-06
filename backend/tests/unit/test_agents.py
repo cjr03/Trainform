@@ -196,6 +196,10 @@ def test_an_error_asking_again_cant_fix_is_not_retried(error):
 class LocalLLM(FakeLLM):
     local = True
 
+    def many(self, pairs, schema=None):
+        self.batches = getattr(self, "batches", []) + [len(pairs)]
+        return [self(system, message, schema) for system, message in pairs]
+
 
 def test_local_scoring_asks_one_criterion_at_a_time_and_clamps():
     llm = LocalLLM({"score": 0}, {"score": 7})
@@ -401,15 +405,47 @@ def test_persona_respond_rejects_empty():
         agents.persona_respond(FakeLLM(" ", " "), [], "c")
 
 
-def test_primary_respond_uses_local_generate():
-    calls = []
+def test_local_scoring_of_many_conversations_is_one_batch():
+    # A training scores a whole round at once; one batch is what lets the local model generate the scores together.
+    llm = LocalLLM({"score": 0}, {"score": 7}, {"score": 12}, {"score": 4})
+    assert agents.score_conversations(llm, ["conv A", "conv B"], RUBRIC) == [
+        [{"criterion": RUBRIC[0], "score": 1}, {"criterion": RUBRIC[1], "score": 7}],
+        [{"criterion": RUBRIC[0], "score": 10}, {"criterion": RUBRIC[1], "score": 4}]]
+    assert llm.batches == [4]
+    assert [(f"<conversation>\n{c}\n</conversation>" in m, f"<criterion>\n{r}\n</criterion>" in m, schema)
+            for (_, m, schema), (c, r) in zip(llm.calls, [(c, r) for c in ("conv A", "conv B") for r in RUBRIC])] == [
+        (True, True, agents.SCORE_SCHEMA)] * 4
 
-    def generate(system_prompt, conversation):
-        calls.append((system_prompt, conversation))
-        return "  Hello there.\n"
 
-    assert agents.primary_respond(generate, "You are Acme support.", "user: hi") == "Hello there."
-    assert calls == [("You are Acme support.", "user: hi")]
+def test_claude_scores_many_conversations_at_once_in_order():
+    together = threading.Barrier(3, timeout=10)  # breaks unless all three calls are in flight at once
+
+    def llm(system, message, schema=None, **kwargs):
+        together.wait()
+        return {"scores": {"c1": int(re.search(r"conv (\d)", message)[1]), "c2": 5}}
+
+    scores = agents.score_conversations(llm, ["conv 1", "conv 2", "conv 3"], RUBRIC)
+    assert [[s["score"] for s in x] for x in scores] == [[1, 5], [2, 5], [3, 5]]
+
+
+def test_local_persona_messages_are_one_batch():
+    contexts = [f"Customer: {agents.CUSTOMERS[0]}. Need: My chain slips", "Customer: x. Need: I want a refund"]
+    llm = LocalLLM(" my chain slips on hills ", "How can I help you today?")
+    assert agents.persona_messages(llm, [persona(c, 5, 5) for c in contexts]) == [
+        "my chain slips on hills", "I want a refund"]  # the second slipped into the agent's voice
+    assert llm.batches == [2] and llm.calls[1] == (agents.LOCAL_PERSONA_SYSTEM, f"{contexts[1]}\nMessage:", None)
+    with pytest.raises(BadReply):
+        agents.persona_messages(LocalLLM(" "), [persona(contexts[0], 5, 5)])
+
+
+def test_claude_writes_persona_messages_at_once_in_order():
+    together = threading.Barrier(2, timeout=10)
+
+    def llm(system, message, schema=None, effort=None):
+        together.wait()
+        return re.search(r"<context>\n(.*)\n</context>", message)[1].upper()
+
+    assert agents.persona_messages(llm, [persona("first", 5, 5), persona("second", 5, 5)]) == ["FIRST", "SECOND"]
 
 
 def test_local_personas_do_not_repeat():
@@ -443,3 +479,16 @@ def test_concurrently_runs_local_model_calls_in_turn():
     threads = []
     assert agents.concurrently(LocalLLM(), lambda x: threads.append(threading.get_ident()) or x, [1, 2, 3]) == [1, 2, 3]
     assert threads == [threading.get_ident()] * 3
+
+
+def test_draw_image_sanitises_retries_a_bad_drawing_once_and_falls_back_to_the_emblem():
+    good = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1" onload="x()"/><script>x()</script></svg>'
+    llm = FakeLLM({"svg": "<html/>"}, {"svg": good})
+    assert agents.draw_image(llm, "<username>\nada\n</username>", "ada") == (
+        '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1" /></svg>')
+    assert llm.calls[0][:2] == (agents.IMAGE_SYSTEM, "<username>\nada\n</username>")
+    assert_strict(llm.calls[0][2])
+    assert llm.kwargs[0] == {"effort": "low"}
+    with pytest.raises(BadReply):
+        agents.draw_image(FakeLLM({"svg": "<html/>"}, {"svg": "<!DOCTYPE x><svg/>"}), "s", "ada")
+    assert agents.draw_image(None, "s", "ada") == agents.svg.sanitise(agents.svg.emblem("ada"))  # no model call without Claude

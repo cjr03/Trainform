@@ -1,25 +1,24 @@
-import { CircleAlert, Download, Loader2, Pause, Play, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react'
+import { Download, Pause, Play, Plus, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Textarea } from '@/components/ui/textarea'
-import { cn } from '@/lib/utils'
+import { AgentImage, Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
+import { FindAgent } from '@/components/social'
+import { cn, useAction } from '@/lib/utils'
 import { api, saveBlob } from '../api'
+import { CLAUDE_NOTE } from './AgentsPage'
 import './TrainPage.css'
 
 const STEPS = [
-  ['Model', 'Choose whether Claude or your local model runs the helper agents, then pick the base model to fine-tune. Download one from Hugging Face or upload your own.'],
-  ['Prompt', 'Write the system prompt your agent starts from, or describe the agent and let the helper draft it.'],
+  ['Agent', 'Pick the agent to train, and whether Claude or your local model runs the helper agents.'],
   ['Rubric', 'List the criteria every simulated conversation is scored against, 1 to 10.'],
   ['Scenarios', 'Choose how many simulated personas each round tests, and how many rounds to train.'],
-  ['Training', 'Each round tests the agent against new personas, scores it and trains a better version.'],
+  ['Training', 'Each round tests the agent against new personas, scores it and trains a better version. Pause stops at once, dropping the step in progress.'],
   ['Complete', 'Training finished. Take the best prompt and LoRA weights with you.'],
 ]
 const WINDOWS = [
@@ -28,7 +27,6 @@ const WINDOWS = [
   ['n/4', 'Last 25%'],
   ['last', 'Last run'],
 ]
-const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 const inRange = (n, max) => Number.isInteger(n) && n >= 1 && n <= max
 const score = (s) => (s == null ? '—' : s.toFixed(1))
 const ACTIVE = ['pending', 'running', 'pausing'] // a user has at most one training in these
@@ -50,290 +48,6 @@ const storeDraft = (draft) => {
   } catch {
     // Unavailable or full: nothing to keep.
   }
-}
-
-function useAction() {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const run = async (fn) => {
-    setBusy(true)
-    setError('')
-    try {
-      await fn()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return [run, busy, error]
-}
-
-const Spinner = () => <Loader2 className="animate-spin" />
-const ErrorAlert = ({ children }) =>
-  children ? (
-    <Alert variant="destructive">
-      <CircleAlert />
-      <AlertDescription className="text-destructive">{children}</AlertDescription>
-    </Alert>
-  ) : null
-
-// Pill-shaped choices: one radio group with a visible radio in each pill.
-function Choice({ options, ...props }) {
-  return (
-    <RadioGroup className="flex flex-wrap gap-2" {...props}>
-      {options.map(([key, text, props]) => (
-        <label
-          key={key}
-          className="flex cursor-pointer items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors has-disabled:cursor-not-allowed has-disabled:opacity-50 has-data-[state=checked]:border-primary has-data-[state=checked]:bg-primary/10 has-data-[state=checked]:text-primary"
-        >
-          <RadioGroupItem value={key} {...props} />
-          {text}
-        </label>
-      ))}
-    </RadioGroup>
-  )
-}
-
-function ModelStep({ value, onChange }) {
-  const [tab, setTab] = useState('hub')
-  const [models, setModels] = useState(null)
-  const [listError, setListError] = useState('')
-  const [search, setSearch] = useState('')
-  const [sort, setSort] = useState('downloads')
-  const [results, setResults] = useState(null)
-  const [downloading, setDownloading] = useState('')
-  const [file, setFile] = useState(null)
-  const [name, setName] = useState('')
-  const [runHub, hubBusy, hubError] = useAction()
-  const [runUpload, uploading, uploadError] = useAction()
-
-  const refresh = async () => {
-    setModels(await api.listLocalModels())
-    setListError('')
-  }
-  useEffect(() => {
-    api.listLocalModels().then(setModels, (e) => setListError(e.message))
-  }, [])
-
-  const onSearch = (e) => {
-    e.preventDefault()
-    runHub(async () => setResults(await api.searchHubModels(search.trim(), sort)))
-  }
-  const download = async (id) => {
-    setDownloading(id)
-    await runHub(async () => {
-      const model = await api.downloadHubModel(id)
-      await refresh()
-      onChange(model.name)
-    })
-    setDownloading('')
-  }
-  const upload = (e) => {
-    e.preventDefault()
-    runUpload(async () => {
-      const model = await api.uploadModel(file, name.trim())
-      await refresh()
-      onChange(model.name)
-    })
-  }
-
-  return (
-    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-      <div className="grid gap-4">
-        <Choice
-          aria-label="Model source"
-          value={tab}
-          onValueChange={setTab}
-          options={[
-            ['hub', 'Hugging Face Hub'],
-            ['upload', 'Upload'],
-          ]}
-        />
-
-        <div hidden={tab !== 'hub'} className="grid gap-4">
-          <form role="search" className="grid gap-2 sm:grid-cols-[1fr_auto_auto]" onSubmit={onSearch}>
-            <Input
-              type="search"
-              aria-label="Search models"
-              placeholder="Search models, e.g. Qwen"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <select
-              aria-label="Sort by"
-              className="h-9 rounded-md border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [&_option]:bg-background"
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-            >
-              <option value="downloads">Most downloaded</option>
-              <option value="lastModified">Latest</option>
-            </select>
-            <Button disabled={hubBusy}>
-              {hubBusy && !downloading && <Spinner />}Search
-            </Button>
-          </form>
-          <ErrorAlert>{hubError}</ErrorAlert>
-          {results === null ? (
-            <p className="m-0 text-sm text-muted-foreground">
-              Search the Hub to find a base model. Small instruct models train fastest.
-            </p>
-          ) : results.length === 0 ? (
-            <p className="m-0 text-sm text-muted-foreground">No models match that search. Try a broader name.</p>
-          ) : (
-            <ul className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(min(230px,100%),1fr))] gap-3 p-0">
-              {results.map((m) => (
-                <li key={m.id} className="flex flex-col gap-3 rounded-lg border bg-background/40 p-4">
-                  <h3 className="m-0 font-sans text-sm font-semibold tracking-normal [overflow-wrap:anywhere]">
-                    {m.id}
-                  </h3>
-                  <dl className="m-0 grid grid-cols-3 gap-2 text-sm tabular-nums">
-                    {[
-                      ['Downloads', compact.format(m.downloads ?? 0)],
-                      ['Likes', compact.format(m.likes ?? 0)],
-                      ['Updated', m.last_modified ? new Date(m.last_modified).toLocaleDateString() : '—'],
-                    ].map(([term, detail]) => (
-                      <div key={term}>
-                        <dt className="text-xs text-muted-foreground">{term}</dt>
-                        <dd className="m-0">{detail}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="mt-auto"
-                    aria-label={`Download ${m.id}`}
-                    disabled={Boolean(downloading)}
-                    onClick={() => download(m.id)}
-                  >
-                    {downloading === m.id ? (
-                      <>
-                        <Spinner />
-                        Downloading…
-                      </>
-                    ) : (
-                      <>
-                        <Download />
-                        Download
-                      </>
-                    )}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <form hidden={tab !== 'upload'} className="grid gap-4" onSubmit={upload}>
-          <p className="m-0 text-sm text-muted-foreground">
-            Zip a Hugging Face model folder (config, tokenizer and weights) and upload it.
-          </p>
-          <div className="grid gap-2">
-            <Label htmlFor="train-upload-file">Model archive (.zip)</Label>
-            <Input
-              id="train-upload-file"
-              type="file"
-              accept=".zip,application/zip"
-              onChange={(e) => setFile(e.target.files[0] ?? null)}
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="train-upload-name">Model name</Label>
-            <Input id="train-upload-name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <ErrorAlert>{uploadError}</ErrorAlert>
-          <div>
-            <Button disabled={!file || !name.trim() || uploading}>
-              {uploading ? <Spinner /> : <Upload />}Upload model
-            </Button>
-          </div>
-        </form>
-      </div>
-
-      <div className="grid gap-3 rounded-lg border bg-background/40 p-4">
-        <span id="train-local-models" className="text-sm font-medium">
-          Local models
-        </span>
-        {!models && !listError && <Spinner />}
-        <ErrorAlert>{listError}</ErrorAlert>
-        {models?.length === 0 && (
-          <p className="m-0 text-sm text-muted-foreground">
-            No local models yet. Download one from the Hub or upload a zip.
-          </p>
-        )}
-        <RadioGroup aria-labelledby="train-local-models" value={value} onValueChange={onChange} className="gap-1">
-          {models?.map((m) => (
-            <label
-              key={m.name}
-              className="flex cursor-pointer items-center gap-3 rounded-md border border-transparent px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
-            >
-              <RadioGroupItem value={m.name} />
-              <span className="mr-auto [overflow-wrap:anywhere]">{m.name}</span>
-              {m.source && <Badge variant="outline">{m.source}</Badge>}
-            </label>
-          ))}
-        </RadioGroup>
-      </div>
-    </div>
-  )
-}
-
-function PromptStep({ model, helper, prompt, onChange }) {
-  const [mode, setMode] = useState('write')
-  const [description, setDescription] = useState('')
-  const [run, busy, error] = useAction()
-  const request = () => run(async () => onChange((await api.generatePrompt(description.trim(), model, helper)).prompt))
-  const generate = () => {
-    if (prompt.trim() && !window.confirm('Replace your prompt with a generated one?')) return
-    request()
-  }
-
-  return (
-    <div className="grid gap-4">
-      <Choice
-        aria-label="How to create the prompt"
-        value={mode}
-        onValueChange={setMode}
-        options={[
-          ['write', 'Write my own'],
-          ['describe', 'Describe my agent'],
-        ]}
-      />
-      {mode === 'describe' && (
-        <div className="grid gap-2">
-          <Label htmlFor="train-description">Agent description</Label>
-          <Textarea
-            id="train-description"
-            placeholder="A support agent for a bike shop that handles returns and repair bookings."
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <ErrorAlert>{error}</ErrorAlert>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" disabled={!description.trim() || busy} onClick={generate}>
-              {busy ? <Spinner /> : <Sparkles />}Generate prompt
-            </Button>
-            {error && (
-              <Button type="button" variant="ghost" disabled={!description.trim() || busy} onClick={request}>
-                Retry
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
-      <div className="grid gap-2">
-        <Label htmlFor="train-prompt">Agent prompt</Label>
-        <Textarea
-          id="train-prompt"
-          className="min-h-60 font-mono"
-          placeholder="You are a friendly support agent for…"
-          value={prompt}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      </div>
-    </div>
-  )
 }
 
 function RubricStep({ model, helper, prompt, criteria, onChange }) {
@@ -448,7 +162,9 @@ function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, e
       </p>
       {status === 'failed' && <ErrorAlert>{training.error || 'Training stopped without an error message.'}</ErrorAlert>}
       {status === 'paused' && (
-        <p className="m-0 text-sm text-muted-foreground">Paused. Its progress is saved, so it resumes where it stopped.</p>
+        <p className="m-0 text-sm text-muted-foreground">
+          Paused. The step in progress was dropped; resuming redoes it from the saved progress.
+        </p>
       )}
       <ErrorAlert>{error}</ErrorAlert>
       {status !== 'completed' && (
@@ -552,10 +268,12 @@ function CompleteStep({ training, onReset }) {
           <Download />
           Download prompt
         </Button>
-        <Button type="button" disabled={busy} onClick={() => save(api.downloadWeights, `training-${id}-lora.zip`)}>
-          <Download />
-          Download weights
-        </Button>
+        {training.base_model !== 'claude' && (
+          <Button type="button" disabled={busy} onClick={() => save(api.downloadWeights, `training-${id}-lora.zip`)}>
+            <Download />
+            Download weights
+          </Button>
+        )}
         <Button type="button" variant="ghost" onClick={onReset}>
           Start a new training
         </Button>
@@ -564,13 +282,84 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
+// "Use my own" picks one of your agents; "Find an agent" copies a published one into them and picks it.
+function AgentStep({ agents, error, value, onChange, onCopied }) {
+  const [source, setSource] = useState('own')
+  const agent = agents?.find((a) => a.id === value)
+  const link = (
+    <Link to="/agents" className="text-primary underline-offset-4 hover:underline">
+      Agents page
+    </Link>
+  )
+  return (
+    <div className="grid gap-3">
+      <span id="train-agents" className="text-sm font-medium">
+        Agent
+      </span>
+      <Choice
+        aria-label="Agent source"
+        value={source}
+        onValueChange={setSource}
+        options={[
+          ['own', 'Use my own'],
+          ['find', 'Find an agent'],
+        ]}
+      />
+      {source === 'find' ? (
+        <FindAgent
+          onCopied={(a) => {
+            setSource('own')
+            onCopied(a)
+          }}
+        />
+      ) : (
+        <>
+          {!agents && !error && <Spinner />}
+          <ErrorAlert>{error}</ErrorAlert>
+          {agents?.length === 0 && <p className="m-0 text-sm text-muted-foreground">No agents yet. Make one on the {link}.</p>}
+          <RadioGroup
+            aria-labelledby="train-agents"
+            value={value == null ? '' : String(value)}
+            onValueChange={(v) => onChange(Number(v))}
+            className="grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2"
+          >
+            {agents?.map((a) => (
+              <label
+                key={a.id}
+                className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
+              >
+                <RadioGroupItem value={String(a.id)} />
+                <AgentImage svg={a.image} className="size-8" />
+                <span className="mr-auto grid min-w-0 gap-0.5">
+                  <span className="font-semibold wrap-anywhere">{a.name}</span>
+                  <span className="text-xs text-muted-foreground wrap-anywhere">
+                    {a.base_model === 'claude' ? 'Claude' : a.base_model}
+                  </span>
+                </span>
+                <Overall value={a.overall} />
+              </label>
+            ))}
+          </RadioGroup>
+          {agent?.model_available === false && (
+            <p role="status" className="m-0 text-sm text-warning">
+              {agent.base_model} isn't downloaded yet. Download it from the Hub (Agents page, New agent) before training.
+            </p>
+          )}
+          {agents?.length > 0 && <p className="m-0 text-sm text-muted-foreground">Make or edit agents on the {link}.</p>}
+        </>
+      )}
+    </div>
+  )
+}
+
 function Dashboard({ onReset }) {
   const [draft] = useState(loadDraft)
   const [step, setStep] = useState(draft.step ?? 0)
-  const [baseModel, setBaseModel] = useState(draft.baseModel ?? '')
+  const [agentId, setAgentId] = useState(draft.agentId ?? null)
+  const [agents, setAgents] = useState(null)
+  const [agentsError, setAgentsError] = useState('')
   const [helper, setHelper] = useState(draft.helper ?? null) // 'claude' | 'local'; null: the server picks
   const [claudeAvailable, setClaudeAvailable] = useState(null)
-  const [prompt, setPrompt] = useState(draft.prompt ?? '')
   const [rubric, setRubric] = useState(draft.rubric ?? [])
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
   const [rounds, setRounds] = useState(draft.rounds ?? '3')
@@ -582,23 +371,29 @@ function Dashboard({ onReset }) {
   const slides = useRef([])
   const shown = useRef(step)
 
+  const agent = agents?.find((a) => a.id === agentId)
+  const claudeAgent = agent?.base_model === 'claude'
   const criteria = rubric.map((c) => c.trim()).filter(Boolean)
   const valid = [
-    Boolean(baseModel),
-    Boolean(prompt.trim()),
+    // A Claude agent needs Claude as the helper; a copied agent may need its model downloaded first.
+    Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false,
     criteria.length > 0,
     inRange(Number(scenarios), 100) && inRange(Number(rounds), 50),
   ]
   const completed = training?.status === 'completed'
-  const reachable = (i) => (training ? i === 4 || (i === 5 && completed) : i < 4 && valid.slice(0, i).every(Boolean))
+  const reachable = (i) => (training ? i === 3 || (i === 4 && completed) : i < 3 && valid.slice(0, i).every(Boolean))
   // Scenarios has valid defaults, so it only counts as done once training starts.
-  const done = (i) => (training ? i < 4 || (i === 4 && completed) : i < 3 && i !== step && valid[i] && reachable(i))
+  const done = (i) => (training ? i < 3 || (i === 3 && completed) : i < 2 && i !== step && valid[i] && reachable(i))
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
 
   useEffect(
-    () => storeDraft({ step, baseModel, helper, prompt, rubric, scenarios, rounds, training }),
-    [step, baseModel, helper, prompt, rubric, scenarios, rounds, training],
+    () => storeDraft({ step, agentId, helper, rubric, scenarios, rounds, training }),
+    [step, agentId, helper, rubric, scenarios, rounds, training],
   )
+
+  useEffect(() => {
+    api.listAgents().then(setAgents, (e) => setAgentsError(e.message))
+  }, [])
 
   // Claude by default when linked; only the local model when not.
   useEffect(() => {
@@ -624,7 +419,7 @@ function Dashboard({ onReset }) {
         if (!live) return
         setTraining(t)
         // A finished training opens on Complete, unless it was already finished and shown on Training.
-        setStep((s) => (t.status !== 'completed' ? 4 : draft.training?.status === 'completed' ? s : 5))
+        setStep((s) => (t.status !== 'completed' ? 3 : draft.training?.status === 'completed' ? s : 4))
       })
       .catch((e) => {
         if (live && e.status === 404) onReset() // the draft's training was deleted
@@ -648,7 +443,7 @@ function Dashboard({ onReset }) {
         if (!live) return
         setTraining(t)
         setPollError('')
-        if (t.status === 'completed') setStep(5)
+        if (t.status === 'completed') setStep(4)
       } catch (e) {
         if (live) setPollError(e.message)
       }
@@ -673,8 +468,7 @@ function Dashboard({ onReset }) {
   const start = () =>
     runStart(async () => {
       const config = {
-        base_model: baseModel,
-        prompt: prompt.trim(),
+        agent_id: agentId,
         rubric: criteria,
         scenarios: Number(scenarios),
         rounds: Number(rounds),
@@ -688,11 +482,21 @@ function Dashboard({ onReset }) {
         return api.getTraining(active.id)
       })
       setTraining(t)
-      setStep(4)
+      setStep(3)
     })
 
   const content = [
-    <div key="model" className="grid gap-6">
+    <div key="agent" className="grid gap-6">
+      <AgentStep
+        agents={agents}
+        error={agentsError}
+        value={agentId}
+        onChange={setAgentId}
+        onCopied={(a) => {
+          api.listAgents().then(setAgents, (e) => setAgentsError(e.message))
+          setAgentId(a.id)
+        }}
+      />
       <div className="grid gap-2">
         <span className="text-sm font-medium" id="train-helper">
           Train with
@@ -723,10 +527,20 @@ function Dashboard({ onReset }) {
           </p>
         )}
       </div>
-      <ModelStep value={baseModel} onChange={setBaseModel} />
+      {claudeAgent && (
+        <p className="m-0 text-sm text-muted-foreground">
+          {CLAUDE_NOTE} Claude agents need Claude as the helper.
+        </p>
+      )}
     </div>,
-    <PromptStep key="prompt" model={baseModel} helper={helper} prompt={prompt} onChange={setPrompt} />,
-    <RubricStep key="rubric" model={baseModel} helper={helper} prompt={prompt} criteria={rubric} onChange={setRubric} />,
+    <RubricStep
+      key="rubric"
+      model={claudeAgent ? null : agent?.base_model}
+      helper={helper}
+      prompt={agent?.prompt ?? ''}
+      criteria={rubric}
+      onChange={setRubric}
+    />,
     <div key="scenarios" className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="grid gap-2">
@@ -754,12 +568,12 @@ function Dashboard({ onReset }) {
           />
         </div>
       </div>
-      {!valid[3] && <p className="m-0 text-sm text-muted-foreground">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
+      {!valid[2] && <p className="m-0 text-sm text-muted-foreground">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
       <dl className="m-0 grid grid-cols-3 gap-2 rounded-lg border p-4">
         {[
-          ['Base model', baseModel || '—'],
+          ['Agent', agent?.name ?? '—'],
           ['Criteria', criteria.length],
-          ['Total runs', valid[3] ? Number(scenarios) * Number(rounds) : '—', 'total-runs'],
+          ['Total runs', valid[2] ? Number(scenarios) * Number(rounds) : '—', 'total-runs'],
         ].map(([term, detail, testId]) => (
           <div key={term}>
             <dt className="text-xs text-muted-foreground">{term}</dt>
@@ -836,12 +650,12 @@ function Dashboard({ onReset }) {
         </div>
       </div>
 
-      {step < 4 && (
+      {step < 3 && (
         <div className="flex justify-between">
           <Button type="button" variant="ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>
             Back
           </Button>
-          {step < 3 ? (
+          {step < 2 ? (
             <Button type="button" disabled={!valid[step]} onClick={() => setStep(step + 1)}>
               Next
             </Button>

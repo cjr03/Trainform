@@ -1,4 +1,4 @@
-"""The seven Trainform agents. Each helper takes `llm(system, message, schema=None, effort="medium")` as its first
+"""The eight Trainform agents. Each helper takes `llm(system, message, schema=None, effort="medium")` as its first
 argument."""
 
 import random
@@ -10,6 +10,7 @@ from statistics import fmean
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app import svg
 from app.auth import current_user
 from app.llm import BadReply, Helper, LLMError, chosen_llm, get_llm, llm_or_local
 from app.models import User
@@ -194,6 +195,21 @@ Customer: a busy parent who is impatient and blunt. Need: I'm angry that you cha
 Message: You charged my card twice for the same order. This is ridiculous. Fix it today.
 
 Write only the message."""
+IMAGE_SYSTEM = """\
+You are a game artist who draws avatars as SVG code.
+
+You will receive a subject inside tags: an AI agent (its name and system prompt) or a Trainformer (a user of an app \
+for training AI agents, by username). Draw its avatar: a square game-character portrait or heraldic crest that \
+captures who it is and what it does.
+
+Rules:
+- One <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"> root.
+- Flat shapes only: g, defs, path, circle, ellipse, rect, line, polyline, polygon, linearGradient, radialGradient, \
+stop, clipPath, mask and use with "#id" references. Gradients are welcome; text is not needed.
+- No script, style element, event handler, foreignObject, image, animation, external reference or link.
+- Bold, readable at 48 pixels, a full background, under 12 KB.
+
+Reply with the SVG markup."""
 CUSTOMERS = (
     "a student who types short, casual messages with typos", "a retired teacher who writes politely and in full "
     "sentences", "a busy parent who is impatient and blunt", "a first-timer who is unsure and a little nervous",
@@ -218,6 +234,7 @@ def _array(items):
 STRING, INTEGER = {"type": "string"}, {"type": "integer"}
 PROMPT_SCHEMA = _schema(prompt=STRING)
 REPLY_SCHEMA = _schema(reply=STRING)
+SVG_SCHEMA = _schema(svg=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
 SCORE_SCHEMA = _schema(score=INTEGER)
 
@@ -341,6 +358,17 @@ def score_conversation(llm, conversation: str, rubric: list[str]) -> list[dict]:
     return [{"criterion": c, "score": s} for c, s in zip(rubric, scores)]
 
 
+def score_conversations(llm, conversations: list[str], rubric: list[str]) -> list[list[dict]]:
+    """score_conversation for each conversation; a local model scores every conversation and criterion in one batch."""
+    if not getattr(llm, "local", False):
+        return concurrently(llm, lambda c: score_conversation(llm, c, rubric), conversations)
+    outs = llm.many([(LOCAL_SCORING_SYSTEM, f"{_tag('conversation', conv)}\n\n{_tag('criterion', c)}")
+                     for conv in conversations for c in rubric], SCORE_SCHEMA)
+    scores = [_clamp(out["score"]) for out in outs]
+    return [[{"criterion": c, "score": s} for c, s in zip(rubric, scores[i:i + len(rubric)])]
+            for i in range(0, len(scores), len(rubric))]
+
+
 def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None,
                       last_scores: list[float] | None = None) -> list[dict]:
     """Persona generator agent: n x {"attributes": [{"criterion", "rating"}], "prompt": str}.
@@ -399,24 +427,41 @@ def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None =
             for ratings, prompt in (personas[i % len(personas)] for i in range(n))]
 
 
+def draw_image(llm, subject: str, seed: str) -> str:
+    """Image agent: a subject (_tag sections) -> sanitised avatar SVG. An unusable drawing is asked for again once
+    (svg.sanitise's ValueError becomes a BadReply in _parse). Without Claude (`llm` None), the code-drawn emblem
+    seeded by `seed`: the small local model can't draw."""
+    if not llm:
+        return svg.sanitise(svg.emblem(seed))
+    return _ask(partial(llm, effort="low"), IMAGE_SYSTEM, subject, SVG_SCHEMA, lambda out: svg.sanitise(out["svg"]))
+
+
+def _voiced(context: str, message: str) -> str:
+    """A local model's persona message, or the persona's need when the reply is in the agent's voice or turned the
+    customer's "I" or "my" into "you" or "your" (the need is itself a real request)."""
+    need = context.rpartition("Need: ")[2]
+    flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
+    return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
+
+
 def persona_respond(llm, attributes: list[dict], context: str) -> str:
     """Persona agent: attributes + conversational context -> the persona's next message."""
     if getattr(llm, "local", False):
-        need = context.rpartition("Need: ")[2]
-        message = _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None, lambda out: _text(out, "persona message"))
-        # A reply in the agent's voice, or one that turned the customer's "I" or "my" into "you" or "your", falls back to
-        # the need, which is itself a real request.
-        flipped = len(re.findall(r"\byour\b", message, re.I)) > len(re.findall(r"\byour\b", need, re.I))
-        return need if ASSISTANT_VOICE.search(message) or flipped or not FIRST_PERSON.search(message) else message
+        return _voiced(context, _ask(llm, LOCAL_PERSONA_SYSTEM, f"{context}\nMessage:", None,
+                                     lambda out: _text(out, "persona message")))
     lines = "\n".join(f"- {a['criterion']}: {a['rating']}/10" for a in attributes)
     message = f"{_tag('persona_attributes', lines)}\n\n{_tag('context', context)}"
     # Low effort: a short in-character message needs little deliberation, and it is a third of a training's calls.
     return _ask(partial(llm, effort="low"), PERSONA_SYSTEM, message, None, lambda out: _text(out, "persona message"))
 
 
-def primary_respond(generate, prompt: str, conversation: str) -> str:
-    """Primary agent: runs on the local model being trained, via `generate(system_prompt, conversation)`."""
-    return generate(prompt, conversation).strip()
+def persona_messages(llm, personas: list[dict]) -> list[str]:
+    """persona_respond for each persona; a local model writes them in one batch."""
+    if not getattr(llm, "local", False):
+        return concurrently(llm, lambda p: persona_respond(llm, p["attributes"], p["prompt"]), personas)
+    # Greedy decoding repeats itself, so an empty reply is not asked for again.
+    replies = llm.many([(LOCAL_PERSONA_SYSTEM, f"{p['prompt']}\nMessage:") for p in personas])
+    return [_voiced(p["prompt"], _text(reply, "persona message")) for p, reply in zip(personas, replies)]
 
 
 class PromptRequest(BaseModel):

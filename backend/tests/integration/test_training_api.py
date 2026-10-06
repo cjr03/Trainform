@@ -5,21 +5,23 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from app import training
+from app import llm as llm_module, training
 from app.db import engine
 from app.main import app
-from app.models import Scenario, TrainedModel, Training, User
+from app.models import Agent, Scenario, TrainedModel, Training, User
 
-BODY = {"base_model": "tiny", "prompt": "Be helpful.", "rubric": ["  Clarity ", "Tone"], "scenarios": 2, "rounds": 2}
+BODY = {"agent_id": 1, "rubric": ["  Clarity ", "Tone"], "scenarios": 2, "rounds": 2}  # the `agent` fixture's
 
 
 class FakeModel:
     def __init__(self, name):
         self.trained = False
 
-    def generate(self, system_prompt, conversation):
+    def generate_many(self, pairs, stop):
+        stop()
         # A revision ("?") and fine-tuning each change the reply, and fakes.score rewards both.
-        return "Hello!" + (" Sure?" if system_prompt.endswith("?") else "") + (" Trained." if self.trained else "")
+        return ["Hello!" + (" Sure?" if system_prompt.endswith("?") else "") + (" Trained." if self.trained else "")
+                for system_prompt, _ in pairs]
 
     def sft(self, examples, **_):
         self.trained = True
@@ -33,29 +35,48 @@ class FakeModel:
 
 
 @pytest.fixture
-def fakes(monkeypatch):
+def agent(db, user):
+    a = Agent(user_id=user.id, name="Helper", base_model="tiny", prompt="Be helpful.")
+    db.add(a)
+    db.commit()
+    assert a.id == BODY["agent_id"]
+    return a
+
+
+@pytest.fixture
+def fakes(monkeypatch, agent):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "server-key")
     monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", "ada")
     monkeypatch.setattr(training, "list_local_models", lambda user_id: [{"name": "tiny", "source": "upload"}])
     monkeypatch.setattr(training, "LocalModel", FakeModel)
+    monkeypatch.setattr(training, "PAUSE_POLL", 0)
+    monkeypatch.setattr(llm_module, "call_claude", lambda key, *a, **kw: key)  # see helper
     llms = []
 
     def generate_personas(llm, prompt, n, rubric=None, last_scores=None):
-        llms.append(llm)
+        llms.append(helper(llm))
         return [{"attributes": [{"criterion": "Clarity", "rating": k}], "prompt": f"persona {k}"} for k in range(1, n + 1)]
 
     def score_conversation(llm, conv, rubric):
-        llms.append(llm)
+        llms.append(helper(llm))
         return [{"criterion": "Clarity", "score": 6 + 2 * ("Sure?" in conv) + ("Trained." in conv)},
                 {"criterion": "Tone", "score": 8}]
 
     monkeypatch.setattr(training.agents, "generate_personas", generate_personas)
-    monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: "Hi?")
-    monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
+    monkeypatch.setattr(training.agents, "persona_messages", lambda llm, personas: ["Hi?"] * len(personas))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
+    # One at a time, so a local helper scores with the fake too (its own batches it to the model).
+    monkeypatch.setattr(training.agents, "score_conversations", lambda llm, conversations, rubric: [
+        training.agents.score_conversation(llm, c, rubric) for c in conversations])
     monkeypatch.setattr(training.agents, "teacher_reply", lambda llm, prompt, message, rubric: "Ideal.")
     monkeypatch.setattr(training.agents, "review_round", lambda llm, prompt, *a: prompt + "?")
     return llms
+
+
+def helper(llm):
+    """"local", or the Claude key a helper `llm` calls with (fakes replaces call_claude with one that returns its key).
+    Unwraps the run's pause check, which would otherwise stop the run (or refuse once it has ended)."""
+    return "local" if getattr(llm, "local", False) else getattr(llm, "__wrapped__", llm)("system", "message")
 
 
 def other_users_training(db):
@@ -94,7 +115,9 @@ def test_create_runs_training_in_background(authed_client, fakes):
     assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
                       "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
                       "score_windows", "best_model_id", "best_score", "best_prompt", "baseline_score", "created_at",
-                      "helper"}
+                      "helper", "agent_id", "agent_name"}
+    assert (d["base_model"], d["initial_prompt"], d["agent_id"], d["agent_name"]) == ("tiny", "Be helpful.", 1,
+                                                                                     "Helper")
     progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"], d["helper"])
     assert progress == ("completed", None, 2, 4, 4, None)
     # Round 2 tested the review's revision ("?") against the prompt on the same users and kept it: it scored higher.
@@ -105,7 +128,7 @@ def test_create_runs_training_in_background(authed_client, fakes):
     # The anchor user scored 7.0 before training, 7.5 after round 1's SFT and 8.5 with round 2's revision.
     assert (d["baseline_score"], d["best_score"]) == (7.0, 8.5)
     # The background run uses the requesting user's Claude key.
-    assert len(fakes) == 10 and all(llm.args == ("server-key",) for llm in fakes)
+    assert len(fakes) == 10 and set(fakes) == {"server-key"}
 
     rounds = authed_client.get(f"/api/trainings/{d['id']}/rounds").json()
     assert [(x["round"], x["mean_score"], x["scenarios"], x["eval_score"]) for x in rounds] == [
@@ -132,9 +155,12 @@ def test_list_newest_first(authed_client, fakes, db, user):
     listed = authed_client.get("/api/trainings").json()
     assert [t["id"] for t in listed] == [first["id"] + 1, first["id"]]
     assert set(listed[0]) == {"id", "base_model", "status", "rounds", "scenarios_per_round", "current_round",
-                              "scenarios_done", "created_at", "best_score", "helper"}
-    assert (listed[0]["status"], listed[0]["best_score"]) == ("pending", None)
+                              "scenarios_done", "created_at", "best_score", "helper", "agent_id", "agent_name"}
+    assert (listed[0]["status"], listed[0]["best_score"], listed[0]["agent_name"]) == ("pending", None, None)
     assert (listed[1]["status"], listed[1]["best_score"]) == ("completed", 8.5)  # on the anchor user
+    assert (listed[1]["agent_id"], listed[1]["agent_name"]) == (1, "Helper")
+    assert [t["id"] for t in authed_client.get("/api/trainings?agent_id=1").json()] == [first["id"]]
+    assert authed_client.get("/api/trainings?agent_id=999").json() == []
 
 
 def test_downloads(authed_client, fakes, db, user):
@@ -180,8 +206,8 @@ def test_best_prompt_is_the_downloaded_prompt(authed_client, fakes, monkeypatch)
 
 
 @pytest.mark.parametrize("change", [
-    {"prompt": ""}, {"prompt": "x" * 20001}, {"rubric": []}, {"rubric": ["   "]}, {"rubric": ["c"] * 31},
-    {"rubric": ["x" * 501]}, {"scenarios": 0}, {"scenarios": 101}, {"rounds": 0}, {"rounds": 51}, {"base_model": None},
+    {"rubric": []}, {"rubric": ["   "]}, {"rubric": ["c"] * 31}, {"rubric": ["x" * 501]}, {"scenarios": 0},
+    {"scenarios": 101}, {"rounds": 0}, {"rounds": 51}, {"agent_id": None},
 ])
 def test_create_validation(authed_client, fakes, db, change):
     assert authed_client.post("/api/trainings", json=BODY | change).status_code == 422
@@ -190,7 +216,7 @@ def test_create_validation(authed_client, fakes, db, change):
 
 def test_create_accepts_limits(authed_client, fakes, monkeypatch):
     monkeypatch.setattr(training, "run_training", lambda *args: None)
-    body = BODY | {"prompt": "x" * 20000, "rubric": ["c" * 500] * 30, "scenarios": 100, "rounds": 50}
+    body = BODY | {"rubric": ["c" * 500] * 30, "scenarios": 100, "rounds": 50}
     assert authed_client.post("/api/trainings", json=body).status_code == 201
 
 
@@ -242,10 +268,30 @@ def test_global_cap_on_concurrent_trainings(authed_client, fakes, monkeypatch, d
     assert training._SLOTS.acquire(blocking=False)  # a rejected or failed request gives its slot back
 
 
-def test_unknown_base_model(authed_client, fakes, db):
-    r = authed_client.post("/api/trainings", json=BODY | {"base_model": "missing"})
+def test_unknown_base_model(authed_client, fakes, db, agent):
+    agent.base_model = "missing"  # deleted since the agent was made
+    db.commit()
+    r = authed_client.post("/api/trainings", json=BODY)
     assert (r.status_code, r.json()) == (400, {"detail": "Unknown base model: missing"})
     assert db.query(Training).count() == 0
+
+
+def test_create_needs_one_of_the_users_agents(authed_client, fakes, db):
+    other = other_users_training(db)
+    db.add(Agent(user_id=other.user_id, name="Theirs", base_model="tiny", prompt="Secret."))
+    db.commit()
+    for agent_id in (2, 999):
+        r = authed_client.post("/api/trainings", json=BODY | {"agent_id": agent_id})
+        assert (r.status_code, r.json()) == (404, {"detail": "Agent not found"})
+    assert db.query(Training).count() == 1
+
+
+def test_training_starts_from_the_agents_weights(authed_client, fakes, monkeypatch, db, agent):
+    agent.weights = b"PK\x03\x04trained"
+    db.commit()
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    t = db.get(Training, authed_client.post("/api/trainings", json=BODY).json()["id"])
+    assert t.adapter == b"PK\x03\x04trained"
 
 
 def test_create_without_claude_key_uses_the_local_model(authed_client, fakes, monkeypatch, db):
@@ -253,19 +299,19 @@ def test_create_without_claude_key_uses_the_local_model(authed_client, fakes, mo
     r = authed_client.post("/api/trainings", json=BODY)
     assert r.status_code == 201
     assert authed_client.get(f"/api/trainings/{r.json()['id']}").json()["status"] == "completed"
-    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+    assert set(fakes) == {"local"}
 
 
 def test_create_with_the_chosen_helper(authed_client, fakes, monkeypatch, db):
     r = authed_client.post("/api/trainings", json=BODY | {"helper": "local"})  # even though Claude is linked
     assert (r.status_code, r.json()["helper"]) == (201, "local")
     assert authed_client.get(f"/api/trainings/{r.json()['id']}").json()["status"] == "completed"
-    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+    assert set(fakes) == {"local"}
     assert authed_client.get("/api/trainings").json()[0]["helper"] == "local"
     fakes.clear()
     r = authed_client.post("/api/trainings", json=BODY | {"helper": "claude"})
     assert (r.status_code, r.json()["helper"]) == (201, "claude")
-    assert fakes and all(llm.args == ("server-key",) for llm in fakes)
+    assert set(fakes) == {"server-key"}
 
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     r = authed_client.post("/api/trainings", json=BODY | {"helper": "claude"})
@@ -279,7 +325,7 @@ def test_resume_with_the_stored_helper(authed_client, fakes, monkeypatch, db, us
     t.helper = "local"
     db.commit()
     assert authed_client.post(f"/api/trainings/{t.id}/resume").status_code == 200  # Claude is linked
-    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+    assert set(fakes) == {"local"}
 
     t = add_training(db, user, "paused")
     t.helper = "claude"
@@ -387,7 +433,7 @@ def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, mon
     score = training.agents.score_conversation
     paused = []
 
-    lock = threading.Lock()  # a batch is scored at once
+    lock = threading.Lock()  # a round is scored at once
 
     def press_pause_during_the_first_scenario(llm, conv, rubric):
         with lock:
@@ -401,18 +447,17 @@ def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, mon
     assert r.status_code == 200 and r.json()["status"] == "pausing"
     assert set(r.json()) == set(created)
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
-    # Round 1's one batch and its training finish; it stops before round 2.
-    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 2)
+    # It stops at once: round 1's scenarios were saved, its training in flight is dropped.
+    assert (d["status"], d["current_round"], d["scenarios_done"], d["best_model_id"]) == ("paused", 1, 2, None)
 
     r = authed_client.post(f"/api/trainings/{d['id']}/resume")
     assert r.status_code == 200 and r.json()["status"] == "pending"
     d = authed_client.get(f"/api/trainings/{d['id']}").json()
-    # Exactly the uninterrupted run (see test_create_runs_training_in_background): nothing was redone.
+    # Exactly the uninterrupted run (see test_create_runs_training_in_background).
     assert (d["status"], d["current_round"], d["scenarios_done"], d["latest_prompt"]) == ("completed", 2, 4,
                                                                                          "Be helpful.?")
     assert [w["score"] for w in d["score_windows"]] == [7.75, 8.5, 8.5, 8.5]
     assert (d["baseline_score"], d["best_score"]) == (7.0, 8.5)
-    assert len(fakes) == 10  # 2 persona generations and 8 scorings
 
 
 def test_pause_only_a_pending_or_running_training(authed_client, db, user):
@@ -436,7 +481,7 @@ def test_retry_a_failed_training_with_the_current_helper(authed_client, fakes, m
     assert (r.status_code, r.json()["status"], r.json()["error"]) == (200, "pending", None)
     d = authed_client.get(f"/api/trainings/{t.id}").json()
     assert (d["status"], d["error"], d["scenarios_done"]) == ("completed", None, 1)
-    assert fakes and all(getattr(llm, "local", False) for llm in fakes)
+    assert set(fakes) == {"local"}
 
 
 def test_resume_rules(authed_client, fakes, monkeypatch, db, user):
@@ -483,3 +528,34 @@ def test_delete_a_training(authed_client, fakes, db, user):
         set_status(db, t, status)
         assert authed_client.delete(f"/api/trainings/{t.id}").status_code == 204
         t = add_training(db, user, "pending")
+
+
+def test_claude_agent_trains_with_claude_only(authed_client, fakes, monkeypatch, db, agent):
+    agent.base_model = "claude"
+    db.commit()
+    monkeypatch.setattr(training, "LocalModel", None)  # no local model is loaded for it
+    r = authed_client.post("/api/trainings", json=BODY | {"helper": "local"})
+    assert (r.status_code, r.json()) == (400, {"detail": "Claude agents need Claude as the helper"})
+    r = authed_client.post("/api/trainings", json=BODY)
+    assert (r.status_code, r.json()["base_model"]) == (201, "claude")
+    d = authed_client.get(f"/api/trainings/{r.json()['id']}").json()
+    assert (d["status"], d["error"], d["scenarios_done"]) == ("completed", None, 4)
+    scenarios = authed_client.get(f"/api/trainings/{d['id']}/rounds/1/scenarios").json()
+    assert {s["output"] for s in scenarios} == {"server-key"}  # Claude replied, with the user's key
+    db.expire_all()
+    assert (agent.prompt, agent.weights) == (d["best_prompt"], None)  # synced from its best round
+
+    db.query(Training).update({"status": "paused"})
+    db.commit()
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    for r in (authed_client.post("/api/trainings", json=BODY), authed_client.post(f"/api/trainings/{d['id']}/resume")):
+        assert (r.status_code, r.json()) == (400, {"detail": "Claude agents need Claude as the helper"})
+
+
+def test_training_syncs_its_agent(authed_client, fakes, db, agent):
+    created = authed_client.post("/api/trainings", json=BODY).json()
+    d = authed_client.get(f"/api/trainings/{created['id']}").json()
+    db.expire_all()
+    # The best model (round 2: the revised prompt, fine-tuned) is now the agent's.
+    assert (agent.prompt, agent.weights) == ("Be helpful.?", b"PK\x03\x04trained")
+    assert authed_client.get("/api/agents").json()[0]["overall"] == round(10 * d["best_score"]) == 85

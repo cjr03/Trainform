@@ -108,34 +108,45 @@ _ROUTE_MODEL = threading.Lock()  # the agent routes share one loaded model, whic
 _loaded = {}
 
 
-def _local_reply(model, system, message, schema):
+def _local_replies(model, pairs, schema, stop):
     if schema is None:
-        return model.complete(system, message)
+        return model.complete_many(pairs, stop=stop)
     (field, spec), = schema["properties"].items()
     if spec["type"] == "integer":
-        reply = model.complete(system, message, digits=True).replace(" ", "")
-        return {field: 10 if reply.startswith("10") else int(reply[:1])}
+        replies = [r.replace(" ", "") for r in model.complete_many(pairs, digits=True, stop=stop)]
+        return [{field: 10 if reply.startswith("10") else int(reply[:1])} for reply in replies]
     if spec["type"] == "array":
-        reply = model.complete(f"{system}\n\nWrite one item per line and nothing else.", message)
-        return {field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
-    reply = model.complete(f"{system}\n\nReply with only the text itself and nothing else.", message)
+        replies = model.complete_many([(f"{system}\n\nWrite one item per line and nothing else.", message)
+                                       for system, message in pairs], stop=stop)
+        return [{field: [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line) for line in reply.splitlines()]}
+                for reply in replies]
+    replies = model.complete_many([(f"{system}\n\nReply with only the text itself and nothing else.", message)
+                                   for system, message in pairs], stop=stop)
     # A small model carries on past its answer, echoing the input's tagged sections or drafting again after a tag
     # line, so keep its first stretch of text between such lines.
-    sections = re.split(r"^[ \t]*</?[^<>\n]+>[ \t:]*$", reply, flags=re.M)
-    return {field: next((s for s in sections if re.search(r"\w", s)), reply)}
+    sections = [re.split(r"^[ \t]*</?[^<>\n]+>[ \t:]*$", reply, flags=re.M) for reply in replies]
+    return [{field: next((s for s in parts if re.search(r"\w", s)), reply)} for parts, reply in zip(sections, replies)]
 
 
-def local_llm(model, lock=None):
-    """An `llm(system, message, schema=None)` running on a LocalModel, for users who haven't linked Claude.
+class Stopped(Exception):
+    """Raised by a training's pause check to drop the call in flight (see training.run_training)."""
+
+
+def local_llm(model, lock=None, stop=None):
+    """An `llm(system, message, schema=None)` running on a LocalModel, for users who haven't linked Claude, with
+    `llm.many([(system, message)], schema=None)` answering many at once (in batches).
 
     Small models can't write JSON, so a schema must have a single field and the reply is mapped onto it: the whole
     reply for a string, one item per line for a list of strings, and a digits-only reply for an integer. `lock`
-    serialises callers that share `model`. `effort` is Claude's and is ignored."""
-    def llm(system, message, schema=None, effort=None):
+    serialises callers that share `model`; `stop()` runs before each generation batch and may raise Stopped. `effort`
+    is Claude's and is ignored."""
+    def many(pairs, schema=None):
         if lock and not lock.acquire(timeout=LOCAL_WAIT):
             raise LLMError("The local model is busy; try again shortly")
         try:
-            return _local_reply(model, system, message, schema)
+            return _local_replies(model, pairs, schema, stop)
+        except Stopped:
+            raise
         except Exception as e:  # torch errors (e.g. a prompt past the context window) carry no user-facing detail
             log.exception("Local model failed to reply")
             raise LLMError("The local model failed to reply") from e
@@ -143,7 +154,10 @@ def local_llm(model, lock=None):
             if lock:
                 lock.release()
 
-    llm.local = True
+    def llm(system, message, schema=None, effort=None):
+        return many([(system, message)], schema)[0]
+
+    llm.local, llm.many = True, many
     return llm
 
 

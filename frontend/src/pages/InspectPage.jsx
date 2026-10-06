@@ -1,6 +1,6 @@
 import { CircleAlert, Download, Loader2, Pause, Play, RotateCcw, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -16,6 +16,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { AgentImage, Overall } from '@/components/shared'
 import { cn } from '@/lib/utils'
 import { api, saveBlob } from '../api'
 import './InspectPage.css'
@@ -248,17 +249,30 @@ function Transcript({ scenario }) {
 }
 
 export default function InspectPage() {
+  // The agent lives in the URL (?agent=<id>), so the Agents page can link straight to its trainings.
+  const [params, setParams] = useSearchParams()
+  const agentId = params.get('agent') == null ? null : Number(params.get('agent'))
   const [trainingId, setTrainingId] = useState(null)
   const [round, setRound] = useState(null)
   const [scenarioId, setScenarioId] = useState(null)
+  // A different agent (e.g. the Inspect link drops ?agent=) clears the selection under it.
+  const [shownAgent, setShownAgent] = useState(agentId)
+  if (agentId !== shownAgent) {
+    setShownAgent(agentId)
+    setTrainingId(null)
+    setRound(null)
+    setScenarioId(null)
+  }
   const [version, setVersion] = useState(0)
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
+  const trainingsRef = useRef(null)
   const roundsRef = useRef(null)
   const scenariosRef = useRef(null)
 
-  const trainings = useLoad(api.listTrainings, 'all', version)
+  const agents = useLoad(api.listAgents, 'all', version)
+  const trainings = useLoad(() => api.listTrainings(agentId), agentId, version)
   const rounds = useLoad(() => api.listRounds(trainingId), trainingId, version)
   const detail = useLoad(() => api.getTraining(trainingId), trainingId, version)
   const scenarios = useLoad(
@@ -278,6 +292,7 @@ export default function InspectPage() {
     return () => clearTimeout(timer)
   }, [trainings, active])
 
+  useEffect(() => reveal(trainingsRef.current), [agentId])
   useEffect(() => reveal(roundsRef.current), [trainingId])
   useEffect(() => reveal(scenariosRef.current), [round])
 
@@ -323,6 +338,10 @@ export default function InspectPage() {
       pickTraining(null)
       setVersion((v) => v + 1)
     })
+  const pickAgent = (id) => {
+    setParams({ agent: id }, { replace: true })
+    pickTraining(null)
+  }
   const pickRound = (r) => {
     setRound(r)
     setScenarioId(null)
@@ -331,35 +350,63 @@ export default function InspectPage() {
   return (
     <div className="flex flex-col gap-3.5" data-testid="inspect-page">
       <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Inspect</h1>
-      <div className="grid items-start gap-4 min-[860px]:grid-cols-3">
+      <div className="grid items-start gap-4 min-[860px]:grid-cols-2 xl:grid-cols-4">
         <Column
-          title="Trainings"
-          state={trainings}
-          loadingText="Loading trainings…"
+          title="Agents"
+          state={agents}
+          loadingText="Loading agents…"
           emptyText={
             <>
-              No trainings yet — start one on the <Link to="/train">Train page</Link>
+              No agents yet — make one on the <Link to="/agents">Agents page</Link>
             </>
           }
         >
-          {trainings.data?.map((t) => (
-            <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
-              <span className={OPTION_MAIN}>
-                #{t.id} · {t.base_model}
+          {agents.data?.map((a) => (
+            <Option key={a.id} selected={a.id === agentId} onSelect={() => pickAgent(a.id)}>
+              <span className={cn(OPTION_MAIN, 'flex items-center gap-2')}>
+                <AgentImage svg={a.image} className="size-6 rounded-md" />
+                {a.name}
               </span>
-              <Badge variant="outline" className={`badge-${t.status} justify-self-start tracking-wider uppercase`}>
-                {t.status}
-              </Badge>
               <span className={OPTION_META}>
-                {new Date(t.created_at).toLocaleDateString()}
-                {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
+                {a.base_model === 'claude' ? 'Claude' : a.base_model} · {a.trainings}{' '}
+                {a.trainings === 1 ? 'training' : 'trainings'}
               </span>
-              <span className={OPTION_SCORE} title="Best score">
-                {fmt(t.best_score)}
-              </span>
+              <Overall value={a.overall} className="col-start-2 row-span-2 row-start-1" />
             </Option>
           ))}
         </Column>
+
+        {agentId != null && (
+          <Column
+            ref={trainingsRef}
+            title="Trainings"
+            state={trainings}
+            loadingText="Loading trainings…"
+            emptyText={
+              <>
+                No trainings yet — start one on the <Link to="/train">Train page</Link>
+              </>
+            }
+          >
+            {trainings.data?.map((t) => (
+              <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
+                <span className={OPTION_MAIN}>
+                  #{t.id} · {t.base_model}
+                </span>
+                <Badge variant="outline" className={`badge-${t.status} justify-self-start tracking-wider uppercase`}>
+                  {t.status}
+                </Badge>
+                <span className={OPTION_META}>
+                  {new Date(t.created_at).toLocaleDateString()}
+                  {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
+                </span>
+                <span className={OPTION_SCORE} title="Best score">
+                  {fmt(t.best_score)}
+                </span>
+              </Option>
+            ))}
+          </Column>
+        )}
 
         {trainingId != null && (
           <Column ref={roundsRef} title="Rounds" state={rounds} loadingText="Loading rounds…" emptyText="No rounds finished yet.">
@@ -417,9 +464,11 @@ export default function InspectPage() {
               <Button onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}>
                 <Download aria-hidden="true" /> Download prompt
               </Button>
-              <Button onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}>
-                <Download aria-hidden="true" /> Download weights
-              </Button>
+              {selected.base_model !== 'claude' && (
+                <Button onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}>
+                  <Download aria-hidden="true" /> Download weights
+                </Button>
+              )}
             </>
           )}
           {!ACTIVE.includes(status) && (

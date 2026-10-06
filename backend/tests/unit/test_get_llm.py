@@ -68,11 +68,13 @@ def test_fake_mode_only_when_exactly_1(monkeypatch, value):
 
 class StubModel:
     def __init__(self, *replies):
-        self.replies, self.calls = list(replies), []
+        self.replies, self.calls, self.batches, self.stops = list(replies), [], [], []
 
-    def complete(self, system, message, digits=False):
-        self.calls.append((system, message, digits))
-        return self.replies.pop(0)
+    def complete_many(self, pairs, digits=False, stop=None):
+        self.calls += [(system, message, digits) for system, message in pairs]
+        self.batches.append(len(pairs))
+        self.stops.append(stop)
+        return [self.replies.pop(0) for _ in pairs]
 
 
 def test_local_llm_plain_text():
@@ -115,7 +117,7 @@ def test_local_llm_integer_field_reads_a_digits_only_reply(reply, score):
 
 
 class BrokenModel:
-    def complete(self, system, message, digits=False):
+    def complete_many(self, pairs, digits=False, stop=None):
         raise RuntimeError("index out of range in self")  # e.g. a prompt longer than the model's context
 
 
@@ -123,6 +125,25 @@ class BrokenModel:
 def test_local_model_failures_are_llm_errors(model):
     with pytest.raises(llm.LLMError, match="^The local model failed to reply$"):
         llm.local_llm(model)("sys", "msg", agents.SCORE_SCHEMA)
+
+
+def test_local_llm_many_answers_in_one_batch():
+    # A training scores every conversation and criterion at once; one call lets the model batch them.
+    model = StubModel("7", "1 0", "3")
+    stop = object()
+    local = llm.local_llm(model, stop=stop)
+    assert local.many([("s", "a"), ("s", "b"), ("s", "c")], agents.SCORE_SCHEMA) == [
+        {"score": 7}, {"score": 10}, {"score": 3}]
+    assert model.batches == [3] and model.stops == [stop]
+
+
+def test_a_pause_is_not_a_local_model_failure():
+    class Pausing:
+        def complete_many(self, pairs, digits=False, stop=None):
+            raise llm.Stopped
+
+    with pytest.raises(llm.Stopped):
+        llm.local_llm(Pausing())("sys", "msg")
 
 
 def test_a_busy_local_model_is_an_llm_error(monkeypatch):
