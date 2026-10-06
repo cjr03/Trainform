@@ -27,10 +27,10 @@ const trainings = [
 ]
 const rounds = {
   2: [
-    { round: 1, mean_score: 6.5, scenarios: 2, model_id: 10 },
-    { round: 2, mean_score: 8.25, scenarios: 2, model_id: 11 },
+    { round: 1, mean_score: 6.5, scenarios: 2, model_id: 10, eval_score: 7.25 },
+    { round: 2, mean_score: 8.25, scenarios: 2, model_id: 11, eval_score: 8.25 },
   ],
-  1: [{ round: 1, mean_score: 4, scenarios: 1, model_id: null }],
+  1: [{ round: 1, mean_score: 4, scenarios: 1, model_id: null, eval_score: null }],
 }
 const details = {
   2: { initial_prompt: 'Answer support questions.', best_prompt: 'Answer support questions calmly and cite the order.', best_score: 8.25 },
@@ -101,8 +101,9 @@ it('selecting a training loads its rounds', async () => {
   expect(api.listRounds).toHaveBeenCalledWith(2)
   expect(screen.getByRole('button', { name: /qwen-0\.5b/, pressed: true })).toBeInTheDocument()
   const round = await screen.findByRole('button', { name: /Round 1/ })
-  expect(round).toHaveTextContent('6.5')
-  expect(round).toHaveTextContent('2 scenarios')
+  // Its model's score on the same eval users as every round; the practice users get harder each round.
+  expect(round).toHaveTextContent('7.3')
+  expect(round).toHaveTextContent('2 scenarios · practice 6.5')
   expect(screen.getByRole('button', { name: /Round 2/ })).toBeInTheDocument()
 })
 

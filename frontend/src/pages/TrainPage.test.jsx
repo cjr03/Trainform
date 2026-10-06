@@ -94,6 +94,7 @@ const completed = detail({
   current_round: 3,
   scenarios_done: 15,
   best_score: 8.4,
+  baseline_score: 6.1,
   latest_prompt: 'Be brief.',
   best_prompt: 'Be kind.',
 })
@@ -509,6 +510,7 @@ it('advances to the completion screen and downloads the prompt and weights', asy
   await tick(6000)
   expect(api.getTraining).toHaveBeenCalledTimes(calls)
   expect(screen.getByTestId('best-score')).toHaveTextContent('8.4')
+  expect(screen.getByText('6.1 before training, on the same eval users')).toBeInTheDocument()
   // The prompt shown is the best round's, which is what Download prompt saves.
   expect(screen.getByRole('heading', { name: 'Best prompt' })).toBeInTheDocument()
   expect(screen.getByTestId('best-prompt')).toHaveTextContent('Be kind.')

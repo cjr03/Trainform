@@ -37,7 +37,7 @@ class Training(Base):
     error: Mapped[str | None] = mapped_column(Text)
     current_round: Mapped[int] = mapped_column(default=0)
     scenarios_done: Mapped[int] = mapped_column(default=0)  # across all rounds
-    # The best model for this training (highest round mean score).
+    # The best model for this training: the highest score on the anchor messages (see training.run_training).
     best_model_id: Mapped[int | None] = mapped_column(
         ForeignKey("trained_models.id", use_alter=True, ondelete="SET NULL", name="fk_trainings_best_model")
     )
@@ -73,6 +73,7 @@ class Scenario(Base):
     output: Mapped[str] = mapped_column(Text)  # primary agent response
     scores: Mapped[list[dict]] = mapped_column(JSON)  # [{"criterion": str, "score": int}]
     score: Mapped[float]  # mean of scores
+    target: Mapped[str | None] = mapped_column(Text)  # the reply a Claude teacher wrote for it, which SFT learns
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

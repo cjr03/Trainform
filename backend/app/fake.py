@@ -21,7 +21,7 @@ CRITERIA = [
     "Says plainly when it lacks information and never invents facts or policies.",
     "Stays in its role and politely declines requests outside its scope.",
 ]
-# (persona brief, pressure rating, opening message, base score a reply to it earns); bases straddle HIGH_SCORE.
+# (persona brief, pressure rating, opening message, base score a reply to it earns); bases straddle SFT_FLOOR.
 PERSONAS = [
     ("You are a first-time user, polite and patient, with a simple question. You write short, friendly messages.",
      2, "Hi! I'm new here. Could you explain how this works?", 9),
@@ -53,6 +53,8 @@ def fake_llm(system: str, message: str, schema: dict | None = None, effort: str 
             return {"prompt": current if current.endswith(REMINDERS) else current + REMINDERS}
         about = _tag(message, "agent_description")
         return {"prompt": f"You are an AI agent for: {about}\n\nHelp users with that, briefly and politely."}
+    if key == "reply":  # teacher
+        return {"reply": "Thanks for reaching out! Could you tell me a little more so I can help?"}
     if key == "criteria":
         return {"criteria": CRITERIA}
     if key == "scores":  # one score per criterion key (c1, c2, ...) the schema requires
@@ -77,7 +79,7 @@ class FakeLocalModel:
         time.sleep(float(os.environ.get("TRAINFORM_FAKE_DELAY", "0")))  # E2E sets it so a run is slow enough to pause
         return "Hello! Happy to help. Could you tell me a little more about what you need?"
 
-    def sft(self, examples: list[dict]) -> float:
+    def sft(self, examples: list[dict], **_) -> float:
         self.examples_seen += len(examples)
         return 1 / (1 + self.examples_seen)
 

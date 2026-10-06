@@ -4,7 +4,7 @@ import math
 import zipfile
 
 from app import agents, fake
-from app.training import HIGH_SCORE
+from app.training import SFT_FLOOR
 
 RUBRIC = ["Greets the user.", "Asks one clarifying question.", "Never invents facts."]
 
@@ -23,10 +23,11 @@ def test_fake_llm_satisfies_every_agent():
         scores = agents.score_conversation(fake.fake_llm, f"User: {message}\nAssistant: Hello!", RUBRIC)
         assert [s["criterion"] for s in scores] == RUBRIC
         means.append(sum(s["score"] for s in scores) / len(scores))
-    assert max(means) >= HIGH_SCORE > min(means)
-    improved = agents.generate_improved_prompt(fake.fake_llm, prompt, "User: hi\nAssistant: hello", scores)
+    assert max(means) >= SFT_FLOOR > min(means)
+    improved = agents.review_round(fake.fake_llm, prompt, [(c, 5.0) for c in RUBRIC], [("User: hi\nAssistant: hello", 5.0)])
     assert improved != prompt and improved.startswith(prompt)
-    assert agents.generate_improved_prompt(fake.fake_llm, improved, "c", scores) == improved  # does not keep growing
+    assert agents.review_round(fake.fake_llm, improved, [], []) == improved  # does not keep growing
+    assert agents.teacher_reply(fake.fake_llm, prompt, "hi", RUBRIC)
 
 
 def test_fake_local_model():

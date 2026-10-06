@@ -2,7 +2,9 @@
 
 import io
 import json
+import logging
 import os
+import random
 import re
 import shutil
 import stat
@@ -29,6 +31,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, NoRepeatNGramLogit
 from app.auth import current_user
 from app.models import User
 
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["models"], dependencies=[Depends(current_user)])
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", Path(__file__).resolve().parent.parent / "data" / "models"))
@@ -42,6 +45,8 @@ REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 # Configs, safetensors weights and tokenizer files only: pickle weights (*.bin, *.pt, ...) can execute code on load.
 HUB_PATTERNS = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]
 PICKLE_SUFFIXES = (".bin", ".pt", ".pth", ".pkl", ".ckpt")
+# Room for a ~1000-word system prompt, a message and a reply; a longer example is dropped, not cut short.
+MAX_SFT_TOKENS = 4096
 
 
 def _model_dir(name: str) -> Path:
@@ -254,25 +259,35 @@ class LocalModel:
         return sorted(i for i in {self.tokenizer.eos_token_id, *(eos if isinstance(eos, list) else [eos])}
                       if i is not None)
 
-    def sft(self, examples: list[dict]) -> float:
-        """Fine-tune on [{"prompt", "input", "output"}]; returns the mean training loss."""
-        optimizer = torch.optim.AdamW([p for p in self.model.parameters() if p.requires_grad], lr=2e-4)
-        losses = []
+    def sft(self, examples: list[dict], epochs: int = 2, accum: int = 4, seed: int = 0) -> float:
+        """Fine-tune on [{"prompt", "input", "output"}], learning only the outputs: `epochs` shuffled passes, each step
+        on the clipped mean gradient of `accum` examples. Returns the mean training loss."""
+        data = []
+        for ex in examples:
+            prompt = self._prompt_ids(ex["prompt"], ex["input"])
+            output = self.tokenizer(ex["output"] + (self.tokenizer.eos_token or ""),
+                                    add_special_tokens=False)["input_ids"]
+            if output and len(prompt) + len(output) <= MAX_SFT_TOKENS:
+                data.append((prompt + output, [-100] * len(prompt) + output))
+        if len(data) < len(examples):
+            log.warning("SFT dropped %d of %d examples over %d tokens", len(examples) - len(data), len(examples),
+                        MAX_SFT_TOKENS)
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable, lr=2e-4)
+        rng, losses = random.Random(seed), []
         self.model.train()
         try:
-            for ex in examples:
-                prompt = self._prompt_ids(ex["prompt"], ex["input"])
-                output = self.tokenizer(ex["output"] + (self.tokenizer.eos_token or ""),
-                                        add_special_tokens=False)["input_ids"]
-                ids, labels = (prompt + output)[:1024], ([-100] * len(prompt) + output)[:1024]
-                if all(label == -100 for label in labels):
-                    continue  # output truncated away: nothing to learn, and the loss would be NaN
-                loss = self.model(input_ids=torch.tensor([ids], device=self.device),
-                                  labels=torch.tensor([labels], device=self.device)).loss
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
-                losses.append(loss.item())
+            for _ in range(epochs if data else 0):
+                rng.shuffle(data)
+                for i, (ids, labels) in enumerate(data, 1):
+                    loss = self.model(input_ids=torch.tensor([ids], device=self.device),
+                                      labels=torch.tensor([labels], device=self.device)).loss
+                    (loss / accum).backward()
+                    losses.append(loss.item())
+                    if i % accum == 0 or i == len(data):
+                        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
         finally:
             self.model.eval()
         return sum(losses) / len(losses) if losses else 0.0

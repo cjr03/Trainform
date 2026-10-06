@@ -18,9 +18,10 @@ class FakeModel:
         self.trained = False
 
     def generate(self, system_prompt, conversation):
-        return "Hello!"
+        # A revision ("?") and fine-tuning each change the reply, and fakes.score rewards both.
+        return "Hello!" + (" Sure?" if system_prompt.endswith("?") else "") + (" Trained." if self.trained else "")
 
-    def sft(self, examples):
+    def sft(self, examples, **_):
         self.trained = True
         return 0.1
 
@@ -37,7 +38,6 @@ def fakes(monkeypatch):
     monkeypatch.setenv("TRAINFORM_SHARED_KEY_USERS", "ada")
     monkeypatch.setattr(training, "list_local_models", lambda user_id: [{"name": "tiny", "source": "upload"}])
     monkeypatch.setattr(training, "LocalModel", FakeModel)
-    scores = iter([6, 8, 9, 9])
     llms = []
 
     def generate_personas(llm, prompt, n, rubric=None, last_scores=None):
@@ -46,13 +46,14 @@ def fakes(monkeypatch):
 
     def score_conversation(llm, conv, rubric):
         llms.append(llm)
-        return [{"criterion": "Clarity", "score": next(scores)}, {"criterion": "Tone", "score": 8}]
+        return [{"criterion": "Clarity", "score": 6 + 2 * ("Sure?" in conv) + ("Trained." in conv)},
+                {"criterion": "Tone", "score": 8}]
 
     monkeypatch.setattr(training.agents, "generate_personas", generate_personas)
     monkeypatch.setattr(training.agents, "persona_respond", lambda llm, attributes, context: "Hi?")
     monkeypatch.setattr(training.agents, "primary_respond", lambda generate, prompt, conv: generate(prompt, conv))
     monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
-    monkeypatch.setattr(training.agents, "generate_improved_prompt", lambda llm, prompt, *a: prompt + "!")
+    monkeypatch.setattr(training.agents, "teacher_reply", lambda llm, prompt, message, rubric: "Ideal.")
     monkeypatch.setattr(training.agents, "review_round", lambda llm, prompt, *a: prompt + "?")
     return llms
 
@@ -92,19 +93,23 @@ def test_create_runs_training_in_background(authed_client, fakes):
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
     assert set(d) == {"id", "status", "error", "base_model", "initial_prompt", "rubric", "rounds",
                       "scenarios_per_round", "current_round", "scenarios_done", "total_scenarios", "latest_prompt",
-                      "score_windows", "best_model_id", "best_score", "best_prompt", "created_at", "helper"}
+                      "score_windows", "best_model_id", "best_score", "best_prompt", "baseline_score", "created_at",
+                      "helper"}
     progress = (d["status"], d["error"], d["current_round"], d["scenarios_done"], d["total_scenarios"], d["helper"])
     assert progress == ("completed", None, 2, 4, 4, None)
-    assert d["latest_prompt"] == "Be helpful.!?"
-    # Scenario means: 7.0, 8.0, 8.5, 8.5 -> rounds 7.5 and 8.5.
-    assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 8.0}, {"label": "n/2", "runs": 2, "score": 8.5},
+    # Round 2 tested the review's revision ("?") against the prompt on the same users and kept it: it scored higher.
+    assert d["latest_prompt"] == "Be helpful.?"
+    # Scenario means: 7.0, 7.0 (untrained), then 8.5, 8.5 (revised and fine-tuned).
+    assert d["score_windows"] == [{"label": "n", "runs": 4, "score": 7.75}, {"label": "n/2", "runs": 2, "score": 8.5},
                                   {"label": "n/4", "runs": 1, "score": 8.5}, {"label": "last", "runs": 1, "score": 8.5}]
-    assert d["best_score"] == 8.5
+    # The anchor user scored 7.0 before training, 7.5 after round 1's SFT and 8.5 with round 2's revision.
+    assert (d["baseline_score"], d["best_score"]) == (7.0, 8.5)
     # The background run uses the requesting user's Claude key.
-    assert len(fakes) == 6 and all(llm.args == ("server-key",) for llm in fakes)
+    assert len(fakes) == 10 and all(llm.args == ("server-key",) for llm in fakes)
 
     rounds = authed_client.get(f"/api/trainings/{d['id']}/rounds").json()
-    assert [(x["round"], x["mean_score"], x["scenarios"]) for x in rounds] == [(1, 7.5, 2), (2, 8.5, 2)]
+    assert [(x["round"], x["mean_score"], x["scenarios"], x["eval_score"]) for x in rounds] == [
+        (1, 7.0, 2, 7.5), (2, 8.5, 2, 8.5)]
     assert rounds[1]["model_id"] == d["best_model_id"] and rounds[0]["model_id"] != d["best_model_id"]
 
     scenarios = authed_client.get(f"/api/trainings/{d['id']}/rounds/2/scenarios").json()
@@ -112,7 +117,7 @@ def test_create_runs_training_in_background(authed_client, fakes):
     assert scenarios[0] == {
         "id": scenarios[0]["id"], "scenario_number": 1,
         "persona": {"attributes": [{"criterion": "Clarity", "rating": 1}], "prompt": "persona 1"},
-        "prompt": "Be helpful.!?", "input": "Hi?", "output": "Hello!",
+        "prompt": "Be helpful.?", "input": "Hi?", "output": "Hello! Sure? Trained.",
         "scores": [{"criterion": "Clarity", "score": 9}, {"criterion": "Tone", "score": 8}], "score": 8.5,
     }
     assert authed_client.get(f"/api/trainings/{d['id']}/rounds/3/scenarios").json() == []
@@ -129,14 +134,14 @@ def test_list_newest_first(authed_client, fakes, db, user):
     assert set(listed[0]) == {"id", "base_model", "status", "rounds", "scenarios_per_round", "current_round",
                               "scenarios_done", "created_at", "best_score", "helper"}
     assert (listed[0]["status"], listed[0]["best_score"]) == ("pending", None)
-    assert (listed[1]["status"], listed[1]["best_score"]) == ("completed", 8.5)
+    assert (listed[1]["status"], listed[1]["best_score"]) == ("completed", 8.5)  # on the anchor user
 
 
 def test_downloads(authed_client, fakes, db, user):
     t = authed_client.post("/api/trainings", json=BODY).json()
     r = authed_client.get(f"/api/trainings/{t['id']}/download/prompt")
     assert r.status_code == 200
-    assert r.text == "Be helpful.!?"
+    assert r.text == "Be helpful.?"
     assert r.headers["content-type"].startswith("text/plain")
     assert r.headers["content-disposition"] == f'attachment; filename="training-{t["id"]}-prompt.txt"'
 
@@ -156,15 +161,21 @@ def test_downloads(authed_client, fakes, db, user):
 
 
 def test_best_prompt_is_the_downloaded_prompt(authed_client, fakes, monkeypatch):
-    scores = iter([9, 9, 5, 5])  # round 1 is best, round 2 regresses
-    monkeypatch.setattr(training.agents, "score_conversation",
-                        lambda llm, conv, rubric: [{"criterion": c, "score": score} for c, score in
-                                                   zip(rubric, [next(scores)] * 2)])
+    # Round 1: practice 6, then its model scores 9 on the anchor. Round 2: the revision ties the prompt (rejected) and
+    # its model scores 5 on the anchor, so round 1's model stays the best.
+    scores = iter([6, 6, 9, 5, 5, 5, 5, 5])
+    lock = threading.Lock()
+
+    def score_conversation(llm, conv, rubric):
+        with lock:
+            score = next(scores)
+        return [{"criterion": c, "score": score} for c in rubric]
+    monkeypatch.setattr(training.agents, "score_conversation", score_conversation)
     created = authed_client.post("/api/trainings", json=BODY).json()
     assert created["best_prompt"] is None
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
-    # Round 1 wins; its best scenario ran with the initial prompt, and round 2 starts from its review, "Be helpful.?".
-    assert (d["latest_prompt"], d["best_prompt"], d["best_score"]) == ("Be helpful.?", "Be helpful.", 9.0)
+    assert (d["latest_prompt"], d["best_prompt"], d["best_score"], d["baseline_score"]) == (
+        "Be helpful.", "Be helpful.", 9.0, 6.0)
     assert authed_client.get(f"/api/trainings/{d['id']}/download/prompt").text == d["best_prompt"]
 
 
@@ -376,9 +387,12 @@ def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, mon
     score = training.agents.score_conversation
     paused = []
 
+    lock = threading.Lock()  # a batch is scored at once
+
     def press_pause_during_the_first_scenario(llm, conv, rubric):
-        if not paused:
-            paused.append(authed_client.post(f"/api/trainings/{db.scalar(select(Training.id))}/pause"))
+        with lock:
+            if not paused:
+                paused.append(authed_client.post(f"/api/trainings/{db.scalar(select(Training.id))}/pause"))
         return score(llm, conv, rubric)
 
     monkeypatch.setattr(training.agents, "score_conversation", press_pause_during_the_first_scenario)
@@ -387,16 +401,18 @@ def test_pause_and_resume_continue_from_saved_progress(authed_client, fakes, mon
     assert r.status_code == 200 and r.json()["status"] == "pausing"
     assert set(r.json()) == set(created)
     d = authed_client.get(f"/api/trainings/{created['id']}").json()
-    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 1)
+    # Round 1's one batch and its training finish; it stops before round 2.
+    assert (d["status"], d["current_round"], d["scenarios_done"]) == ("paused", 1, 2)
 
     r = authed_client.post(f"/api/trainings/{d['id']}/resume")
     assert r.status_code == 200 and r.json()["status"] == "pending"
     d = authed_client.get(f"/api/trainings/{d['id']}").json()
     # Exactly the uninterrupted run (see test_create_runs_training_in_background): nothing was redone.
     assert (d["status"], d["current_round"], d["scenarios_done"], d["latest_prompt"]) == ("completed", 2, 4,
-                                                                                         "Be helpful.!?")
-    assert [w["score"] for w in d["score_windows"]] == [8.0, 8.5, 8.5, 8.5]
-    assert len(fakes) == 6  # 2 persona generations and 4 scorings
+                                                                                         "Be helpful.?")
+    assert [w["score"] for w in d["score_windows"]] == [7.75, 8.5, 8.5, 8.5]
+    assert (d["baseline_score"], d["best_score"]) == (7.0, 8.5)
+    assert len(fakes) == 10  # 2 persona generations and 8 scorings
 
 
 def test_pause_only_a_pending_or_running_training(authed_client, db, user):

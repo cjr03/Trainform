@@ -79,23 +79,8 @@ def test_create_rubric_rejects_empty():
         agents.create_rubric(FakeLLM({"criteria": [" ", ""]}), "p")
 
 
-def test_generate_improved_prompt():
-    llm = FakeLLM({"prompt": " Better prompt. "})
-    scores = [{"criterion": "Greets the user.", "score": 3}, {"criterion": "Is concise.", "score": 9}]
-    out = agents.generate_improved_prompt(llm, "Old prompt.", "user: hi\nassistant: yo", scores)
-    assert out == "Better prompt."
-    system, message, schema = llm.calls[0]
-    assert system == agents.PROMPT_GENERATOR_SYSTEM
-    assert "<current_prompt>\nOld prompt.\n</current_prompt>" in message
-    assert "<conversation>\nuser: hi\nassistant: yo\n</conversation>" in message
-    assert "Greets the user.: 3/10" in message and "Is concise.: 9/10" in message
-    assert "<best_prompt>" not in message and "<recent_scores>" not in message
-    assert_strict(schema)
-
-
 @pytest.mark.parametrize("call", [
     lambda llm: agents.create_prompt(llm, "A bike shop's support agent."),
-    lambda llm: agents.generate_improved_prompt(llm, "Old.", "c", [{"criterion": "a", "score": 3}]),
     lambda llm: agents.review_round(llm, "Old.", [("a", 3.0)], [("c", 3.0)]),
 ])
 @pytest.mark.parametrize("reply", [
@@ -115,16 +100,6 @@ def test_tags_inside_a_prompt_are_kept():
     assert agents.create_prompt(FakeLLM({"prompt": prompt}), "d") == prompt
 
 
-def test_generate_improved_prompt_sees_its_track_record():
-    # So it can build on the best version so far and tell whether its last edit helped.
-    llm = FakeLLM({"prompt": "Better."})
-    agents.generate_improved_prompt(llm, "Current.", "c", [], best=("Best so far.", 8.5), recent=[6, 7.25, 5])
-    _, message, _ = llm.calls[0]
-    assert "<best_prompt>\nBest so far.\n</best_prompt>" in message
-    assert "<best_score>\n8.5\n</best_score>" in message
-    assert "<recent_scores>\n6.0, 7.2, 5.0\n</recent_scores>" in message
-
-
 def test_review_round():
     llm = FakeLLM({"prompt": " Next round's prompt. "})
     out = agents.review_round(llm, "Round's best prompt.", [("Greets the user.", 8.25), ("Is concise.", 4.5)],
@@ -139,14 +114,29 @@ def test_review_round():
     assert "<conversation>" not in message
 
 
+def test_teacher_reply_writes_the_reply_the_agent_should_have_sent():
+    llm = FakeLLM({"reply": " Sure, which bike is it? "})
+    assert agents.teacher_reply(llm, "You fix bikes.", "my chain fell off", ["Asks for the bike first."]) == (
+        "Sure, which bike is it?")
+    system, message, schema = llm.calls[0]
+    assert system == agents.TEACHER_SYSTEM
+    assert "<agent_prompt>\nYou fix bikes.\n</agent_prompt>" in message
+    assert "<message>\nmy chain fell off\n</message>" in message and "Asks for the bike first." in message
+    assert_strict(schema)
+
+
+def test_propose_local_restates_the_weakest_criteria_as_the_prompts_last_section():
+    means = [("Greets the user.", 9.0), ("Asks for the order number.", 3.0), ("Is concise.", 5.0), ("No jargon.", 7.0)]
+    first = agents.propose_local("You help.", means)
+    assert first == "You help." + agents.FOCUS_HEADER + "- Asks for the order number.\n- Is concise."
+    assert agents.propose_local(first, means).count(agents.FOCUS_HEADER) == 1  # replaced, not stacked
+    # After rejected candidates, the next ones press on other criteria.
+    assert agents.propose_local(first, means, rejected=1).endswith("- No jargon.\n- Greets the user.")
+
+
 def test_review_round_rejects_empty():
     with pytest.raises(LLMError):
         agents.review_round(FakeLLM({"prompt": ""}, {"prompt": ""}), "p", [], [])
-
-
-def test_generate_improved_prompt_rejects_empty():
-    with pytest.raises(LLMError):
-        agents.generate_improved_prompt(FakeLLM({"prompt": ""}, {"prompt": ""}), "p", "c", [])
 
 
 KEYED_2 = {"type": "object", "properties": {"c1": {"type": "integer"}, "c2": {"type": "integer"}},
@@ -273,7 +263,7 @@ def test_a_persona_missing_a_rating_is_retried_then_an_llm_error():
 @pytest.mark.parametrize("call, outputs", [
     (lambda llm: agents.create_prompt(llm, "d"), [{"text": "x"}]),
     (lambda llm: agents.create_rubric(llm, "p"), [{"criteria": [3]}]),
-    (lambda llm: agents.generate_improved_prompt(llm, "p", "c", []), ["not json"]),
+    (lambda llm: agents.teacher_reply(llm, "p", "m", ["a"]), ["not json"]),
     (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": {"c1": "high"}}]),
     (lambda llm: agents.score_conversation(llm, "c", ["a"]), [{"scores": {}}]),
     (lambda llm: agents.generate_personas(llm, "p", 1), [{"criteria": ["x"]}, {"personas": [{"prompt": "a"}]}]),

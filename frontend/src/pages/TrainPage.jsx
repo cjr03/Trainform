@@ -487,7 +487,7 @@ function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, e
           max={training.rounds}
         />
       </div>
-      <h3 className="m-0 text-base">Latest model scores</h3>
+      <h3 className="m-0 text-base">Practice scores</h3>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {WINDOWS.map(([key, title]) => {
           const w = training.score_windows.find((x) => x.label === key)
@@ -533,6 +533,11 @@ function CompleteStep({ training, onReset }) {
           {score(training.best_score)}
           <small className="ml-2 text-lg text-muted-foreground">/ 10</small>
         </span>
+        {training.baseline_score != null && (
+          <span className="text-sm text-muted-foreground">
+            {score(training.baseline_score)} before training, on the same eval users
+          </span>
+        )}
       </div>
       <h3 className="m-0 text-base">Best prompt</h3>
       <pre
