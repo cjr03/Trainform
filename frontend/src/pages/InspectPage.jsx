@@ -325,11 +325,11 @@ export default function InspectPage() {
       await api.pauseTraining(trainingId)
       setVersion((v) => v + 1)
     })
-  // The Train page opens the training in progress, so the resumed one is shown there.
+  // The Train (or Battle) page opens the training in progress, so the resumed one is shown there.
   const resume = () =>
     act(async () => {
-      await api.resumeTraining(trainingId)
-      navigate('/train')
+      const t = await api.resumeTraining(trainingId)
+      navigate(t.battle ? '/battle' : '/train')
     })
   // Runs from the confirmation dialog's Delete button.
   const remove = () =>

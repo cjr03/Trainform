@@ -77,6 +77,9 @@ class Training(Base):
     # finished round's); deferred so listing trainings doesn't load it.
     adapter: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     helper: Mapped[str | None] = mapped_column(String(16))  # llm.Helper the user chose; None: Claude if linked
+    # None: a training. A battle starts as {} and ends with its head to head (see training._battle):
+    # {"winner": "champion" | "challenger", "bouts": [{"message", "champion", "challenger", "verdict"}]}.
+    battle: Mapped[dict | None] = mapped_column(JSON)
 
     user: Mapped[User] = relationship(back_populates="trainings")
 

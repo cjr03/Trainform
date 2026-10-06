@@ -271,6 +271,7 @@ it('starts training with the exact config and locks the setup steps', async () =
     scenarios: 8,
     rounds: 4,
     helper: 'local',
+    battle: false,
   })
   await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
   for (const name of ['Agent', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
@@ -672,4 +673,70 @@ it("won't train a copied agent until its base model is downloaded", async () => 
   await user.click(await bike())
   expect(screen.getByRole('status')).toHaveTextContent("qwen-0.5b isn't downloaded yet")
   expect(nextButton()).toBeDisabled()
+})
+
+it('battles the agent and shows the head to head and which side kept it', async () => {
+  const user = userEvent.setup()
+  render(<TrainPage battle />)
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Battle your agent')
+  await user.click(await bike())
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  const bouts = [
+    { message: 'Brakes squeal', champion: 'Bring it in.', challenger: 'Try cleaning the pads first.', verdict: 1 },
+    { message: 'Price?', champion: 'From $20.', challenger: 'It varies.', verdict: -1 },
+    { message: 'Open Sunday?', champion: 'No.', challenger: 'No, sorry.', verdict: 1 },
+  ]
+  const won = detail({ status: 'completed', best_prompt: 'Be helpful.\nClean first.', battle: { winner: 'challenger', bouts } })
+  api.startTraining.mockResolvedValue(won)
+  await user.click(screen.getByRole('button', { name: 'Start battle' }))
+  expect(api.startTraining).toHaveBeenCalledWith(expect.objectContaining({ agent_id: 1, battle: true }))
+  const steps = within(screen.getByRole('list', { name: 'Battle workflow' }))
+  await user.click(steps.getByRole('button', { name: /Result/ }))
+  expect(screen.getByTestId('battle-score')).toHaveTextContent('1 – 2')
+  expect(screen.getByRole('status')).toHaveTextContent('The challenger wins. Your agent now has its prompt and weights.')
+  expect(screen.getByText('Winning prompt')).toBeInTheDocument()
+  expect(screen.getByText('Bout 2: Champion wins')).toBeInTheDocument()
+  expect(screen.getByText('Challenger: Try cleaning the pads first.')).toBeInTheDocument()
+})
+
+it('says the agent held when the champion wins, and starts a new battle', async () => {
+  const user = userEvent.setup()
+  const bouts = [{ message: 'Hi', champion: 'Hello!', challenger: 'Hi.', verdict: 0 }]
+  sessionStorage.setItem('trainform_battle_draft', JSON.stringify({
+    step: 4, training: detail({ status: 'completed', battle: { winner: 'champion', bouts } }),
+  }))
+  api.getTraining.mockResolvedValue(detail({ status: 'completed', battle: { winner: 'champion', bouts } }))
+  render(<TrainPage battle />)
+  expect(await screen.findByTestId('battle-score')).toHaveTextContent('0 – 0')
+  expect(screen.getByText('1 tie over 1 new users')).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('Your agent holds. It keeps its prompt and weights.')
+  await user.click(screen.getByRole('button', { name: 'Start a new battle' }))
+  expect(sessionStorage.getItem('trainform_battle_draft')).not.toContain('champion')
+})
+
+it('keeps trainings and battles apart', async () => {
+  api.listTrainings.mockResolvedValue([{ id: 7, status: 'running', battle: true }])
+  const { unmount } = render(<TrainPage />)
+  await waitFor(() => expect(api.listTrainings).toHaveBeenCalled())
+  expect(api.getTraining).not.toHaveBeenCalled()
+  unmount()
+  api.getTraining.mockResolvedValue(detail({ battle: {} }))
+  render(<TrainPage battle />)
+  await waitFor(() => expect(api.getTraining).toHaveBeenCalledWith(7))
+})
+
+it('says a training is in progress, rather than opening it, when a battle is started', async () => {
+  const user = userEvent.setup()
+  render(<TrainPage battle />)
+  await user.click(await bike())
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  api.startTraining.mockRejectedValue(Object.assign(new Error('You already have a training in progress.'), { status: 409 }))
+  api.listTrainings.mockResolvedValue([{ id: 9, status: 'running', battle: false }])
+  await user.click(screen.getByRole('button', { name: 'Start battle' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('You already have a training in progress.')
+  expect(api.getTraining).not.toHaveBeenCalled()
 })

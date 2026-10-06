@@ -1,4 +1,4 @@
-import { Download, Pause, Play, Plus, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
+import { Download, Pause, Play, Plus, RotateCcw, Sparkles, Swords, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,14 @@ const STEPS = [
   ['Training', 'Each round tests the agent against new personas, scores it and trains a better version. Pause stops at once, dropping the step in progress.'],
   ['Complete', 'Training finished. Take the best prompt and LoRA weights with you.'],
 ]
+// A battle sets up like a training; its rounds train a challenger, which then meets the agent head to head.
+const BATTLE_STEPS = [
+  ['Agent', 'Pick your agent, the champion, and whether Claude or your local model runs the helper agents.'],
+  STEPS[1],
+  ['Scenarios', 'Choose how many personas each round tests (and so how many bouts the battle has), and how many rounds train the challenger.'],
+  ['Battle', 'The rounds train a challenger from your agent. Then both answer the same new users and a judge picks each bout. It costs more than training, and your agent only changes if the challenger wins. Pause stops at once.'],
+  ['Result', 'The winner keeps the agent. Take its prompt and LoRA weights with you.'],
+]
 const WINDOWS = [
   ['n', 'Total runs'],
   ['n/2', 'Last 50%'],
@@ -33,18 +41,18 @@ const ACTIVE = ['pending', 'running', 'pausing'] // a user has at most one train
 
 // The setup and the training on screen, kept for this tab so leaving the page or reloading loses neither.
 // Signing in or out clears it (clearToken). Storage can be unavailable (e.g. blocked); the page then just forgets.
-const DRAFT_KEY = 'trainform_train_draft'
-const loadDraft = () => {
+const draftKey = (battle) => (battle ? 'trainform_battle_draft' : 'trainform_train_draft')
+const loadDraft = (key) => {
   try {
-    return JSON.parse(sessionStorage.getItem(DRAFT_KEY)) ?? {}
+    return JSON.parse(sessionStorage.getItem(key)) ?? {}
   } catch {
     return {}
   }
 }
-const storeDraft = (draft) => {
+const storeDraft = (key, draft) => {
   try {
-    if (draft) sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-    else sessionStorage.removeItem(DRAFT_KEY)
+    if (draft) sessionStorage.setItem(key, JSON.stringify(draft))
+    else sessionStorage.removeItem(key)
   } catch {
     // Unavailable or full: nothing to keep.
   }
@@ -235,27 +243,30 @@ function TrainingStep({ training, pollError, onReset, onPause, onResume, busy, e
 function CompleteStep({ training, onReset }) {
   const [run, busy, error] = useAction()
   if (!training) return null
-  const { id } = training
+  const { id, battle } = training
   const save = (fetchBlob, filename) => run(async () => saveBlob(await fetchBlob(id), filename))
-
   return (
     <div className="grid gap-4">
-      <div className="flex flex-col items-center gap-1 pt-3 pb-2">
-        <span className="text-sm text-muted-foreground">Best score</span>
-        <span
-          className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
-          data-testid="best-score"
-        >
-          {score(training.best_score)}
-          <small className="ml-2 text-lg text-muted-foreground">/ 10</small>
-        </span>
-        {training.baseline_score != null && (
-          <span className="text-sm text-muted-foreground">
-            {score(training.baseline_score)} before training, on the same eval users
+      {battle?.winner ? (
+        <BattleResult battle={battle} />
+      ) : (
+        <div className="flex flex-col items-center gap-1 pt-3 pb-2">
+          <span className="text-sm text-muted-foreground">Best score</span>
+          <span
+            className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
+            data-testid="best-score"
+          >
+            {score(training.best_score)}
+            <small className="ml-2 text-lg text-muted-foreground">/ 10</small>
           </span>
-        )}
-      </div>
-      <h3 className="m-0 text-base">Best prompt</h3>
+          {training.baseline_score != null && (
+            <span className="text-sm text-muted-foreground">
+              {score(training.baseline_score)} before training, on the same eval users
+            </span>
+          )}
+        </div>
+      )}
+      <h3 className="m-0 text-base">{battle?.winner ? 'Winning prompt' : 'Best prompt'}</h3>
       <pre
         className="m-0 max-h-80 overflow-auto rounded-lg border bg-background/60 p-4 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]"
         data-testid="best-prompt"
@@ -275,9 +286,51 @@ function CompleteStep({ training, onReset }) {
           </Button>
         )}
         <Button type="button" variant="ghost" onClick={onReset}>
-          Start a new training
+          {battle ? 'Start a new battle' : 'Start a new training'}
         </Button>
       </div>
+    </div>
+  )
+}
+
+const VERDICT = { 1: 'Challenger wins', '-1': 'Champion wins', 0: 'Tie' }
+
+function BattleResult({ battle }) {
+  const count = (verdict) => battle.bouts.filter((b) => b.verdict === verdict).length
+  return (
+    <div className="grid gap-3">
+      <div className="flex flex-col items-center gap-1 pt-3 pb-2">
+        <span className="text-sm text-muted-foreground">Champion vs challenger</span>
+        <span
+          className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
+          data-testid="battle-score"
+        >
+          {count(-1)} – {count(1)}
+        </span>
+        <span className="text-sm text-muted-foreground">
+          {count(0)} {count(0) === 1 ? 'tie' : 'ties'} over {battle.bouts.length} new users
+        </span>
+        <p role="status" className="m-0 pt-2 text-center font-semibold">
+          {battle.winner === 'challenger'
+            ? 'The challenger wins. Your agent now has its prompt and weights.'
+            : 'Your agent holds. It keeps its prompt and weights.'}
+        </p>
+      </div>
+      <details className="rounded-lg border p-3">
+        <summary className="cursor-pointer text-sm font-medium">Bouts</summary>
+        <ol className="m-0 mt-3 grid gap-3 p-0">
+          {battle.bouts.map((b, i) => (
+            <li key={i} className="grid gap-1.5 border-t pt-3 text-sm [overflow-wrap:anywhere] first:border-t-0 first:pt-0">
+              <span className="font-semibold">
+                Bout {i + 1}: {VERDICT[b.verdict]}
+              </span>
+              <span className="text-muted-foreground">User: {b.message}</span>
+              <span>Champion: {b.champion}</span>
+              <span>Challenger: {b.challenger}</span>
+            </li>
+          ))}
+        </ol>
+      </details>
     </div>
   )
 }
@@ -352,8 +405,9 @@ function AgentStep({ agents, error, value, onChange, onCopied }) {
   )
 }
 
-function Dashboard({ onReset }) {
-  const [draft] = useState(loadDraft)
+function Dashboard({ battle, onReset }) {
+  const [draft] = useState(() => loadDraft(draftKey(battle)))
+  const steps = battle ? BATTLE_STEPS : STEPS
   const [step, setStep] = useState(draft.step ?? 0)
   const [agentId, setAgentId] = useState(draft.agentId ?? null)
   const [agents, setAgents] = useState(null)
@@ -387,8 +441,8 @@ function Dashboard({ onReset }) {
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
 
   useEffect(
-    () => storeDraft({ step, agentId, helper, rubric, scenarios, rounds, training }),
-    [step, agentId, helper, rubric, scenarios, rounds, training],
+    () => storeDraft(draftKey(battle), { step, agentId, helper, rubric, scenarios, rounds, training }),
+    [battle, step, agentId, helper, rubric, scenarios, rounds, training],
   )
 
   useEffect(() => {
@@ -413,7 +467,7 @@ function Dashboard({ onReset }) {
     api
       .listTrainings()
       .then(async (list) => {
-        const id = list.find((t) => ACTIVE.includes(t.status))?.id ?? draft.training?.id
+        const id = list.find((t) => ACTIVE.includes(t.status) && Boolean(t.battle) === battle)?.id ?? draft.training?.id
         if (id == null) return
         const t = await api.getTraining(id)
         if (!live) return
@@ -474,12 +528,14 @@ function Dashboard({ onReset }) {
         scenarios: Number(scenarios),
         rounds: Number(rounds),
         helper,
+        battle,
       }
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
       const t = await api.startTraining(config).catch(async (e) => {
         if (e.status !== 409) throw e
         const active = (await api.listTrainings()).find((t) => ACTIVE.includes(t.status))
-        if (!active) throw e // it finished in the meantime
+        // Finished in the meantime, or the other kind (a battle on Train, a training on Battle): say it's busy.
+        if (!active || Boolean(active.battle) !== battle) throw e
         return api.getTraining(active.id)
       })
       setTraining(t)
@@ -604,10 +660,10 @@ function Dashboard({ onReset }) {
 
   return (
     <div className="train-page" data-testid="train-page">
-      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">Train an agent</h1>
+      <h1 className="m-0 text-center text-[clamp(1.6rem,3vw,2.4rem)]">{battle ? 'Battle your agent' : 'Train an agent'}</h1>
 
-      <ol className="stepper" aria-label="Training workflow" style={{ '--progress': step / (STEPS.length - 1) }}>
-        {STEPS.map(([name], i) => (
+      <ol className="stepper" aria-label={battle ? 'Battle workflow' : 'Training workflow'} style={{ '--progress': step / (steps.length - 1) }}>
+        {steps.map(([name], i) => (
           <li key={name} className="stepper-item" data-state={state(i)}>
             <button
               type="button"
@@ -628,7 +684,7 @@ function Dashboard({ onReset }) {
 
       <div className="slides">
         <div className="slides-track" style={{ transform: `translateX(${-100 * step}%)` }}>
-          {STEPS.map(([name, blurb], i) => (
+          {steps.map(([name, blurb], i) => (
             <section
               key={name}
               ref={(el) => {
@@ -665,7 +721,8 @@ function Dashboard({ onReset }) {
             </Button>
           ) : (
             <Button type="button" disabled={!valid.every(Boolean) || starting} onClick={start}>
-              {starting ? <Spinner /> : <Play />}Start training
+              {starting ? <Spinner /> : battle ? <Swords /> : <Play />}
+              {battle ? 'Start battle' : 'Start training'}
             </Button>
           )}
         </div>
@@ -674,11 +731,11 @@ function Dashboard({ onReset }) {
   )
 }
 
-export default function TrainPage() {
+export default function TrainPage({ battle = false }) {
   const [run, setRun] = useState(0)
   const reset = () => {
-    storeDraft(null)
+    storeDraft(draftKey(battle), null)
     setRun((r) => r + 1)
   }
-  return <Dashboard key={run} onReset={reset} />
+  return <Dashboard key={run} battle={battle} onReset={reset} />
 }

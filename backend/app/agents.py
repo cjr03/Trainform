@@ -108,6 +108,13 @@ Be consistent: the same reply must always get the same scores.
 
 Return each criterion's score under that criterion's key."""
 
+JUDGE_SYSTEM = """\
+You judge a head-to-head between two AI agents. You will receive a customer's message in <message>, two replies to \
+it in <reply_a> and <reply_b>, and in <rubric> the criteria replies are graded on, one per line. Decide which reply \
+better meets the rubric as a whole, weighing the criteria the message actually tests most. Judge only what each \
+reply says, never its position or length. Answer "tie" only when neither is better on any criterion that matters \
+here."""
+
 PERSONA_GENERATOR_SYSTEM = """\
 You design simulated customers who test an AI agent against its grading rubric. You will receive the agent's system \
 prompt in <agent_prompt> tags, the criteria its replies are graded on in <criteria> tags, one per line, each after its \
@@ -237,6 +244,7 @@ REPLY_SCHEMA = _schema(reply=STRING)
 SVG_SCHEMA = _schema(svg=STRING)
 RUBRIC_SCHEMA = _schema(criteria=_array(STRING))
 SCORE_SCHEMA = _schema(score=INTEGER)
+VERDICT_SCHEMA = _schema(winner={"type": "string", "enum": ["A", "B", "tie"]})
 
 
 # A per-criterion value is a required key (c1..cN), not an array entry: structured outputs can't fix an array's length,
@@ -367,6 +375,28 @@ def score_conversations(llm, conversations: list[str], rubric: list[str]) -> lis
     scores = [_clamp(out["score"]) for out in outs]
     return [[{"criterion": c, "score": s} for c, s in zip(rubric, scores[i:i + len(rubric)])]
             for i in range(0, len(scores), len(rubric))]
+
+
+def judge_bouts(llm, bouts: list[tuple[str, str, str]], rubric: list[str]) -> list[int]:
+    """Judge agent: [(message, champion's reply, challenger's reply)] -> per bout 1 if the challenger's reply is
+    better, -1 if the champion's, 0 for a tie. Claude judges each pair twice with the replies swapped and only a
+    verdict both agree on counts, so a preference for one position can't decide a bout. A small local model can't
+    compare two replies reliably, so it scores each on the rubric and the higher mean wins."""
+    if getattr(llm, "local", False):
+        scores = score_conversations(llm, [f"User: {m}\nAssistant: {r}" for m, *replies in bouts for r in replies],
+                                     rubric)
+        means = [fmean(x["score"] for x in sc) for sc in scores]
+        return [(b > a) - (b < a) for a, b in zip(means[::2], means[1::2])]
+    criteria = "\n".join(f"- {c}" for c in rubric)
+
+    def a_wins(pair):  # 1 if reply_a is better, -1 if reply_b is
+        message, a, b = pair
+        text = "\n\n".join([_tag("message", message), _tag("reply_a", a), _tag("reply_b", b), _tag("rubric", criteria)])
+        return _ask(llm, JUDGE_SYSTEM, text, VERDICT_SCHEMA, lambda out: {"A": 1, "B": -1, "tie": 0}[out["winner"]])
+
+    verdicts = concurrently(llm, a_wins, list(bouts) + [(m, b, a) for m, a, b in bouts])
+    # The first half put the champion first, so its -1 is the challenger's win; the second half, the challenger.
+    return [second if second == -first else 0 for first, second in zip(verdicts, verdicts[len(bouts):])]
 
 
 def generate_personas(llm, agent_prompt: str, n: int, rubric: list[str] | None = None,

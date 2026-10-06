@@ -23,7 +23,8 @@ async def lifespan(_app: FastAPI):
         conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
                           "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea, "
                           "ADD COLUMN IF NOT EXISTS helper varchar(16), "
-                          "ADD COLUMN IF NOT EXISTS agent_id integer REFERENCES agents(id) ON DELETE CASCADE"))
+                          "ADD COLUMN IF NOT EXISTS agent_id integer REFERENCES agents(id) ON DELETE CASCADE, "
+                          "ADD COLUMN IF NOT EXISTS battle json"))
         # Every user without an agent gets the seed agent, on their latest training's model; trainings from before
         # agents existed belong to it.
         latest_model = "SELECT base_model FROM trainings t WHERE t.user_id = u.id ORDER BY t.id DESC LIMIT 1"

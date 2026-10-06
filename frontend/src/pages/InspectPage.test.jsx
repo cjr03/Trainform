@@ -81,6 +81,7 @@ const renderPage = (path = '/inspect?agent=1') =>
           }
         />
         <Route path="/train" element={<p>Train page stub</p>} />
+        <Route path="/battle" element={<p>Battle page stub</p>} />
       </Routes>
     </MemoryRouter>,
   )
@@ -414,6 +415,16 @@ it('resumes a paused training and opens it on the Train page', async () => {
   await user.click(screen.getByRole('button', { name: 'Resume training' }))
   expect(api.resumeTraining).toHaveBeenCalledWith(5)
   expect(await screen.findByText('Train page stub')).toBeInTheDocument()
+})
+
+it('opens a resumed battle on the Battle page', async () => {
+  api.listTrainings.mockResolvedValue(more)
+  api.resumeTraining.mockResolvedValue({ battle: {} })
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await option(/phi-2/))
+  await user.click(screen.getByRole('button', { name: 'Resume training' }))
+  expect(await screen.findByText('Battle page stub')).toBeInTheDocument()
 })
 
 it('shows a failed training error and retries it from the keyboard', async () => {
