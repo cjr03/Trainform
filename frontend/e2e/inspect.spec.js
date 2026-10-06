@@ -11,7 +11,7 @@ test('inspect a finished training down to one scenario', async ({ page, request 
   // Inspect starts with agent selection; an agent's trainings show once it is picked.
   await page.getByRole('link', { name: 'Inspect', exact: true }).click()
   const agents = page.getByRole('region', { name: 'Agents' })
-  await expect(agents.getByRole('button', { name: /^Bike Repair Agent/ }).getByRole('img', { name: 'Unranked' })).toHaveText('--')
+  await expect(agents.getByRole('button')).toHaveCount(1) // only the trained agent: no seeded one
   await expect(agents.getByRole('button', { name: new RegExp(`^${training.agent.name}`) })).toContainText('OVR')
   await expect(page.getByRole('region', { name: 'Trainings' })).toHaveCount(0)
   const transcript = await openScenario(page, training)

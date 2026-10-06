@@ -26,16 +26,21 @@ async def lifespan(_app: FastAPI):
                           "ADD COLUMN IF NOT EXISTS agent_id integer REFERENCES agents(id) ON DELETE CASCADE, "
                           "ADD COLUMN IF NOT EXISTS battle json"))
         conn.execute(text("ALTER TABLE trained_models ALTER COLUMN mean_score DROP NOT NULL"))
-        # Every user without an agent gets the seed agent, on their latest training's model; trainings from before
-        # agents existed belong to it.
+        # Trainings from before agents existed belong to the seed agent, made for their user (on their latest
+        # training's model) if they have no agent yet. No one else gets one.
         latest_model = "SELECT base_model FROM trainings t WHERE t.user_id = u.id ORDER BY t.id DESC LIMIT 1"
         conn.execute(text(f"INSERT INTO agents (user_id, name, base_model, prompt) "
-                          f"SELECT u.id, :name, COALESCE(({latest_model}), :model), :prompt FROM users u "
-                          f"WHERE NOT EXISTS (SELECT 1 FROM agents a WHERE a.user_id = u.id)"),
-                     models.SEED_AGENT | {"model": models.DEFAULT_BASE_MODEL})
+                          f"SELECT u.id, :name, ({latest_model}), :prompt FROM users u "
+                          f"WHERE NOT EXISTS (SELECT 1 FROM agents a WHERE a.user_id = u.id) "
+                          f"AND EXISTS (SELECT 1 FROM trainings t WHERE t.user_id = u.id AND t.agent_id IS NULL)"),
+                     models.SEED_AGENT)
         conn.execute(text("UPDATE trainings t SET agent_id = a.id FROM agents a "
                           "WHERE t.agent_id IS NULL AND a.user_id = t.user_id AND a.name = :name"),
                      {"name": models.SEED_AGENT["name"]})
+        # Signup used to give everyone the seed agent: drop those still as seeded (same name and prompt, never
+        # trained), so no one keeps an untrained Bike Repair Agent they never asked for.
+        conn.execute(text("DELETE FROM agents a WHERE a.name = :name AND a.prompt = :prompt AND a.weights IS NULL "
+                          "AND NOT EXISTS (SELECT 1 FROM trainings t WHERE t.agent_id = a.id)"), models.SEED_AGENT)
         # Training runs are background threads of this process, so any left active died with the last one. Their
         # progress is saved, so they wait, paused, for the user to resume them.
         conn.execute(update(models.Training).where(models.Training.status.in_(models.ACTIVE))
