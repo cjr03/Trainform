@@ -44,6 +44,7 @@ class Agent(Base):
     # Zipped LoRA adapter of its best trained model so far (see agent_profiles.sync_agent); None: the base weights.
     weights: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     image: Mapped[str | None] = mapped_column(Text)  # SVG markup that passed svg.sanitise
+    overall: Mapped[int | None]  # a copied post's overall, shown until the agent's own trainings score it
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

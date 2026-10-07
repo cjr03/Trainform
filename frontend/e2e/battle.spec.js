@@ -17,17 +17,19 @@ test('battle an agent against its optimised challenger; level grades keep the ag
   await page.getByRole('button', { name: 'Next' }).click()
   await page.getByLabel('Simulated scenarios per round').fill('2')
   await page.getByLabel('Training rounds').fill('1')
+  await page.getByLabel('Battle rounds').selectOption({ label: 'Best of 3' })
   await page.getByRole('button', { name: 'Start battle' }).click()
 
   // The fake model's replies are the same whatever its weights, so both sides grade the same and the champion holds.
   await expect(page.getByTestId('battle-score')).toHaveText(/^(\d+\.\d) – \1$/, { timeout: 30_000 })
   await expect(page.getByText('Your agent holds. It keeps its prompt and weights.')).toBeVisible()
   await page.locator('summary', { hasText: 'Scenarios' }).click()
-  await expect(page.getByText(/^Scenario \d: (\d+\.\d) – \1$/)).toHaveCount(2)
+  await expect(page.getByTestId('rounds-won')).toHaveText('Rounds won 0 – 0') // level every round: a tie keeps yours
+  await expect(page.getByText(/^Scenario \d: (\d+\.\d) – \1$/)).toHaveCount(6) // 2 new users a round
   const saved = await (await request.get(`/api/agents/${agent.id}`, { headers: user.auth })).json()
   expect(saved.prompt).toBe('You help bike shop customers.')
   await expect(page.getByRole('region', { name: 'Past battles' }).getByRole('button')).toContainText(
-    'Challenger trained for 1 round · Your agent held')
+    '3 battle rounds · challenger trained for 1 round · Your agent held')
 
   // The Train page doesn't pick up the battle.
   await page.getByRole('link', { name: 'Train', exact: true }).click()

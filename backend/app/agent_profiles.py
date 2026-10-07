@@ -70,11 +70,16 @@ def available_models(user: User) -> set[str]:
 
 
 def _out(models: set[str], a: Agent, best: float | None, trainings) -> dict:
-    """`best`: the agent's highest score over its trainings' trained rounds, as a 0-100 "overall" (None: Unranked).
+    """`best`: the agent's highest score over its trainings' trained rounds (see overall).
     `models`: available_models; an agent copied from a post may be on a model the user has yet to download."""
     return {"id": a.id, "name": a.name, "base_model": a.base_model, "prompt": a.prompt, "image": a.image,
-            "model_available": a.base_model in models, "overall": None if best is None else round(10 * best),
+            "model_available": a.base_model in models, "overall": overall(a, best),
             "trainings": trainings, "created_at": a.created_at}
+
+
+def overall(a: Agent, best: float | None) -> int | None:
+    """`best` (see _rows) as a 0-100 score, else the overall of the post it was copied from (None: Unranked)."""
+    return a.overall if best is None else round(10 * best)
 
 
 def _rows(db: Session, user: User, agent_id: int | None = None) -> list:

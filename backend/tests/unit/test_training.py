@@ -845,6 +845,17 @@ def test_a_champion_that_grades_as_high_keeps_the_agent_unchanged(db, battle, la
     assert (battle.agent.prompt, battle.agent.weights) == ("P", None)  # the rounds' better models never synced
 
 
+def test_the_side_winning_more_battle_rounds_keeps_the_agent(db, battle, fake_agents):
+    # The challenger's mean grade is higher, but it wins only round 1 (users 1-3) of the battle's three.
+    fake_agents.score = lambda k, prompt, adapter: (10 if k <= 3 else 5) if adapter == "PK-2" else {"PK-0": 6, "PK-1": 7}[adapter]
+    battle.training.battle = {"rounds": 3}
+    db.commit()
+    t, _ = run(db, battle.training)
+    assert [b["message"] for b in t.battle["bouts"]] == [f"msg from persona {k}" for k in range(1, 10)]
+    assert t.battle["round_grades"] == [[6, 10], [6, 5], [6, 5]]
+    assert t.battle["grades"][1] > t.battle["grades"][0] and t.battle["winner"] == "champion"
+
+
 def test_a_pause_during_the_battle_redoes_it_on_resume(db, battle, monkeypatch):
     load = FakeModel.load_adapter
 

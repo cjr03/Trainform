@@ -22,6 +22,8 @@ vi.mock('../api', () => ({
     setAgentImage: vi.fn(),
     feed: vi.fn(),
     copyPost: vi.fn(),
+    listTrainings: vi.fn(),
+    getTraining: vi.fn(),
   },
 }))
 
@@ -45,6 +47,7 @@ beforeEach(() => {
   api.listAgents.mockResolvedValue(AGENTS)
   api.getAgent.mockResolvedValue(agent())
   api.listLocalModels.mockResolvedValue([{ name: 'qwen-0.5b', source: 'hub' }])
+  api.listTrainings.mockResolvedValue([])
 })
 
 const card = (name) => screen.findByRole('button', { name: new RegExp(name) })
@@ -95,6 +98,39 @@ it('shows the selected agent: its full prompt, past trainings and a link to Insp
   expect(past[1]).toHaveTextContent('failed')
   expect(past[1]).toHaveTextContent('—')
   expect(within(detail).getByRole('link', { name: 'Open in Inspect' })).toHaveAttribute('href', '/inspect?agent=1')
+})
+
+it("shows the agent's past battles and opens one", async () => {
+  const user = userEvent.setup()
+  const battle = { rounds: 3, winner: 'challenger', grades: [6, 8], round_grades: [[6, 9], [7, 8], [5, 7]] }
+  api.listTrainings.mockResolvedValue([
+    { id: 12, status: 'completed', agent_name: 'Bike Repair Agent', created_at: '2026-10-03T10:00:00Z', rounds: 2, battle },
+    { id: 9, status: 'completed', battle: null },
+  ])
+  render(<AgentsPage />)
+  await user.click(await card('Bike Repair Agent'))
+  const past = within(await screen.findByRole('region', { name: 'Past battles' }))
+  expect(api.listTrainings).toHaveBeenCalledWith(1)
+  const row = past.getByRole('button')
+  expect(row).toHaveTextContent('3 battle rounds · challenger trained for 2 rounds · challenger won')
+
+  const bouts = [9, 8, 7].map((g) => ({ message: 'Hi', champion: 'Hello!', challenger: 'Hey.', grades: [6, g] }))
+  api.getTraining.mockResolvedValue({ id: 12, rounds: 2, battle: { ...battle, bouts } })
+  await user.click(row)
+  expect(api.getTraining).toHaveBeenCalledWith(12)
+  expect(await screen.findByTestId('rounds-won')).toHaveTextContent('Rounds won 0 – 3')
+  expect(screen.getByText('Round 2: 7.0 – 8.0')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Close battle' }))
+  expect(screen.queryByTestId('battle-score')).not.toBeInTheDocument()
+})
+
+it('says when an agent has no battles yet', async () => {
+  const user = userEvent.setup()
+  render(<AgentsPage />)
+  await user.click(await card('Bike Repair Agent'))
+  const past = within(await screen.findByRole('region', { name: 'Past battles' }))
+  expect(await past.findByText(/No battles yet/)).toBeInTheDocument()
+  expect(past.getByRole('link', { name: 'Battle page' })).toHaveAttribute('href', '/battle')
 })
 
 it('notes that a Claude agent only trains its prompt, and links an untrained agent to Train', async () => {

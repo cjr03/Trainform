@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import svg
-from app.agent_profiles import GenerateIn, _name_taken, _out, _rows, available_models, owned
+from app.agent_profiles import GenerateIn, _name_taken, _out, _rows, available_models, overall, owned
 from app.agents import _tag, draw_image
 from app.auth import avatar_url, current_user
 from app.db import get_db
@@ -110,7 +110,7 @@ def publish(body: PostIn, me: User = Depends(current_user), db: Session = Depend
     a = owned(db, body.agent_id, me)
     _, best, _ = _rows(db, me, a.id)[0]
     p = Post(user_id=me.id, agent_id=a.id, caption=body.caption or None, name=a.name, base_model=a.base_model,
-             prompt=a.prompt, weights=a.weights, image=a.image, overall=None if best is None else round(10 * best))
+             prompt=a.prompt, weights=a.weights, image=a.image, overall=overall(a, best))
     db.add(p)
     db.commit()
     return _posts(db, me, Post.id == p.id)[0]
@@ -153,7 +153,8 @@ def copy_post(post_id: int, me: User = Depends(current_user), db: Session = Depe
     while name in taken:
         n += 1
         name = f"{p.name[:100 - len(f' ({n})')]} ({n})"
-    a = Agent(user_id=me.id, name=name, base_model=p.base_model, prompt=p.prompt, weights=p.weights, image=p.image)
+    a = Agent(user_id=me.id, name=name, base_model=p.base_model, prompt=p.prompt, weights=p.weights, image=p.image,
+              overall=p.overall)
     db.add(a)
     try:
         db.commit()

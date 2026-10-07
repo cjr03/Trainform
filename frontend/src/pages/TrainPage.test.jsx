@@ -728,15 +728,45 @@ it('lists past battles with their rounds, and opens one', async () => {
   const past = within(await screen.findByRole('region', { name: 'Past battles' }))
   const [trained, challenge] = past.getAllByRole('button')
   expect(trained).toHaveTextContent('Bike Repair Agent vs challenger6.0 – 8.0')
-  expect(trained).toHaveTextContent('Challenger trained for 2 rounds · challenger won')
-  expect(challenge).toHaveTextContent('A challenge: no training rounds · Your agent held')
+  expect(trained).toHaveTextContent('1 battle round · challenger trained for 2 rounds · challenger won')
+  expect(challenge).toHaveTextContent('1 battle round · a challenge, no training · Your agent held')
 
   const bouts = [{ message: 'Hi', champion: 'Hello!', challenger: 'Hi.', grades: [6, 8] }]
   api.getTraining.mockResolvedValue(detail({ id: 8, status: 'completed', rounds: 2, battle: { ...battle, bouts } }))
   await user.click(trained)
   expect(api.getTraining).toHaveBeenCalledWith(8)
   expect(await screen.findByTestId('battle-score')).toHaveTextContent('6.0 – 8.0')
-  expect(screen.getByText('Challenger trained for 2 rounds')).toBeInTheDocument()
+  expect(screen.getByText('1 battle round · challenger trained for 2 rounds')).toBeInTheDocument()
+  expect(screen.queryByTestId('rounds-won')).not.toBeInTheDocument() // one round: the grades decide
+})
+
+it('shows past battles only on the first and result slides, and sends the battle rounds picked', async () => {
+  const user = userEvent.setup()
+  api.listTrainings.mockResolvedValue([
+    { id: 8, status: 'completed', agent_name: 'Bike Repair Agent', created_at: '2026-10-02T10:00:00Z', rounds: 2,
+      battle: { winner: 'champion', grades: [8, 6] } },
+  ])
+  render(<TrainPage battle />)
+  expect(await screen.findByRole('region', { name: 'Past battles' })).toBeInTheDocument()
+  await user.click(await bike())
+  await user.click(nextButton())
+  expect(screen.queryByRole('region', { name: 'Past battles' })).not.toBeInTheDocument()
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  expect(screen.queryByRole('region', { name: 'Past battles' })).not.toBeInTheDocument()
+  const rounds = screen.getByRole('combobox', { name: 'Battle rounds' })
+  expect([...rounds.options].map((o) => o.text)).toEqual(['1 round', 'Best of 3', 'Best of 5', 'Best of 7'])
+  await user.selectOptions(rounds, 'Best of 3')
+
+  const bouts = [9, 5, 5].map((g) => ({ message: 'Hi', champion: 'Hello!', challenger: 'Hey.', grades: [6, g] }))
+  const battle = { rounds: 3, winner: 'champion', grades: [6, 6.3], round_grades: [[6, 9], [6, 5], [6, 5]], bouts }
+  api.startTraining.mockResolvedValue(detail({ status: 'pending', battle: { rounds: 3 } }))
+  api.getTraining.mockResolvedValue(detail({ status: 'completed', battle }))
+  await user.click(screen.getByRole('button', { name: 'Start battle' }))
+  expect(api.startTraining).toHaveBeenCalledWith(expect.objectContaining({ battle: true, battle_rounds: 3 }))
+  expect(screen.queryByRole('region', { name: 'Past battles' })).not.toBeInTheDocument() // while it runs
+  expect(await screen.findByTestId('rounds-won', {}, { timeout: 4000 })).toHaveTextContent('Rounds won 2 – 1')
+  expect(await screen.findByRole('region', { name: 'Past battles' })).toBeInTheDocument() // refetched once it finished
 })
 
 it('keeps trainings and battles apart', async () => {

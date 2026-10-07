@@ -564,9 +564,9 @@ def test_training_syncs_its_agent(authed_client, fakes, db, agent):
 
 def test_create_a_battle(authed_client, fakes, monkeypatch, db):
     monkeypatch.setattr(training, "run_training", lambda *args: None)
-    r = authed_client.post("/api/trainings", json=BODY | {"battle": True})
-    assert (r.status_code, r.json()["battle"]) == (201, {})
-    assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [{}]
+    r = authed_client.post("/api/trainings", json=BODY | {"battle": True, "battle_rounds": 3})
+    assert (r.status_code, r.json()["battle"]) == (201, {"rounds": 3})
+    assert [t["battle"] for t in authed_client.get("/api/trainings").json()] == [{"rounds": 3}]
     # Once fought, the list has its result for past battles but not its bouts.
     db.get(Training, r.json()["id"]).battle = {"winner": "champion", "grades": [7, 6], "bouts": [{"message": "Hi"}]}
     db.commit()
@@ -585,7 +585,7 @@ def test_challenge_a_published_agent(authed_client, fakes, monkeypatch, db, agen
 
     r = authed_client.post("/api/trainings", json=BODY | {"battle": True, "opponent_post_id": theirs.id})
     assert r.status_code == 201
-    assert r.json()["battle"] == {"opponent": {"post_id": theirs.id, "name": "Rival", "author": "bob"}}
+    assert r.json()["battle"] == {"rounds": 1, "opponent": {"post_id": theirs.id, "name": "Rival", "author": "bob"}}
     t = db.get(Training, r.json()["id"])
     assert t.rounds == 0  # no challenger to train
     sides = db.query(TrainedModel).filter_by(training_id=t.id).order_by(TrainedModel.round).all()

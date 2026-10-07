@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
+import { BattleResult, PastBattles } from '@/components/battles'
 import { AgentImage, Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
 import { FindAgent } from '@/components/social'
 import { cn, useAction } from '@/lib/utils'
@@ -392,6 +393,7 @@ function AgentDetail({ id, onChanged, onDeleted }) {
   const [loadError, setLoadError] = useState('')
   const [draft, setDraft] = useState(null) // the prompt being edited
   const [svg, setSvg] = useState(null) // the image's SVG code being edited
+  const [battle, setBattle] = useState(null) // the past battle opened
   const [run, busy, error] = useAction()
   const [runImage, imageBusy, imageError] = useAction()
 
@@ -542,6 +544,29 @@ function AgentDetail({ id, onChanged, onDeleted }) {
             </p>
           )}
         </section>
+
+        <PastBattles
+          agentId={id}
+          Heading="h3"
+          onOpen={setBattle}
+          empty={
+            <p className="m-0 text-sm text-muted-foreground">
+              No battles yet. Battle it on the{' '}
+              <Link to="/battle" className="text-primary underline-offset-4 hover:underline">
+                Battle page
+              </Link>
+              .
+            </p>
+          }
+        />
+        {battle && (
+          <div className="grid gap-2 rounded-lg border p-3">
+            <BattleResult battle={battle.battle} rounds={battle.rounds} />
+            <Button type="button" variant="ghost" className="justify-self-start" onClick={() => setBattle(null)}>
+              Close battle
+            </Button>
+          </div>
+        )}
 
         <ErrorAlert>{error}</ErrorAlert>
         <div className="flex flex-wrap gap-2">
