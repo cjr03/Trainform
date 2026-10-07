@@ -274,6 +274,7 @@ it('starts training with the exact config and locks the setup steps', async () =
     helper: 'local',
     battle: false,
     opponent_post_id: null,
+    opponent_agent_id: null,
   })
   await waitFor(() => expect(step('Training')).toHaveAttribute('aria-current', 'step'))
   for (const name of ['Agent', 'Rubric', 'Scenarios']) expect(step(name)).toBeDisabled()
@@ -840,4 +841,29 @@ it('shows a battle from before grading as a training rather than crashing', asyn
   api.getTraining.mockResolvedValue(detail({ status: 'completed', best_score: 7.5, battle }))
   render(<TrainPage battle />)
   expect(await screen.findByTestId('best-score')).toHaveTextContent('7.5')
+})
+
+it('battles two of your own agents', async () => {
+  const twin = { ...AGENTS[0], id: 3, name: 'Bike Twin' }
+  api.listAgents.mockResolvedValue([...AGENTS, twin])
+  const user = userEvent.setup()
+  render(<TrainPage battle />)
+  await user.click(await bike())
+  await user.click(screen.getByRole('radio', { name: 'Battle my own agent' }))
+  const pick = screen.getByRole('combobox', { name: 'Your opponent' })
+  expect(within(pick).queryByRole('option', { name: /Bike Repair Agent/ })).toBeNull() // not itself
+  await user.selectOptions(pick, '2') // another base model: its weights wouldn't fit
+  expect(screen.getByRole('status')).toHaveTextContent('Only an agent on qwen-0.5b can battle yours')
+  expect(nextButton()).toBeDisabled()
+  await user.selectOptions(pick, '3')
+  await user.click(nextButton())
+  await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
+  await user.click(nextButton())
+  expect(screen.getByText('Bike Twin', { selector: 'dd' })).toBeInTheDocument()
+  api.startTraining.mockResolvedValue(detail({ status: 'pending', battle: { rounds: 1 } }))
+  api.getTraining.mockResolvedValue(detail({ battle: { rounds: 1 } }))
+  await user.click(screen.getByRole('button', { name: 'Start battle' }))
+  expect(api.startTraining).toHaveBeenCalledWith(
+    expect.objectContaining({ battle: true, opponent_agent_id: 3, opponent_post_id: null, rounds: 1 }),
+  )
 })

@@ -612,3 +612,33 @@ def test_challenge_a_published_agent(authed_client, fakes, monkeypatch, db, agen
     r = authed_client.post("/api/trainings", json=BODY | {"opponent_post_id": 999})
     assert (r.status_code, r.json()["detail"]) == (404, "Post not found")
     assert db.query(Training).count() == 0
+
+
+def test_battle_two_of_your_own_agents(authed_client, fakes, monkeypatch, db, user, agent):
+    monkeypatch.setattr(training, "run_training", lambda *args: None)
+    other = Agent(user_id=user.id, name="Sibling", base_model="tiny", prompt="Be bold.", weights=b"PK-sib")
+    big = Agent(user_id=user.id, name="Big", base_model="other", prompt="P")
+    bob = User(email="bob@example.com", username="bob", password_hash="x")
+    db.add_all([other, big, bob])
+    db.commit()
+    bobs = Agent(user_id=bob.id, name="Bob's", base_model="tiny", prompt="P")
+    db.add(bobs)
+    db.commit()
+
+    r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": other.id})
+    assert r.status_code == 201
+    assert r.json()["battle"] == {"rounds": 1, "opponent": {"agent_id": other.id, "name": "Sibling",
+                                                            "author": user.username}}
+    t = db.get(Training, r.json()["id"])
+    assert t.rounds == 0
+    sides = db.query(TrainedModel).filter_by(training_id=t.id).order_by(TrainedModel.round).all()
+    assert [(m.round, m.prompt, m.weights) for m in sides] == [(0, "Be helpful.", None), (1, "Be bold.", b"PK-sib")]
+
+    db.query(Training).delete()
+    db.commit()
+    for opponent, expected in [(agent.id, (400, "An agent can't battle itself.")),
+                               (big.id, (400, "Only an agent on tiny can battle yours; this one is on other.")),
+                               (bobs.id, (404, "Agent not found"))]:
+        r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": opponent})
+        assert (r.status_code, r.json()["detail"]) == expected
+    assert db.query(Training).count() == 0

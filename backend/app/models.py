@@ -77,9 +77,9 @@ class Training(Base):
     # finished round's); deferred so listing trainings doesn't load it.
     adapter: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     helper: Mapped[str | None] = mapped_column(String(16))  # llm.Helper the user chose; None: Claude if linked
-    # None (SQL NULL): a training. A battle starts as {"rounds": its head-to-head rounds} (and "opponent": {"post_id",
-    # "name", "author"} when it challenges a published agent instead of training a challenger) and its head to head
-    # adds (see training._battle): {"winner": "champion" | "challenger", "grades": [champion's, challenger's mean],
+    # None (SQL NULL): a training. A battle starts as {"rounds": its head-to-head rounds} (and "opponent": {"post_id" or
+    # "agent_id", "name", "author"} when it challenges a published or your own agent instead of training a challenger)
+    # and its head to head adds (see training._battle): {"winner": "champion" | "challenger", "grades": [champion's, challenger's mean],
     #  "round_grades": [[champion's, challenger's mean] per round],
     #  "bouts": [{"message", "champion", "challenger", "grades": [champion's, challenger's]}]}.
     battle: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))

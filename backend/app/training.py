@@ -160,7 +160,7 @@ def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
 
 def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -> None:
     """End a battle: the agent as it started (the champion, round 0) and the challenger (the best model its rounds
-    trained, or the published agent it challenges, round 1) answer the same new users and are graded on the rubric.
+    trained, or the agent it challenges, round 1) answer the same new users and are graded on the rubric.
     Each of the battle's rounds is n new users, won by the side with the higher mean grade on them, and the challenger
     replaces the agent only if it wins more rounds (so a tie keeps the champion). Either way the winner is the training's
     best model, so its downloads are the winner's. A side without weights runs on `base`, the base model's. Run in one
@@ -357,6 +357,7 @@ class TrainingIn(BaseModel):
     helper: Helper | None = None
     battle: bool = False  # optimise a challenger, then keep whichever of it and the agent wins a head to head
     opponent_post_id: int | None = None  # a battle against this published agent instead: no rounds, no challenger
+    opponent_agent_id: int | None = None  # or against another of your own agents
     battle_rounds: int = Field(1, ge=1, le=7)  # a battle's head-to-head rounds, each on new users (see _battle)
 
 
@@ -441,24 +442,29 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
     post = body.opponent_post_id and db.get(Post, body.opponent_post_id)
     if body.opponent_post_id and not post:
         raise HTTPException(404, "Post not found")
-    if post and post.base_model != agent.base_model:  # its weights wouldn't fit your agent
+    mine = body.opponent_agent_id and agent_profiles.owned(db, body.opponent_agent_id, user)
+    if mine and mine.id == agent.id:
+        raise HTTPException(400, "An agent can't battle itself.")
+    rival = post or mine
+    if rival and rival.base_model != agent.base_model:  # its weights wouldn't fit your agent
         raise HTTPException(400, f"Only an agent on {agent.base_model} can battle yours; this one is on "
-                                 f"{post.base_model}.")
+                                 f"{rival.base_model}.")
+    opponent = post and {"post_id": post.id, "name": post.name,
+                         "author": db.scalar(select(User.username).where(User.id == post.user_id))}
+    opponent = opponent or mine and {"agent_id": mine.id, "name": mine.name, "author": user.username}
 
     def insert():
         # The agent's weights are where it starts (see run_training).
         t = Training(user_id=user.id, agent_id=agent.id, base_model=agent.base_model, initial_prompt=agent.prompt,
                      adapter=agent.weights, rubric=body.rubric, scenarios_per_round=body.scenarios,
-                     rounds=0 if post else body.rounds, helper=body.helper,
-                     battle={"rounds": body.battle_rounds} | (
-                         {"opponent": {"post_id": post.id, "name": post.name,
-                                       "author": db.scalar(select(User.username).where(User.id == post.user_id))}}
-                         if post else {}) if post or body.battle else None)
+                     rounds=0 if rival else body.rounds, helper=body.helper,
+                     battle={"rounds": body.battle_rounds} | ({"opponent": opponent} if rival else {})
+                     if rival or body.battle else None)
         db.add(t)
-        if post:  # the two sides, copied now so later edits or deletes don't change the battle
+        if rival:  # the two sides, copied now so later edits or deletes don't change the battle
             db.flush()
             db.add_all([TrainedModel(training_id=t.id, round=0, prompt=agent.prompt, weights=agent.weights),
-                        TrainedModel(training_id=t.id, round=1, prompt=post.prompt, weights=post.weights)])
+                        TrainedModel(training_id=t.id, round=1, prompt=rival.prompt, weights=rival.weights)])
         db.commit()
         return t
 
