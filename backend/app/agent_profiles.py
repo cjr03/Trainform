@@ -20,7 +20,7 @@ from app.models import ACTIVE, Agent, TrainedModel, Training, User
 router = APIRouter(prefix="/agents", tags=["agent profiles"])
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-Prompt = Annotated[str, Field(min_length=1, max_length=20000)]
+Prompt = Annotated[str, Field(min_length=1)]
 
 
 class AgentIn(BaseModel):
