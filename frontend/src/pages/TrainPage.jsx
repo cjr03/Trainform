@@ -295,14 +295,16 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
-// A battle's opponent: a challenger trained from your agent, or a published agent picked from your feed or a
-// Trainformer's profile. Only one on your agent's base model fits: the winner's weights go to your agent.
-function OpponentStep({ agent, value, onChange }) {
-  const [mode, setMode] = useState(value ? 'challenge' : 'train')
+// A battle's opponent: a challenger trained from your agent, another of your agents, or a published agent picked
+// from your feed or a Trainformer's profile. Only one on your agent's base model fits: the winner's weights go to
+// your agent.
+function OpponentStep({ agent, agents, value, onChange }) {
+  const [mode, setMode] = useState(value ? (value.agent_id ? 'mine' : 'challenge') : 'train')
   const pick = (m) => {
     setMode(m)
-    if (m === 'train') onChange(null)
+    onChange(null)
   }
+  const others = agents?.filter((a) => a.id !== agent?.id) ?? []
   return (
     <div className="grid gap-3">
       <span id="battle-opponent" className="text-sm font-medium">
@@ -314,9 +316,36 @@ function OpponentStep({ agent, value, onChange }) {
         onValueChange={pick}
         options={[
           ['train', 'Train a challenger'],
+          ['mine', 'Battle my own agent'],
           ['challenge', 'Challenge an agent'],
         ]}
       />
+      {mode === 'mine' &&
+        (others.length ? (
+          <select
+            aria-label="Your opponent"
+            className="h-9 rounded-md border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [&_option]:bg-background"
+            value={value?.agent_id ?? ''}
+            onChange={(e) => {
+              const a = others.find((o) => o.id === Number(e.target.value))
+              onChange(a && { agent_id: a.id, name: a.name, base_model: a.base_model })
+            }}
+          >
+            <option value="">Pick one of your agents</option>
+            {others.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.base_model === 'claude' ? 'Claude' : a.base_model})
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="m-0 text-sm text-muted-foreground">You need a second agent to battle your own.</p>
+        ))}
+      {mode === 'mine' && value && agent && value.base_model !== agent.base_model && (
+        <p role="status" className="m-0 text-sm text-warning">
+          Only an agent on {agent.base_model} can battle yours: the winner's weights must fit it.
+        </p>
+      )}
       {mode === 'challenge' &&
         (value ? (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2.5 text-sm">
@@ -428,7 +457,7 @@ function Dashboard({ battle, onReset }) {
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
   const [rounds, setRounds] = useState(draft.rounds ?? '3')
   const [battleRounds, setBattleRounds] = useState(draft.battleRounds ?? '1')
-  const [opponent, setOpponent] = useState(draft.opponent ?? null) // a battle's published rival; null: train one
+  const [opponent, setOpponent] = useState(draft.opponent ?? null) // a battle's rival agent; null: train one
   // A running one is refreshed by the effects below; a finished one no longer changes.
   const [training, setTraining] = useState(draft.training ?? null)
   const [pollError, setPollError] = useState('')
@@ -443,7 +472,7 @@ function Dashboard({ battle, onReset }) {
   const valid = [
     // A Claude agent needs Claude as the helper; a copied agent may need its model downloaded first.
     Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false &&
-      (!opponent || opponent.base_model === agent.base_model),
+      (!opponent || (opponent.base_model === agent.base_model && opponent.agent_id !== agent.id)),
     criteria.length > 0,
     inRange(Number(scenarios), 100) && (Boolean(opponent) || inRange(Number(rounds), 50)),
   ]
@@ -543,6 +572,7 @@ function Dashboard({ battle, onReset }) {
         helper,
         battle,
         opponent_post_id: opponent?.id ?? null,
+        opponent_agent_id: opponent?.agent_id ?? null,
         ...(battle && { battle_rounds: Number(battleRounds) }),
       }
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
@@ -604,7 +634,7 @@ function Dashboard({ battle, onReset }) {
           {CLAUDE_NOTE} Claude agents need Claude as the helper.
         </p>
       )}
-      {battle && <OpponentStep agent={agent} value={opponent} onChange={setOpponent} />}
+      {battle && <OpponentStep agent={agent} agents={agents} value={opponent} onChange={setOpponent} />}
     </div>,
     <RubricStep
       key="rubric"

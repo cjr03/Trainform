@@ -254,7 +254,8 @@ The **training detail** object is `{"id", "status", "error", "base_model", "init
 "battle"}`. Scores are 1–10. `baseline_score` is the untrained agent's (round 0); `score_windows` is the mean score
 over the last n, n/2, n/4 and 1 scenarios: `[{"label", "runs", "score"}]`.
 
-`battle` is `null` for a training. For a battle it is `{"rounds", "opponent"?: {"post_id", "name", "author"}}` and,
+`battle` is `null` for a training. For a battle it is `{"rounds", "opponent"?: {"post_id" or "agent_id", "name",
+"author"}}` and,
 once decided, also `"winner": "champion" | "challenger"`, `"grades": [champion, challenger]` (mean grades),
 `"round_grades": [[champion, challenger], ...]` and `"bouts": [{"message", "champion", "challenger", "grades"}]` (each
 user's message, both replies and their grades). Lists of trainings leave out `bouts`.
@@ -272,11 +273,12 @@ Start a training or battle in the background. Body:
 | `helper` | Optional; a Claude agent needs `"claude"` or Claude linked |
 | `battle` | `true`: train a challenger for `rounds` rounds, then battle it against the agent |
 | `opponent_post_id` | Battle the agent of this [post](#social) instead (no training; same base model only) |
+| `opponent_agent_id` | Battle another of your own agents instead (no training; same base model only) |
 | `battle_rounds` | Head-to-head rounds in a battle, 1–7 (default 1), each on `scenarios` new users |
 
 `201` → the training detail. Poll [GET /api/trainings/{training_id}](#get-apitrainingstraining_id) for progress.
-`400` unknown base model, a Claude agent without Claude, or the opponent is on another base model; `404` agent or
-post not found; `409` you already have a training in progress; `429` the server is busy with other trainings.
+`400` unknown base model, a Claude agent without Claude, the opponent is on another base model or is the agent
+itself; `404` agent, opponent agent or post not found; `409` you already have a training in progress; `429` the server is busy with other trainings.
 
 ### GET /api/trainings
 
