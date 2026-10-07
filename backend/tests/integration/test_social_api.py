@@ -202,10 +202,13 @@ def test_copy_post(client, db, users):
     assert r.status_code == 201
     copy = r.json()
     assert copy == {"id": copy["id"], "name": "Support (3)", "base_model": "tiny", "prompt": "Be helpful.",
-                    "image": SVG, "model_available": True, "overall": None, "trainings": 0,
+                    "image": SVG, "model_available": True, "overall": 90, "trainings": 0,
                     "created_at": copy["created_at"]}
     new = db.get(Agent, copy["id"])
     assert (new.user_id, new.weights) == (users["ada_id"], b"BOBW")
+    # The post's overall stays with the copy, untrained, and is published again with it.
+    assert client.get(f"/api/agents/{new.id}", headers=users["ada"]).json()["overall"] == 90
+    assert publish(client, users["ada"], new.id)["overall"] == 90
     assert client.post(f"/api/social/posts/{post['id']}/copy", headers=users["ada"]).json()["name"] == "Support (4)"
     # Your own post copies too, and a name at the length limit is cut to fit its suffix.
     long = agent(db, users["cat_id"], name="x" * 100, base_model="missing-model")

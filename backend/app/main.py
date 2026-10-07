@@ -19,7 +19,8 @@ async def lifespan(_app: FastAPI):
         conn.execute(text("ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS target text"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar bytea, "
                           "ADD COLUMN IF NOT EXISTS avatar_type varchar(32)"))
-        conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS image text"))
+        conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS image text, "
+                          "ADD COLUMN IF NOT EXISTS overall integer"))
         conn.execute(text("ALTER TABLE trainings ADD COLUMN IF NOT EXISTS next_prompt text, "
                           "ADD COLUMN IF NOT EXISTS personas json, ADD COLUMN IF NOT EXISTS adapter bytea, "
                           "ADD COLUMN IF NOT EXISTS helper varchar(16), "

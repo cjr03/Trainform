@@ -160,18 +160,20 @@ def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
 
 def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -> None:
     """End a battle: the agent as it started (the champion, round 0) and the challenger (the best model its rounds
-    trained, or the published agent it challenges, round 1) answer the same new users and are graded on the rubric,
-    and the challenger replaces the agent only if its mean grade is higher. Either way the winner is the training's
+    trained, or the published agent it challenges, round 1) answer the same new users and are graded on the rubric.
+    Each of the battle's rounds is n new users, won by the side with the higher mean grade on them, and the challenger
+    replaces the agent only if it wins more rounds (so a tie keeps the champion). Either way the winner is the training's
     best model, so its downloads are the winner's. A side without weights runs on `base`, the base model's. Run in one
     go: a pause drops it and a resume redoes it."""
     models = select(TrainedModel).where(TrainedModel.training_id == t.id)
     champion = db.scalar(models.where(TrainedModel.round == 0))
     challenger = db.scalar(models.where(TrainedModel.round > 0)
                            .order_by(TrainedModel.mean_score.desc(), TrainedModel.round.desc()).limit(1))
-    n = t.scenarios_per_round
-    # A local helper's personas are seeded by position, so its first n are round 1's users: the battle takes the next n.
-    _, personas = _prepare_round(llm, t.rubric, 2 * n if getattr(llm, "local", False) else n, champion.prompt, None)
-    messages = [p["message"] for p in personas[-n:]]
+    n, rounds = t.scenarios_per_round, t.battle.get("rounds", 1)
+    # A local helper's personas are seeded by position, so its first n are round 1's users: the battle takes the next.
+    count = (rounds + getattr(llm, "local", False)) * n
+    _, personas = _prepare_round(llm, t.rubric, count, champion.prompt, None)
+    messages = [p["message"] for p in personas[-rounds * n:]]
     sides = []
     for m in (champion, challenger):
         if model:
@@ -179,8 +181,9 @@ def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -
             model.load_adapter(m.weights)
         sides.append(_evaluate(llm, respond, [m.prompt], t.rubric, messages)[0])
     grades = [fmean(row["score"] for row in rows) for rows in sides]
-    won = grades[1] > grades[0]  # a tie keeps the champion
-    t.battle = t.battle | {"winner": "challenger" if won else "champion", "grades": grades,
+    round_grades = [[fmean(row["score"] for row in rows[i:i + n]) for rows in sides] for i in range(0, rounds * n, n)]
+    won = sum(b > a for a, b in round_grades) > sum(a > b for a, b in round_grades)
+    t.battle = t.battle | {"winner": "challenger" if won else "champion", "grades": grades, "round_grades": round_grades,
                             "bouts": [{"message": a["input"], "champion": a["output"], "challenger": b["output"],
                                        "grades": [a["score"], b["score"]]} for a, b in zip(*sides)]}
     t.best_model_id = (challenger if won else champion).id
@@ -354,6 +357,7 @@ class TrainingIn(BaseModel):
     helper: Helper | None = None
     battle: bool = False  # optimise a challenger, then keep whichever of it and the agent wins a head to head
     opponent_post_id: int | None = None  # a battle against this published agent instead: no rounds, no challenger
+    battle_rounds: int = Field(1, ge=1, le=7)  # a battle's head-to-head rounds, each on new users (see _battle)
 
 
 def owned(db: Session, training_id: int, user: User) -> Training:
@@ -446,9 +450,10 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
         t = Training(user_id=user.id, agent_id=agent.id, base_model=agent.base_model, initial_prompt=agent.prompt,
                      adapter=agent.weights, rubric=body.rubric, scenarios_per_round=body.scenarios,
                      rounds=0 if post else body.rounds, helper=body.helper,
-                     battle={"opponent": {"post_id": post.id, "name": post.name,
-                                          "author": db.scalar(select(User.username).where(User.id == post.user_id))}}
-                     if post else {} if body.battle else None)
+                     battle={"rounds": body.battle_rounds} | (
+                         {"opponent": {"post_id": post.id, "name": post.name,
+                                       "author": db.scalar(select(User.username).where(User.id == post.user_id))}}
+                         if post else {}) if post or body.battle else None)
         db.add(t)
         if post:  # the two sides, copied now so later edits or deletes don't change the battle
             db.flush()

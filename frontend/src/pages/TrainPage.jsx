@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { BattleResult, PastBattles } from '@/components/battles'
 import { AgentImage, Choice, ErrorAlert, Overall, Spinner } from '@/components/shared'
 import { FindAgent } from '@/components/social'
 import { cn, useAction } from '@/lib/utils'
@@ -26,7 +27,7 @@ const STEPS = [
 const BATTLE_STEPS = [
   ['Agent', 'Pick your agent, the champion, its opponent, and whether Claude or your local model runs the helper agents.'],
   STEPS[1],
-  ['Scenarios', 'Choose how many personas each round tests (and so how many new users the battle has), and how many rounds train the challenger.'],
+  ['Scenarios', 'Choose how many personas each round tests, how many rounds train the challenger, and how many rounds the battle has. Each battle round meets that many new users.'],
   ['Battle', 'The rounds train a challenger from your agent. Then both answer the same new users and a judge picks each bout. Your agent only changes if the challenger wins.'],
   ['Result', 'The winner keeps the agent. Take its prompt and LoRA weights with you.'],
 ]
@@ -294,95 +295,6 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
-// Both sides' grades on the battle's new users: the higher mean keeps the agent (a tie keeps yours).
-function BattleResult({ battle, rounds }) {
-  const rival = battle.opponent ? `${battle.opponent.name} by ${battle.opponent.author}` : 'The challenger'
-  const [mine, theirs] = battle.grades
-  return (
-    <div className="grid gap-3">
-      <div className="flex flex-col items-center gap-1 pt-3 pb-2">
-        <span className="text-sm text-muted-foreground wrap-anywhere">Your agent vs {battle.opponent ? rival : 'challenger'}</span>
-        <span
-          className="font-display text-6xl leading-tight font-bold tabular-nums text-gradient sm:text-7xl"
-          data-testid="battle-score"
-        >
-          {score(mine)} – {score(theirs)}
-        </span>
-        <span className="text-sm text-muted-foreground">Mean grade out of 10 over {battle.bouts.length} new users</span>
-        <span className="text-sm text-muted-foreground">{roundsText(battle, rounds)}</span>
-        <p role="status" className="m-0 pt-2 text-center font-semibold">
-          {battle.winner === 'challenger'
-            ? `${rival} wins. Your agent now has its prompt and weights.`
-            : 'Your agent holds. It keeps its prompt and weights.'}
-        </p>
-      </div>
-      <details className="rounded-lg border p-3">
-        <summary className="cursor-pointer text-sm font-medium">Scenarios</summary>
-        <ol className="m-0 mt-3 grid gap-3 p-0">
-          {battle.bouts.map((b, i) => (
-            <li key={i} className="grid gap-1.5 border-t pt-3 text-sm [overflow-wrap:anywhere] first:border-t-0 first:pt-0">
-              <span className="font-semibold">
-                Scenario {i + 1}: {score(b.grades[0])} – {score(b.grades[1])}
-              </span>
-              <span className="text-muted-foreground">User: {b.message}</span>
-              <span>Your agent: {b.champion}</span>
-              <span>{battle.opponent?.name ?? 'Challenger'}: {b.challenger}</span>
-            </li>
-          ))}
-        </ol>
-      </details>
-    </div>
-  )
-}
-
-const roundsText = (battle, rounds) =>
-  battle.opponent ? 'A challenge: no training rounds' : `Challenger trained for ${rounds} ${rounds === 1 ? 'round' : 'rounds'}`
-
-// Finished battles, newest first (refetched when the one on screen changes status); picking one shows its result.
-function PastBattles({ status, onOpen }) {
-  const [battles, setBattles] = useState([])
-  const [error, setError] = useState('')
-  const [run, busy, openError] = useAction()
-  useEffect(() => {
-    api.listTrainings().then((ts) => setBattles(ts.filter((t) => t.battle?.grades)), (e) => setError(e.message))
-  }, [status])
-  if (!battles.length && !error) return null
-  return (
-    <section aria-labelledby="past-battles" className="grid gap-3">
-      <h2 id="past-battles" className="m-0 text-xl">
-        Past battles
-      </h2>
-      <ErrorAlert>{error || openError}</ErrorAlert>
-      <ul className="m-0 grid list-none gap-2 p-0">
-        {battles.map(({ id, agent_name, created_at, battle, rounds }) => {
-          const rival = battle.opponent?.name ?? 'challenger'
-          return (
-            <li key={id}>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => run(async () => onOpen(await api.getTraining(id)))}
-                className="grid w-full grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 rounded-lg border bg-card p-3 text-left hover:bg-accent"
-              >
-                <span className="font-medium wrap-anywhere">
-                  {agent_name ?? 'Your agent'} vs {rival}
-                </span>
-                <span className="font-semibold tabular-nums">
-                  {score(battle.grades[0])} – {score(battle.grades[1])}
-                </span>
-                <span className="col-span-2 text-sm text-muted-foreground">
-                  {new Date(created_at).toLocaleDateString()} · {roundsText(battle, rounds)} ·{' '}
-                  {battle.winner === 'challenger' ? `${rival} won` : 'Your agent held'}
-                </span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-    </section>
-  )
-}
-
 // A battle's opponent: a challenger trained from your agent, or a published agent picked from your feed or a
 // Trainformer's profile. Only one on your agent's base model fits: the winner's weights go to your agent.
 function OpponentStep({ agent, value, onChange }) {
@@ -515,6 +427,7 @@ function Dashboard({ battle, onReset }) {
   const [rubric, setRubric] = useState(draft.rubric ?? [])
   const [scenarios, setScenarios] = useState(draft.scenarios ?? '5')
   const [rounds, setRounds] = useState(draft.rounds ?? '3')
+  const [battleRounds, setBattleRounds] = useState(draft.battleRounds ?? '1')
   const [opponent, setOpponent] = useState(draft.opponent ?? null) // a battle's published rival; null: train one
   // A running one is refreshed by the effects below; a finished one no longer changes.
   const [training, setTraining] = useState(draft.training ?? null)
@@ -541,8 +454,8 @@ function Dashboard({ battle, onReset }) {
   const state = (i) => (i === step ? 'current' : done(i) ? 'done' : reachable(i) ? 'todo' : 'locked')
 
   useEffect(
-    () => storeDraft(draftKey(battle), { step, agentId, helper, rubric, scenarios, rounds, opponent, training }),
-    [battle, step, agentId, helper, rubric, scenarios, rounds, opponent, training],
+    () => storeDraft(draftKey(battle), { step, agentId, helper, rubric, scenarios, rounds, battleRounds, opponent, training }),
+    [battle, step, agentId, helper, rubric, scenarios, rounds, battleRounds, opponent, training],
   )
 
   useEffect(() => {
@@ -630,6 +543,7 @@ function Dashboard({ battle, onReset }) {
         helper,
         battle,
         opponent_post_id: opponent?.id ?? null,
+        ...(battle && { battle_rounds: Number(battleRounds) }),
       }
       // 409: one is already in progress (e.g. started in another tab), so open it as the resume effect does.
       const t = await api.startTraining(config).catch(async (e) => {
@@ -726,9 +640,26 @@ function Dashboard({ battle, onReset }) {
             onChange={(e) => setRounds(e.target.value)}
           />
         </div>
+        {battle && (
+          <div className="grid gap-2">
+            <Label htmlFor="battle-rounds">Battle rounds</Label>
+            <select
+              id="battle-rounds"
+              className="h-9 rounded-md border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [&_option]:bg-background"
+              value={battleRounds}
+              onChange={(e) => setBattleRounds(e.target.value)}
+            >
+              {['1', '3', '5', '7'].map((n) => (
+                <option key={n} value={n}>
+                  {n === '1' ? '1 round' : `Best of ${n}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
       {!valid[2] && <p className="m-0 text-sm text-muted-foreground">Scenarios must be 1 to 100 and rounds 1 to 50.</p>}
-      {opponent && <p className="m-0 text-sm text-muted-foreground">A challenge trains nothing: both agents answer this many new users.</p>}
+      {opponent && <p className="m-0 text-sm text-muted-foreground">A challenge trains nothing: each battle round, both agents answer this many new users.</p>}
       <dl className="m-0 grid grid-cols-3 gap-2 rounded-lg border p-4">
         {[
           ['Agent', agent?.name ?? '—'],
@@ -833,8 +764,8 @@ function Dashboard({ battle, onReset }) {
         </div>
       )}
 
-      {/* Not over a run in progress or paused: opening a past battle replaces the one on screen. */}
-      {battle && (!training || completed) && (
+      {/* On the first and result slides only: opening a past battle replaces the one on screen. */}
+      {battle && (step === 0 || step === 4) && (
         <PastBattles
           status={status}
           onOpen={(t) => {
