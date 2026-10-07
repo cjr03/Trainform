@@ -897,3 +897,31 @@ def test_a_challenge_grades_the_published_agent_without_training(db, battle, fak
     assert db.query(TrainedModel).filter_by(training_id=t.id, round=0).one().weights == b"PK-0"
     assert t.battle["opponent"]["name"] == "Rival"
     assert (battle.agent.prompt, battle.agent.weights) == kept
+
+
+@pytest.mark.parametrize("rival_base, rival_adapter", [("big", "PK-big"), ("claude", "claude")])
+def test_your_agent_on_another_base_model_battles_on_its_own(db, battle, fake_agents, rival_base, rival_adapter):
+    # Each side runs on its own base model; the winner moves the agent onto its base model, prompt and weights.
+    fake_agents.score = lambda k, prompt, adapter: {"PK-0": 6, rival_adapter: 8}[adapter]
+    t = battle.training
+    t.rounds, t.battle = 0, {"opponent": {"agent_id": 9, "name": "Big", "author": "me", "base_model": rival_base}}
+    db.add_all([TrainedModel(training_id=t.id, round=0, prompt="P"),
+                TrainedModel(training_id=t.id, round=1, prompt="Be big.")])  # an untrained rival: its base weights
+    db.commit()
+    loaded = {}
+
+    def load_model(name):
+        loaded[name] = FakeModel(name)
+        loaded[name].adapter = b"PK-0" if name == "tiny" else b"PK-big"
+        return loaded[name]
+
+    training.run_training(t.id, "llm", load_model, session_factory=SessionLocal,
+                          agent_llm=lambda system, message: f"reply to {message} under <{system}> with claude")
+    db.expire_all()
+    t = db.get(Training, t.id)
+    db.refresh(battle.agent)
+    assert sorted(loaded) == sorted({"tiny", rival_base} - {"claude"})
+    assert (t.status, t.battle["winner"], t.battle["grades"]) == ("completed", "challenger", [6, 8])
+    weights = None if rival_base == "claude" else b"PK-big"
+    assert db.get(TrainedModel, t.best_model_id).weights == weights
+    assert (battle.agent.base_model, battle.agent.prompt, battle.agent.weights) == (rival_base, "Be big.", weights)

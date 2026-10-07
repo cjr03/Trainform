@@ -852,10 +852,14 @@ it('battles two of your own agents', async () => {
   await user.click(screen.getByRole('radio', { name: 'Battle my own agent' }))
   const pick = screen.getByRole('combobox', { name: 'Your opponent' })
   expect(within(pick).queryByRole('option', { name: /Bike Repair Agent/ })).toBeNull() // not itself
-  await user.selectOptions(pick, '2') // another base model: its weights wouldn't fit
-  expect(screen.getByRole('status')).toHaveTextContent('Only an agent on qwen-0.5b can battle yours')
-  expect(nextButton()).toBeDisabled()
+  await user.selectOptions(pick, '2') // another base model: it runs on its own
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'If Claude Writer wins, Bike Repair Agent moves onto Claude with its prompt and weights.',
+  )
+  await user.click(screen.getByRole('radio', { name: 'Local model' }))
+  expect(nextButton()).toBeDisabled() // a Claude opponent needs Claude as the helper
   await user.selectOptions(pick, '3')
+  expect(screen.queryByRole('status')).toBeNull()
   await user.click(nextButton())
   await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
   await user.click(nextButton())

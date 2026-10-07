@@ -158,13 +158,26 @@ def _examples(db: Session, t: Training, held_out: set[int]) -> list[dict]:
             for s in rows if s.target or s.score >= bars[s.round]][:REPLAY]
 
 
-def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -> None:
+def _runner(base_model: str, load_model, agent_llm, check) -> tuple:
+    """The model (None for Claude, whose weights can't be loaded) an agent on `base_model` runs on, and its
+    respond(pairs). `agent_llm` (the user's Claude) is a Claude agent."""
+    if base_model == "claude":
+        if not agent_llm:
+            raise LLMError("Claude agents need Claude as the helper")
+        agent = _checked(agent_llm, check)
+        return None, lambda pairs: agents.concurrently(agent, lambda pair: agent(*pair), pairs)
+    model = load_model(base_model)
+    return model, partial(model.generate_many, stop=check)
+
+
+def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None, rival=None) -> None:
     """End a battle: the agent as it started (the champion, round 0) and the challenger (the best model its rounds
     trained, or the agent it challenges, round 1) answer the same new users and are graded on the rubric.
     Each of the battle's rounds is n new users, won by the side with the higher mean grade on them, and the challenger
     replaces the agent only if it wins more rounds (so a tie keeps the champion). Either way the winner is the training's
-    best model, so its downloads are the winner's. A side without weights runs on `base`, the base model's. Run in one
-    go: a pause drops it and a resume redoes it."""
+    best model, so its downloads are the winner's. A side without weights runs on `base`, the base model's. `rival()`
+    returns the (model, respond) of an opponent on another base model; a winning one moves the agent onto it. Run in
+    one go: a pause drops it and a resume redoes it."""
     models = select(TrainedModel).where(TrainedModel.training_id == t.id)
     champion = db.scalar(models.where(TrainedModel.round == 0))
     challenger = db.scalar(models.where(TrainedModel.round > 0)
@@ -176,6 +189,10 @@ def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -
     messages = [p["message"] for p in personas[-rounds * n:]]
     sides = []
     for m in (champion, challenger):
+        if m is challenger and rival:
+            # ponytail: both models stay loaded (a local helper grades on the champion's); unload it if memory bites
+            model, respond = rival()
+            base = model and model.adapter_bytes()
         if model:
             m.weights = m.weights or base  # saved, so the winner's download and the agent get real weights
             model.load_adapter(m.weights)
@@ -188,7 +205,10 @@ def _battle(db: Session, t: Training, llm, model, respond, base: bytes | None) -
                                        "grades": [a["score"], b["score"]]} for a, b in zip(*sides)]}
     t.best_model_id = (challenger if won else champion).id
     if won:
-        agent_profiles.sync_agent(db, t, challenger.id)
+        # A training from before agents may be on another base model than its agent: its weights wouldn't fit.
+        db.execute(update(Agent).where(Agent.id == t.agent_id, Agent.base_model == t.base_model).values(
+            base_model=t.battle.get("opponent", {}).get("base_model", t.base_model), prompt=challenger.prompt,
+            weights=challenger.weights))
 
 
 def run_training(training_id: int, llm, load_model, session_factory=SessionLocal, agent_llm=None) -> None:
@@ -208,14 +228,12 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
         try:
             t = db.get(Training, training_id)
             _set_status(db, t, ("pending",), "running")  # left alone if the user already asked to pause
-            if t.base_model == "claude":  # Claude's weights can't be fine-tuned: no teacher, no SFT, no weights
-                if not (llm and agent_llm):
-                    raise LLMError("Claude agents need Claude as the helper")
-                model = weights = base = None
-                agent = _checked(agent_llm, check)
-                respond = lambda pairs: agents.concurrently(agent, lambda pair: agent(*pair), pairs)  # noqa: E731
-            else:
-                model = load_model(t.base_model)
+            if t.base_model == "claude" and not llm:
+                raise LLMError("Claude agents need Claude as the helper")
+            # Claude's weights can't be fine-tuned: no teacher, no SFT, no weights
+            model, respond = _runner(t.base_model, load_model, agent_llm, check)
+            weights = base = None
+            if model:
                 base = model.adapter_bytes() if t.battle is not None else None  # its untrained adapter
                 # What the next round's scenarios run with: the best model's adapter, else the agent's starting one.
                 weights = t.best_model_id and db.scalar(select(TrainedModel.weights)
@@ -225,7 +243,6 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                     model.load_adapter(weights)
                 else:
                     weights = model.adapter_bytes()
-                respond = partial(model.generate_many, stop=check)
             # No Claude: the helpers share the loaded model, with its adapter off.
             llm = _checked(llm, check) if llm else local_llm(model, stop=check)
             local = getattr(llm, "local", False)
@@ -317,7 +334,9 @@ def run_training(training_id: int, llm, load_model, session_factory=SessionLocal
                 t.personas = None
                 db.commit()
             if t.battle is not None:
-                _battle(db, t, llm, model, respond, base)
+                rival = t.battle.get("opponent", {}).get("base_model", t.base_model)
+                _battle(db, t, llm, model, respond, base, rival != t.base_model and
+                        partial(_runner, rival, load_model, agent_llm, check))
             t.status = "completed"
             db.commit()
         except Exception as exc:
@@ -436,7 +455,8 @@ def _helper(base_model: str, helper: Helper | None, llm):
 def create_training(body: TrainingIn, background: BackgroundTasks, user: User = Depends(current_user),
                     llm=Depends(get_llm), db: Session = Depends(get_db)):
     agent = agent_profiles.owned(db, body.agent_id, user)
-    if agent.base_model != "claude" and agent.base_model not in {m["name"] for m in list_local_models(user.id)}:
+    models = {"claude"} | {m["name"] for m in list_local_models(user.id)}
+    if agent.base_model not in models:
         raise HTTPException(400, f"Unknown base model: {agent.base_model}")
     helper = _helper(agent.base_model, body.helper, llm)
     post = body.opponent_post_id and db.get(Post, body.opponent_post_id)
@@ -446,12 +466,17 @@ def create_training(body: TrainingIn, background: BackgroundTasks, user: User = 
     if mine and mine.id == agent.id:
         raise HTTPException(400, "An agent can't battle itself.")
     rival = post or mine
-    if rival and rival.base_model != agent.base_model:  # its weights wouldn't fit your agent
+    if post and post.base_model != agent.base_model:  # its weights wouldn't fit your agent
         raise HTTPException(400, f"Only an agent on {agent.base_model} can battle yours; this one is on "
-                                 f"{rival.base_model}.")
+                                 f"{post.base_model}.")
+    if mine and mine.base_model != agent.base_model:  # runs on its own model; a win moves your agent onto it
+        if mine.base_model not in models:
+            raise HTTPException(400, f"Unknown base model: {mine.base_model}")
+        _helper(mine.base_model, body.helper, llm)
     opponent = post and {"post_id": post.id, "name": post.name,
                          "author": db.scalar(select(User.username).where(User.id == post.user_id))}
-    opponent = opponent or mine and {"agent_id": mine.id, "name": mine.name, "author": user.username}
+    opponent = opponent or mine and {"agent_id": mine.id, "name": mine.name, "author": user.username,
+                                     "base_model": mine.base_model}
 
     def insert():
         # The agent's weights are where it starts (see run_training).

@@ -618,8 +618,9 @@ def test_battle_two_of_your_own_agents(authed_client, fakes, monkeypatch, db, us
     monkeypatch.setattr(training, "run_training", lambda *args: None)
     other = Agent(user_id=user.id, name="Sibling", base_model="tiny", prompt="Be bold.", weights=b"PK-sib")
     big = Agent(user_id=user.id, name="Big", base_model="other", prompt="P")
+    claude = Agent(user_id=user.id, name="Claude", base_model="claude", prompt="P")
     bob = User(email="bob@example.com", username="bob", password_hash="x")
-    db.add_all([other, big, bob])
+    db.add_all([other, big, claude, bob])
     db.commit()
     bobs = Agent(user_id=bob.id, name="Bob's", base_model="tiny", prompt="P")
     db.add(bobs)
@@ -628,7 +629,7 @@ def test_battle_two_of_your_own_agents(authed_client, fakes, monkeypatch, db, us
     r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": other.id})
     assert r.status_code == 201
     assert r.json()["battle"] == {"rounds": 1, "opponent": {"agent_id": other.id, "name": "Sibling",
-                                                            "author": user.username}}
+                                                            "author": user.username, "base_model": "tiny"}}
     t = db.get(Training, r.json()["id"])
     assert t.rounds == 0
     sides = db.query(TrainedModel).filter_by(training_id=t.id).order_by(TrainedModel.round).all()
@@ -637,8 +638,15 @@ def test_battle_two_of_your_own_agents(authed_client, fakes, monkeypatch, db, us
     db.query(Training).delete()
     db.commit()
     for opponent, expected in [(agent.id, (400, "An agent can't battle itself.")),
-                               (big.id, (400, "Only an agent on tiny can battle yours; this one is on other.")),
+                               (big.id, (400, "Unknown base model: other")),
                                (bobs.id, (404, "Agent not found"))]:
         r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": opponent})
         assert (r.status_code, r.json()["detail"]) == expected
+    # One on another base model runs on its own: a Claude one needs Claude as the helper.
+    r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": claude.id, "helper": "local"})
+    assert (r.status_code, r.json()["detail"]) == (400, "Claude agents need Claude as the helper")
     assert db.query(Training).count() == 0
+    r = authed_client.post("/api/trainings", json=BODY | {"opponent_agent_id": claude.id})
+    assert r.status_code == 201
+    assert r.json()["battle"]["opponent"] == {"agent_id": claude.id, "name": "Claude", "author": user.username,
+                                              "base_model": "claude"}

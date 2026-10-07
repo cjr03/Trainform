@@ -296,8 +296,8 @@ function CompleteStep({ training, onReset }) {
 }
 
 // A battle's opponent: a challenger trained from your agent, another of your agents, or a published agent picked
-// from your feed or a Trainformer's profile. Only one on your agent's base model fits: the winner's weights go to
-// your agent.
+// from your feed or a Trainformer's profile. The winner's weights go to your agent, so a published one must be on its
+// base model; one of yours may be on another, and a win moves your agent onto it.
 function OpponentStep({ agent, agents, value, onChange }) {
   const [mode, setMode] = useState(value ? (value.agent_id ? 'mine' : 'challenge') : 'train')
   const pick = (m) => {
@@ -328,7 +328,7 @@ function OpponentStep({ agent, agents, value, onChange }) {
             value={value?.agent_id ?? ''}
             onChange={(e) => {
               const a = others.find((o) => o.id === Number(e.target.value))
-              onChange(a && { agent_id: a.id, name: a.name, base_model: a.base_model })
+              onChange(a && { agent_id: a.id, name: a.name, base_model: a.base_model, model_available: a.model_available })
             }}
           >
             <option value="">Pick one of your agents</option>
@@ -342,8 +342,9 @@ function OpponentStep({ agent, agents, value, onChange }) {
           <p className="m-0 text-sm text-muted-foreground">You need a second agent to battle your own.</p>
         ))}
       {mode === 'mine' && value && agent && value.base_model !== agent.base_model && (
-        <p role="status" className="m-0 text-sm text-warning">
-          Only an agent on {agent.base_model} can battle yours: the winner's weights must fit it.
+        <p role="status" className="m-0 text-sm text-muted-foreground">
+          Each runs on its own base model. If {value.name} wins, {agent.name} moves onto{' '}
+          {value.base_model === 'claude' ? 'Claude' : value.base_model} with its prompt and weights.
         </p>
       )}
       {mode === 'challenge' &&
@@ -468,11 +469,15 @@ function Dashboard({ battle, onReset }) {
 
   const agent = agents?.find((a) => a.id === agentId)
   const claudeAgent = agent?.base_model === 'claude'
+  const needsClaude = claudeAgent || opponent?.base_model === 'claude'
   const criteria = rubric.map((c) => c.trim()).filter(Boolean)
   const valid = [
     // A Claude agent needs Claude as the helper; a copied agent may need its model downloaded first.
-    Boolean(agent) && !(claudeAgent && helper === 'local') && agent.model_available !== false &&
-      (!opponent || (opponent.base_model === agent.base_model && opponent.agent_id !== agent.id)),
+    Boolean(agent) && !(needsClaude && helper === 'local') && agent.model_available !== false &&
+      (!opponent ||
+        (opponent.agent_id
+          ? opponent.agent_id !== agent.id && opponent.model_available !== false
+          : opponent.base_model === agent.base_model)),
     criteria.length > 0,
     inRange(Number(scenarios), 100) && (Boolean(opponent) || inRange(Number(rounds), 50)),
   ]
@@ -629,7 +634,7 @@ function Dashboard({ battle, onReset }) {
           </p>
         )}
       </div>
-      {claudeAgent && (
+      {needsClaude && (
         <p className="m-0 text-sm text-muted-foreground">
           {CLAUDE_NOTE} Claude agents need Claude as the helper.
         </p>

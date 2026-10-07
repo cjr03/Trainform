@@ -49,14 +49,12 @@ def owned(db: Session, agent_id: int, user: User) -> Agent:
     return a
 
 
-def sync_agent(db: Session, t: Training, model_id: int | None = None) -> None:
-    """Give `t`'s agent a trained model's prompt and (unless the agent is Claude) its weights, copied inside the
-    database: `model_id`'s (a battle's winner), else the training's best when this round made it."""
-    if model_id is None:
-        if db.scalar(select(TrainedModel.round).where(TrainedModel.id == t.best_model_id)) != t.current_round:
-            return  # untrained, or an earlier round's best, which that round synced
-        model_id = t.best_model_id
-    best = lambda column: select(column).where(TrainedModel.id == model_id).scalar_subquery()  # noqa: E731
+def sync_agent(db: Session, t: Training) -> None:
+    """Give `t`'s agent its best trained model's prompt and (unless the agent is Claude) its weights, copied inside the
+    database, when this round made it."""
+    if db.scalar(select(TrainedModel.round).where(TrainedModel.id == t.best_model_id)) != t.current_round:
+        return  # untrained, or an earlier round's best, which that round synced
+    best = lambda column: select(column).where(TrainedModel.id == t.best_model_id).scalar_subquery()  # noqa: E731
     values = {"prompt": best(TrainedModel.prompt)}
     if t.base_model != "claude":
         values["weights"] = best(TrainedModel.weights)
