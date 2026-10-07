@@ -251,7 +251,7 @@ function ClaudeLink({ user, setUser }) {
     <Card
       aria-labelledby="claude-title"
       role="region"
-      className={cn('transition-[border-color,box-shadow] duration-400 min-[880px]:col-span-2', linked && 'border-success/45 shadow-glow')}
+      className={cn('transition-[border-color,box-shadow] duration-400', linked && 'border-success/45 shadow-glow')}
     >
       <CardHeader>
         <CardTitle>
@@ -265,7 +265,7 @@ function ClaudeLink({ user, setUser }) {
         </CardAction>
       </CardHeader>
       <CardContent className="grid gap-6">
-        <ul className="m-0 grid list-none gap-3 p-0 text-sm sm:grid-cols-2">
+        <ul className="m-0 grid list-none gap-3 p-0 text-sm">
           <li className="flex gap-3">
             <Sparkles className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden="true" />
             <span>
@@ -286,7 +286,7 @@ function ClaudeLink({ user, setUser }) {
           </li>
         </ul>
         <form
-          className="grid max-w-[520px] gap-4"
+          className="grid gap-4"
           onSubmit={(e) => {
             e.preventDefault()
             run(() => api.setClaudeKey(key.trim()), 'Key saved.')
