@@ -465,7 +465,7 @@ def persona_messages(llm, personas: list[dict]) -> list[str]:
 
 
 class PromptRequest(BaseModel):
-    description: str = Field(min_length=1, max_length=4000)
+    description: str = Field(min_length=1)
     model: str | None = None  # the local model to use without Claude
     helper: Helper | None = None
 
