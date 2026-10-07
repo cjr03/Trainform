@@ -273,7 +273,7 @@ Start a training or battle in the background. Body:
 | `helper` | Optional; a Claude agent needs `"claude"` or Claude linked |
 | `battle` | `true`: train a challenger for `rounds` rounds, then battle it against the agent |
 | `opponent_post_id` | Battle the agent of this [post](#social) instead (no training; same base model only) |
-| `opponent_agent_id` | Battle another of your own agents instead (no training; same base model only) |
+| `opponent_agent_id` | Battle another of your own agents instead (no training). It may be on another base model: each side runs on its own, and if it wins your agent moves onto its base model, prompt and weights |
 | `battle_rounds` | Head-to-head rounds in a battle, 1–7 (default 1), each on `scenarios` new users |
 
 `201` → the training detail. Poll [GET /api/trainings/{training_id}](#get-apitrainingstraining_id) for progress.
