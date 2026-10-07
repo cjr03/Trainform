@@ -84,6 +84,7 @@ export const api = {
   createAgent: (agent) => post('/agents', agent),
   updateAgent: (id, patch) => request(`/agents/${id}`, { method: 'PATCH', body: patch }),
   deleteAgent: (id) => request(`/agents/${id}`, { method: 'DELETE' }),
+  quantizeAgent: (id) => post(`/agents/${id}/quantize`),
   generateAgentImage: (id, helper) => post(`/agents/${id}/image/generate`, { helper }),
   setAgentImage: (id, svg) => request(`/agents/${id}/image`, { method: 'PUT', body: { svg } }),
 

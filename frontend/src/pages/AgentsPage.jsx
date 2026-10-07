@@ -1,4 +1,4 @@
-import { Download, Plus, Sparkles, Trash2, Upload } from 'lucide-react'
+import { Download, Minimize2, Plus, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -388,7 +388,7 @@ function NewAgent({ claudeAvailable, onCreated, onCancel }) {
   )
 }
 
-function AgentDetail({ id, onChanged, onDeleted }) {
+function AgentDetail({ id, onChanged, onDeleted, onQuantized }) {
   const [agent, setAgent] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [draft, setDraft] = useState(null) // the prompt being edited
@@ -430,6 +430,9 @@ function AgentDetail({ id, onChanged, onDeleted }) {
       await api.deleteAgent(id)
       onDeleted()
     })
+  const quantize = () => run(async () => onQuantized(await api.quantizeAgent(id)))
+  // Only open-weights models: Claude's weights aren't public. An -int8 model is a quantized copy already.
+  const quantizable = agent.base_model !== 'claude' && agent.model_available && !agent.base_model.endsWith('-int8')
 
   return (
     <Card role="region" aria-labelledby="agent-detail-name" className="gap-5 max-sm:py-5">
@@ -573,6 +576,17 @@ function AgentDetail({ id, onChanged, onDeleted }) {
           <Button asChild variant="outline">
             <Link to={`/inspect?agent=${id}`}>Open in Inspect</Link>
           </Button>
+          {quantizable && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              title="Copy this agent onto an 8-bit version of its model: about half the memory"
+              onClick={quantize}
+            >
+              {busy ? <Spinner /> : <Minimize2 aria-hidden="true" />} Quantize
+            </Button>
+          )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" className="border-destructive/50 text-destructive" disabled={busy || active}>
@@ -672,7 +686,7 @@ export default function AgentsPage() {
           ))}
         </ul>
       )}
-      {selected != null && <AgentDetail key={selected} id={selected} onChanged={reload} onDeleted={deleted} />}
+      {selected != null && <AgentDetail key={selected} id={selected} onChanged={reload} onDeleted={deleted} onQuantized={created} />}
     </div>
   )
 }

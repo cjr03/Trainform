@@ -228,3 +228,43 @@ def test_startup_seeds_only_old_trainings_and_drops_untrained_seed_agents(db, us
     assert (agents[user.id].name, agents[user.id].base_model, agents[user.id].prompt) == (
         "Bike Repair Agent", "latest", SEED_AGENT["prompt"])
     assert {t.agent_id for t in db.query(Training)} == {agents[user.id].id}
+
+
+def test_quantize_copies_the_agent_onto_an_int8_model(authed_client, models, db, user, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent_profiles, "quantize_model", lambda name, owner: calls.append((name, owner)) or "tiny-int8")
+    a = add_agent(db, user)
+    a.weights, a.image = b"LORA", "<svg/>"
+    db.commit()
+    r = authed_client.post(f"/api/agents/{a.id}/quantize")
+    assert r.status_code == 201
+    assert calls == [("tiny", user.id)]
+    q = db.get(Agent, r.json()["id"])
+    assert (q.name, q.base_model, q.prompt, q.weights, q.image) == ("Support (int8)", "tiny-int8", "Be helpful.",
+                                                                   b"LORA", "<svg/>")
+    assert r.json()["model_available"]
+    r = authed_client.post(f"/api/agents/{a.id}/quantize")  # its name is taken now
+    assert (r.status_code, r.json()) == (409, {"detail": "You already have an agent with that name."})
+
+
+@pytest.mark.parametrize(("base_model", "error", "detail"), [
+    ("claude", None, "Claude's weights aren't public, so a Claude agent can't be quantized."),
+    ("gone", None, "Download gone first."),
+    ("tiny", ValueError("tiny is already quantized"), "tiny is already quantized"),
+])
+def test_quantize_refuses(authed_client, models, db, user, monkeypatch, base_model, error, detail):
+    def fail(name, owner):
+        raise error
+    monkeypatch.setattr(agent_profiles, "quantize_model", fail)
+    a = add_agent(db, user, base_model=base_model)
+    r = authed_client.post(f"/api/agents/{a.id}/quantize")
+    assert (r.status_code, r.json()) == (400, {"detail": detail})
+    assert db.query(Agent).count() == 1
+
+
+def test_quantize_name_clash_is_409(authed_client, models, db, user, monkeypatch):
+    def clash(name, owner):
+        raise FileExistsError("tiny-int8")
+    monkeypatch.setattr(agent_profiles, "quantize_model", clash)
+    r = authed_client.post(f"/api/agents/{add_agent(db, user).id}/quantize")
+    assert (r.status_code, r.json()) == (409, {"detail": "A model named tiny-int8 already exists"})

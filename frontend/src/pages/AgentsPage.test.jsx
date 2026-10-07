@@ -13,6 +13,7 @@ vi.mock('../api', () => ({
     createAgent: vi.fn(),
     updateAgent: vi.fn(),
     deleteAgent: vi.fn(),
+    quantizeAgent: vi.fn(),
     listLocalModels: vi.fn(),
     searchHubModels: vi.fn(),
     downloadHubModel: vi.fn(),
@@ -449,4 +450,25 @@ it('shows agent images on cards (helmet without one) and generates, edits and cl
   await user.click(within(detail).getByRole('button', { name: 'Edit SVG' }))
   await user.click(within(detail).getByRole('button', { name: 'Cancel' }))
   expect(within(detail).queryByRole('textbox', { name: 'SVG code' })).toBeNull()
+})
+
+it('quantizes an open-weights agent into a new agent and opens it, but never a Claude one', async () => {
+  const user = userEvent.setup()
+  const quantized = { ...AGENTS[0], id: 3, name: 'Bike Repair Agent (int8)', base_model: 'qwen-0.5b-int8' }
+  api.getAgent.mockImplementation(async (id) =>
+    id === 3 ? { ...quantized, model_available: true, trainings: [] } : agent({ model_available: true }),
+  )
+  api.quantizeAgent.mockResolvedValue(quantized)
+  render(<AgentsPage />)
+  await user.click(await card('Bike Repair Agent'))
+  api.listAgents.mockResolvedValue([...AGENTS, quantized])
+  await user.click(await screen.findByRole('button', { name: 'Quantize' }))
+  expect(api.quantizeAgent).toHaveBeenCalledWith(1)
+  expect(await screen.findByRole('region', { name: 'Bike Repair Agent (int8)' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Quantize' })).not.toBeInTheDocument() // already quantized
+
+  api.getAgent.mockResolvedValue({ ...AGENTS[1], model_available: true, trainings: [] })
+  await user.click(await card('Claude Writer'))
+  await screen.findByRole('region', { name: 'Claude Writer' })
+  expect(screen.queryByRole('button', { name: 'Quantize' })).not.toBeInTheDocument()
 })
