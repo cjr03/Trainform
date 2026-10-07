@@ -158,8 +158,8 @@ your uploads.
 
 ### GET /api/models
 
-The models your agents can use: `[{"name", "source"}]`, where `source` is `"hub"`, `"upload"` or `null` (provided by
-the server's operator).
+The models your agents can use: `[{"name", "source"}]`, where `source` is `"hub"`, `"upload"`, `"quantized"` (an int8
+copy, see [quantize](#post-apiagentsagent_idquantize)) or `null` (provided by the server's operator).
 
 ### DELETE /api/models/{name}
 
@@ -209,6 +209,15 @@ The agent, with `trainings` as its trainings (not battles), newest first:
 Rename it or change its prompt. Body: `{"name"?, "prompt"?}`.
 
 `200` → the agent. `409` name taken, or a training of it is in progress.
+
+### POST /api/agents/{agent_id}/quantize
+
+Copy the agent (prompt, trained weights, picture) onto an int8 copy of its local model, named `<model>-int8`, which
+loads in about half the memory. The new agent is named "Name (int8)". The int8 model counts toward your model quota
+but costs no extra disk; it is reused if it already exists.
+
+`201` → the new agent. `400` a Claude agent, its model isn't downloaded, the model is already quantized, or over
+quota; `409` the int8 model name is taken by another model, or you already have an agent with the new name.
 
 ### DELETE /api/agents/{agent_id}
 
