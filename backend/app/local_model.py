@@ -209,8 +209,10 @@ def list_local_models(user_id: int) -> list[dict]:
     models = []
     for d in sorted(MODELS_DIR.iterdir()):
         meta = _meta(d)
+        # Fail closed: a quantized copy without the flag stays private.
+        private = meta.get("source") == "upload" or meta.get("private", meta.get("source") == "quantized")
         if (not d.name.startswith(".") and (d / "config.json").is_file()
-                and (meta.get("source") != "upload" and not meta.get("private") or meta.get("owner") == user_id)):
+                and (not private or meta.get("owner") == user_id)):
             models.append({"name": d.name, "source": meta.get("source")})
     return models
 

@@ -623,6 +623,10 @@ def test_quantized_hub_model_is_shared(models_dir, monkeypatch):
     assert local_model.quantize_model("org--m", 1) == "org--m-int8"
     assert {"name": "org--m-int8", "source": "quantized"} in local_model.list_local_models(2)
     assert local_model.quantize_model("org--m", 2) == "org--m-int8"  # another user reuses it
+    meta = json.loads((models_dir / "org--m-int8" / "trainform.json").read_text())
+    del meta["private"]
+    (models_dir / "org--m-int8" / "trainform.json").write_text(json.dumps(meta))
+    assert all(m["name"] != "org--m-int8" for m in local_model.list_local_models(2))  # no flag: private
     (models_dir / "other").mkdir()
     (models_dir / "other-int8").mkdir()  # a name someone else holds
     with pytest.raises(FileExistsError):
