@@ -174,6 +174,27 @@ def save_upload(fileobj, name: str, owner: int) -> str:
     return name
 
 
+def quantize_model(name: str, owner: int) -> str:
+    """Make an int8 copy of local model `name` for user `owner`; returns its name. Its files are hard links to `name`'s,
+    so it costs no disk and outlives `name`; LocalModel quantizes it as it loads (see quantize_int8). Like `name`, it is
+    private when `name` is an upload, else shared, so another user's agents reuse it."""
+    src = _model_dir(name)
+    if _meta(src).get("source") == "quantized":
+        raise ValueError(f"{name} is already quantized")
+    dest = _model_dir(f"{name}-int8")
+    if dest.exists():
+        if _meta(dest).get("base") == name and dest.name in {m["name"] for m in list_local_models(owner)}:
+            return dest.name
+        raise FileExistsError(dest.name)
+    _check_quota(owner)
+    meta = {"source": "quantized", "owner": owner, "base": name, "private": _meta(src).get("source") == "upload"}
+    with _staged(dest, meta) as tmp:
+        # Not trainform.json: _staged writes it, and through a hard link that would overwrite the source's.
+        shutil.copytree(src, tmp, dirs_exist_ok=True, copy_function=os.link,
+                        ignore=shutil.ignore_patterns("trainform.json"))
+    return dest.name
+
+
 def delete_model(name: str, owner: int) -> None:
     path = _model_dir(name)
     if _meta(path).get("owner") != owner:
@@ -182,14 +203,14 @@ def delete_model(name: str, owner: int) -> None:
 
 
 def list_local_models(user_id: int) -> list[dict]:
-    """Hub and operator-provided models, plus the user's own uploads."""
+    """Hub and operator-provided models and their quantized copies, plus the user's own uploads and theirs."""
     if not MODELS_DIR.is_dir():
         return []
     models = []
     for d in sorted(MODELS_DIR.iterdir()):
         meta = _meta(d)
         if (not d.name.startswith(".") and (d / "config.json").is_file()
-                and (meta.get("source") != "upload" or meta.get("owner") == user_id)):
+                and (meta.get("source") != "upload" and not meta.get("private") or meta.get("owner") == user_id)):
             models.append({"name": d.name, "source": meta.get("source")})
     return models
 
@@ -201,6 +222,27 @@ def free_memory() -> None:
         torch.mps.empty_cache()
     elif torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+class Int8Linear(torch.nn.Linear):
+    """An nn.Linear whose weight is int8 with a scale per output row, dequantized for each forward pass: half
+    bfloat16's memory. Still an nn.Linear, so PEFT's "all-linear" LoRA wraps it and the agent can keep training."""
+
+    def forward(self, x):
+        return torch.nn.functional.linear(x, self.weight.to(x.dtype) * self.scale, self.bias)
+
+
+def quantize_int8(model) -> None:
+    """Quantize `model`'s linear layers to int8 in place (symmetric, per output row), all but the output head."""
+    head, dtype = model.get_output_embeddings(), model.dtype  # the head is often tied to the input embeddings
+    for module in model.modules():
+        if type(module) is torch.nn.Linear and module is not head:
+            w = module.weight.detach().float()
+            scale = w.abs().amax(1, keepdim=True).clamp(min=1e-8) / 127
+            module.weight = torch.nn.Parameter((w / scale).round().to(torch.int8), requires_grad=False)
+            module.register_buffer("scale", scale.to(dtype))
+            module.__class__ = Int8Linear
+    free_memory()
 
 
 class LocalModel:
@@ -219,6 +261,10 @@ class LocalModel:
         # LoRA adapter in float32, so SFT updates are not lost to rounding.
         dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
         base = AutoModelForCausalLM.from_pretrained(path, use_safetensors=True, dtype=dtype)
+        # ponytail: quantized as it loads, so loading briefly takes the full model's memory; save int8 weights if that
+        # ever matters.
+        if _meta(path).get("source") == "quantized":
+            quantize_int8(base)
         # No LoRA dropout: each dropout keeps a copy of its input for backward, ~3 GiB at MAX_SFT_TOKENS.
         lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.0, target_modules="all-linear", task_type="CAUSAL_LM")
         self.model = get_peft_model(base, lora).to(self.device)

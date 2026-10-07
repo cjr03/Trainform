@@ -14,7 +14,7 @@ from app.agents import _tag, draw_image
 from app.auth import current_user
 from app.db import get_db
 from app.llm import Helper, LLMError, chosen_llm, get_llm
-from app.local_model import list_local_models
+from app.local_model import list_local_models, quantize_model
 from app.models import ACTIVE, Agent, TrainedModel, Training, User
 
 router = APIRouter(prefix="/agents", tags=["agent profiles"])
@@ -179,6 +179,32 @@ def generate_image(agent_id: int, body: GenerateIn, user: User = Depends(current
     except LLMError as e:
         raise HTTPException(502, str(e)) from e
     return _set_image(db, user, a, image)
+
+
+@router.post("/{agent_id}/quantize", status_code=201)
+def quantize_agent(agent_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """A copy of the agent (prompt, trained weights, image) on an int8 copy of its model. Claude's weights aren't
+    public, so only local models can be quantized."""
+    a = owned(db, agent_id, user)
+    if a.base_model == "claude":
+        raise HTTPException(400, "Claude's weights aren't public, so a Claude agent can't be quantized.")
+    if a.base_model not in available_models(user):
+        raise HTTPException(400, f"Download {a.base_model} first.")
+    try:
+        model = quantize_model(a.base_model, user.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except FileExistsError as e:
+        raise HTTPException(409, f"A model named {e} already exists") from None
+    # The LoRA adapter fits: quantizing keeps every layer's shape.
+    q = Agent(user_id=user.id, name=f"{a.name[:93]} (int8)", base_model=model, prompt=a.prompt, weights=a.weights,
+              image=a.image)
+    db.add(q)
+    try:
+        db.commit()
+    except IntegrityError:
+        raise _name_taken(db) from None
+    return _out({model}, q, None, 0)
 
 
 @router.delete("/{agent_id}", status_code=204)

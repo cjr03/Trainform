@@ -1,6 +1,7 @@
 import io
 import json
 import math
+import os
 import shutil
 import stat
 import zipfile
@@ -592,3 +593,54 @@ def test_base_weights_are_bfloat16_on_a_gpu_and_float32_on_cpu(tiny_model_dir, t
     assert {p.dtype for n, p in params.items() if "lora_" in n} == {torch.float32}
     assert math.isfinite(model.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}] * 2))
     assert isinstance(model.generate("be helpful", "hi", max_new_tokens=3), str)
+
+
+# --- quantizing ---
+
+def test_quantize_model_links_a_copy_as_private_as_its_base(models_dir):
+    local_model.save_upload(make_zip(MODEL), "mine", 1)
+    assert local_model.quantize_model("mine", 1) == "mine-int8"
+    src, dest = models_dir / "mine", models_dir / "mine-int8"
+    assert os.path.samefile(src / "config.json", dest / "config.json")  # hard links: no extra disk
+    assert local_model._meta(src) == {"source": "upload", "owner": 1}  # its meta is its own, not a link to this
+    assert local_model._meta(dest) == {"source": "quantized", "owner": 1, "base": "mine", "private": True}
+    assert {"name": "mine-int8", "source": "quantized"} in local_model.list_local_models(1)
+    assert all(m["name"] != "mine-int8" for m in local_model.list_local_models(2))
+    with pytest.raises(FileExistsError):
+        local_model.quantize_model("mine", 2)  # not theirs to reuse
+    assert local_model.quantize_model("mine", 1) == "mine-int8"  # another agent on it reuses the copy
+    local_model.delete_model("mine", 1)
+    assert (dest / "config.json").is_file()  # outlives its base
+    with pytest.raises(ValueError, match="already quantized"):
+        local_model.quantize_model("mine-int8", 1)
+
+
+def test_quantized_hub_model_is_shared(models_dir, monkeypatch):
+    shared = models_dir / "org--m"
+    shared.mkdir(parents=True)
+    (shared / "config.json").write_text("{}")
+    (shared / "trainform.json").write_text(json.dumps({"source": "hub", "owner": 1}))
+    assert local_model.quantize_model("org--m", 1) == "org--m-int8"
+    assert {"name": "org--m-int8", "source": "quantized"} in local_model.list_local_models(2)
+    assert local_model.quantize_model("org--m", 2) == "org--m-int8"  # another user reuses it
+    (models_dir / "other").mkdir()
+    (models_dir / "other-int8").mkdir()  # a name someone else holds
+    with pytest.raises(FileExistsError):
+        local_model.quantize_model("other", 1)
+
+
+def test_quantized_model_loads_int8_close_to_the_original_and_still_trains(tiny_model_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(local_model, "MODELS_DIR", tmp_path)
+    shutil.copytree(tiny_model_dir, tmp_path / "tiny")
+    local_model.quantize_model("tiny", 1)
+    full, quantized = LocalModel("tiny"), LocalModel("tiny-int8")
+    linears = [m for m in quantized.model.modules() if isinstance(m, local_model.Int8Linear)]
+    assert linears and all(m.weight.dtype == torch.int8 for m in linears)
+    assert quantized.model.get_output_embeddings().weight.is_floating_point()
+    ids = torch.tensor([[3, 4, 5]], device=full.device)
+    logits = lambda m: m.model(input_ids=ids).logits.float()  # noqa: E731
+    assert torch.allclose(logits(full), logits(quantized), atol=0.05)
+    lora = lambda: {n: p.detach().cpu().clone() for n, p in quantized.model.named_parameters() if "lora_" in n}  # noqa: E731
+    before = lora()
+    quantized.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}] * 2)
+    assert any(not p.equal(before[n]) for n, p in lora().items())
