@@ -295,6 +295,35 @@ function CompleteStep({ training, onReset }) {
   )
 }
 
+// Agents as cards to pick one of; onChange gets the agent.
+function AgentCards({ agents, value, onChange, ...props }) {
+  return (
+    <RadioGroup
+      {...props}
+      value={value == null ? '' : String(value)}
+      onValueChange={(v) => onChange(agents.find((a) => a.id === Number(v)))}
+      className="grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2"
+    >
+      {agents?.map((a) => (
+        <label
+          key={a.id}
+          className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
+        >
+          <RadioGroupItem value={String(a.id)} />
+          <AgentImage svg={a.image} className="size-8" />
+          <span className="mr-auto grid min-w-0 gap-0.5">
+            <span className="font-semibold wrap-anywhere">{a.name}</span>
+            <span className="text-xs text-muted-foreground wrap-anywhere">
+              {a.base_model === 'claude' ? 'Claude' : a.base_model}
+            </span>
+          </span>
+          <Overall value={a.overall} />
+        </label>
+      ))}
+    </RadioGroup>
+  )
+}
+
 // A battle's opponent: a challenger trained from your agent, another of your agents, or a published agent picked
 // from your feed or a Trainformer's profile. The winner's weights go to your agent, so a published one must be on its
 // base model; one of yours may be on another, and a win moves your agent onto it.
@@ -322,22 +351,14 @@ function OpponentStep({ agent, agents, value, onChange }) {
       />
       {mode === 'mine' &&
         (others.length ? (
-          <select
+          <AgentCards
             aria-label="Your opponent"
-            className="h-9 rounded-md border border-input bg-input/30 px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [&_option]:bg-background"
-            value={value?.agent_id ?? ''}
-            onChange={(e) => {
-              const a = others.find((o) => o.id === Number(e.target.value))
-              onChange(a && { agent_id: a.id, name: a.name, base_model: a.base_model, model_available: a.model_available })
-            }}
-          >
-            <option value="">Pick one of your agents</option>
-            {others.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} ({a.base_model === 'claude' ? 'Claude' : a.base_model})
-              </option>
-            ))}
-          </select>
+            agents={others}
+            value={value?.agent_id}
+            onChange={(a) =>
+              onChange({ agent_id: a.id, name: a.name, base_model: a.base_model, model_available: a.model_available })
+            }
+          />
         ) : (
           <p className="m-0 text-sm text-muted-foreground">You need a second agent to battle your own.</p>
         ))}
@@ -410,29 +431,7 @@ function AgentStep({ agents, error, value, onChange, onCopied }) {
           {!agents && !error && <Spinner />}
           <ErrorAlert>{error}</ErrorAlert>
           {agents?.length === 0 && <p className="m-0 text-sm text-muted-foreground">No agents yet. Make one on the {link}.</p>}
-          <RadioGroup
-            aria-labelledby="train-agents"
-            value={value == null ? '' : String(value)}
-            onValueChange={(v) => onChange(Number(v))}
-            className="grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2"
-          >
-            {agents?.map((a) => (
-              <label
-                key={a.id}
-                className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors hover:bg-accent/50 has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-primary/10"
-              >
-                <RadioGroupItem value={String(a.id)} />
-                <AgentImage svg={a.image} className="size-8" />
-                <span className="mr-auto grid min-w-0 gap-0.5">
-                  <span className="font-semibold wrap-anywhere">{a.name}</span>
-                  <span className="text-xs text-muted-foreground wrap-anywhere">
-                    {a.base_model === 'claude' ? 'Claude' : a.base_model}
-                  </span>
-                </span>
-                <Overall value={a.overall} />
-              </label>
-            ))}
-          </RadioGroup>
+          <AgentCards aria-labelledby="train-agents" agents={agents} value={value} onChange={(a) => onChange(a.id)} />
           {agent?.model_available === false && (
             <p role="status" className="m-0 text-sm text-warning">
               {agent.base_model} isn't downloaded yet. Download it from the Hub (Agents page, New agent) before training.

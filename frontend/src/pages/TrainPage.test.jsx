@@ -850,15 +850,15 @@ it('battles two of your own agents', async () => {
   render(<TrainPage battle />)
   await user.click(await bike())
   await user.click(screen.getByRole('radio', { name: 'Battle my own agent' }))
-  const pick = screen.getByRole('combobox', { name: 'Your opponent' })
-  expect(within(pick).queryByRole('option', { name: /Bike Repair Agent/ })).toBeNull() // not itself
-  await user.selectOptions(pick, '2') // another base model: it runs on its own
+  const pick = screen.getByRole('radiogroup', { name: 'Your opponent' })
+  expect(within(pick).queryByRole('radio', { name: /Bike Repair Agent/ })).toBeNull() // not itself
+  await user.click(within(pick).getByRole('radio', { name: /Claude Writer/ })) // another base model: it runs on its own
   expect(screen.getByRole('status')).toHaveTextContent(
     'If Claude Writer wins, Bike Repair Agent moves onto Claude with its prompt and weights.',
   )
   await user.click(screen.getByRole('radio', { name: 'Local model' }))
   expect(nextButton()).toBeDisabled() // a Claude opponent needs Claude as the helper
-  await user.selectOptions(pick, '3')
+  await user.click(within(pick).getByRole('radio', { name: /Bike Twin/ }))
   expect(screen.queryByRole('status')).toBeNull()
   await user.click(nextButton())
   await user.type(screen.getByRole('textbox', { name: 'New criterion' }), 'Clarity{Enter}')
