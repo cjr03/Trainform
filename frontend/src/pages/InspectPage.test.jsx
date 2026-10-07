@@ -102,6 +102,45 @@ async function openScenario(user) {
   await user.click(await screen.findByRole('button', { name: /Scenario 1/ }))
 }
 
+it('lists battles apart from trainings, with their rounds, head to head and battle actions', async () => {
+  const battle = { rounds: 3, winner: 'champion', grades: [7, 6.5], round_grades: [[7, 6], [8, 7], [6, 6.5]] }
+  api.listTrainings.mockResolvedValue([
+    { id: 5, base_model: 'qwen-0.5b', status: 'completed', best_score: 7, created_at: '2026-10-01T10:00:00Z', helper: 'claude', battle },
+    ...trainings,
+  ])
+  const bouts = [6, 7, 6.5].map((g, i) => ({ message: `Hi ${i}`, champion: 'Hello!', challenger: 'Hey.', grades: [7, g] }))
+  api.getTraining.mockImplementation(async (id) => (id === 5 ? { ...details[2], rounds: 2, battle: { ...battle, bouts } } : details[id]))
+  api.listRounds.mockImplementation(async (id) => rounds[id === 5 ? 2 : id])
+  const user = userEvent.setup()
+  renderPage()
+  const trainingsColumn = within(screen.getByRole('region', { name: 'Trainings' }))
+  expect(await trainingsColumn.findAllByRole('button')).toHaveLength(2) // the battle isn't one of them
+  const battles = within(screen.getByRole('region', { name: 'Battles' }))
+  const row = battles.getByRole('button')
+  expect(row).toHaveTextContent('#5 · vs challenger')
+  expect(row).toHaveTextContent('7–6.5')
+
+  await user.click(row)
+  // Its interactions: the challenger's training rounds and their scenarios, and the head to head itself.
+  expect(await screen.findByRole('button', { name: /Round 2/ })).toBeInTheDocument()
+  const h2h = within(await screen.findByRole('region', { name: 'Head to head' }))
+  expect(h2h.getByTestId('rounds-won')).toHaveTextContent('Rounds won 2 – 1')
+  expect(h2h.getByText('3 battle rounds · challenger trained for 2 rounds')).toBeInTheDocument()
+  expect(h2h.getAllByText('User: Hi 2', { exact: false })).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Delete battle' })).toBeInTheDocument()
+  api.downloadPrompt.mockResolvedValue('prompt blob')
+  await user.click(screen.getByRole('button', { name: 'Download prompt' }))
+  expect(api.downloadPrompt).toHaveBeenCalledWith(5)
+  await waitFor(() => expect(saveBlob).toHaveBeenCalledWith('prompt blob', 'battle-5-prompt.txt'))
+})
+
+it('says when an agent has no battles yet', async () => {
+  renderPage()
+  const battles = within(await screen.findByRole('region', { name: 'Battles' }))
+  expect(await battles.findByText(/No battles yet/)).toBeInTheDocument()
+  expect(battles.getByRole('link', { name: 'Battle page' })).toHaveAttribute('href', '/battle')
+})
+
 it('lists trainings with id, status, best score, date and helper', async () => {
   renderPage()
   expect(screen.getByTestId('inspect-page')).toBeInTheDocument()

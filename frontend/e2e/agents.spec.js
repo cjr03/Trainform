@@ -28,7 +28,10 @@ test("edit an agent's prompt by upload, open it in Inspect and delete it", async
   await page.getByRole('link', { name: 'Agents', exact: true }).click()
   await page.getByRole('list', { name: 'Your agents' }).getByRole('button', { name: new RegExp(agent.name) }).click()
   await detail.getByRole('button', { name: 'Delete agent' }).click()
+  // Waited for itself: the closing dialog hides the list (aria-hidden), so its count is 0 before the delete lands.
+  const deleted = page.waitForResponse((r) => r.request().method() === 'DELETE' && r.url().endsWith(`/api/agents/${agent.id}`))
   await page.getByRole('alertdialog', { name: `Delete ${agent.name}?` }).getByRole('button', { name: 'Delete', exact: true }).click()
+  expect((await deleted).status()).toBe(204)
   await expect(page.getByRole('list', { name: 'Your agents' }).getByRole('button', { name: new RegExp(agent.name) })).toHaveCount(0)
   expect((await request.get(`/api/trainings/${id}`, { headers: user.auth })).status()).toBe(404)
 })
