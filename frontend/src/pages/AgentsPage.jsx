@@ -647,7 +647,7 @@ export default function AgentsPage() {
       {!agents && !loadError && <Spinner />}
       {agents?.length === 0 && <p className="m-0 text-center text-muted-foreground">No agents yet. Make your first one.</p>}
       {agents?.length > 0 && (
-        <ul aria-label="Your agents" className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-3 p-0">
+        <ul aria-label="Your agents" className="m-0 grid list-none auto-rows-fr grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-3 p-0">
           {agents.map((a) => (
             <li key={a.id}>
               <button
@@ -655,7 +655,7 @@ export default function AgentsPage() {
                 aria-pressed={a.id === selected}
                 onClick={() => setSelected(a.id)}
                 className={cn(
-                  'flex w-full cursor-pointer items-center gap-4 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-white/6',
+                  'flex h-full w-full cursor-pointer items-center gap-4 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-white/6',
                   'aria-pressed:border-border-strong aria-pressed:bg-brand/8 aria-pressed:shadow-glow',
                 )}
               >
