@@ -58,7 +58,7 @@ def test_create_and_list(authed_client, models, db, user):
 
 
 @pytest.mark.parametrize("change", [
-    {"name": ""}, {"name": "   "}, {"name": "x" * 101}, {"prompt": ""}, {"prompt": "x" * 20001}, {"base_model": None},
+    {"name": ""}, {"name": "   "}, {"name": "x" * 101}, {"prompt": ""}, {"base_model": None},
 ])
 def test_create_validation(authed_client, models, db, change):
     assert authed_client.post("/api/agents", json=BODY | change).status_code == 422
@@ -66,7 +66,7 @@ def test_create_validation(authed_client, models, db, change):
 
 
 def test_create_checks_the_model_and_the_name(authed_client, models, monkeypatch, db, user):
-    assert authed_client.post("/api/agents", json=BODY | {"name": "x" * 100, "prompt": "x" * 20000}).status_code == 201
+    assert authed_client.post("/api/agents", json=BODY | {"name": "x" * 100, "prompt": "x" * 100_000}).status_code == 201
     r = authed_client.post("/api/agents", json=BODY | {"base_model": "missing"})
     assert (r.status_code, r.json()) == (400, {"detail": "Unknown base model: missing"})
     r = authed_client.post("/api/agents", json=BODY | {"base_model": "claude"})

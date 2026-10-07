@@ -471,7 +471,7 @@ class PromptRequest(BaseModel):
 
 
 class RubricRequest(BaseModel):
-    agent_prompt: str = Field(min_length=1, max_length=20000)
+    agent_prompt: str = Field(min_length=1)
     model: str | None = None
     helper: Helper | None = None
 
