@@ -51,7 +51,7 @@ signing out clears it. The Inspect page drills down from training to round to sc
   and overloads up to 5 times, and an agent retries a failed call or garbled reply once before the training fails.
   `local_model.py` handles Hugging Face Hub search, download and upload, plus generation and LoRA SFT with
   transformers + PEFT (on MPS, CUDA or CPU). `training.py` runs the loop and the train/inspect API. All routes are
-  under `/api`.
+  under `/api` and documented in [API.md](API.md); every app feature is an endpoint there.
 - **Frontend** (`frontend/src`): React + Vite with four pages: Auth (sign up / sign in), Train (six-step workflow:
   Model, Prompt, Rubric, Scenarios, Training, Complete), Inspect and Account. In development, Vite proxies `/api` to
   `localhost:8000`.
