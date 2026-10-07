@@ -766,7 +766,7 @@ it('shows past battles only on the first and result slides, and sends the battle
   expect(api.startTraining).toHaveBeenCalledWith(expect.objectContaining({ battle: true, battle_rounds: 3 }))
   expect(screen.queryByRole('region', { name: 'Past battles' })).not.toBeInTheDocument() // while it runs
   expect(await screen.findByTestId('rounds-won', {}, { timeout: 4000 })).toHaveTextContent('Rounds won 2 – 1')
-  expect(screen.getByRole('region', { name: 'Past battles' })).toBeInTheDocument()
+  expect(await screen.findByRole('region', { name: 'Past battles' })).toBeInTheDocument() // refetched once it finished
 })
 
 it('keeps trainings and battles apart', async () => {
