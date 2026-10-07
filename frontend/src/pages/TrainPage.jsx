@@ -1,4 +1,4 @@
-import { Download, Gem, Pause, Play, Plus, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
+import { Download, Pause, Play, Plus, RotateCcw, Sparkles, Swords, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -249,7 +249,7 @@ function CompleteStep({ training, onReset }) {
   return (
     <div className="grid gap-4">
       {battle?.grades ? ( // battles from before grading (judged bouts) show as trainings
-        <BattleResult battle={battle} />
+        <BattleResult battle={battle} rounds={training.rounds} />
       ) : (
         <div className="flex flex-col items-center gap-1 pt-3 pb-2">
           <span className="text-sm text-muted-foreground">Best score</span>
@@ -295,7 +295,7 @@ function CompleteStep({ training, onReset }) {
 }
 
 // Both sides' grades on the battle's new users: the higher mean keeps the agent (a tie keeps yours).
-function BattleResult({ battle }) {
+function BattleResult({ battle, rounds }) {
   const rival = battle.opponent ? `${battle.opponent.name} by ${battle.opponent.author}` : 'The challenger'
   const [mine, theirs] = battle.grades
   return (
@@ -309,6 +309,7 @@ function BattleResult({ battle }) {
           {score(mine)} – {score(theirs)}
         </span>
         <span className="text-sm text-muted-foreground">Mean grade out of 10 over {battle.bouts.length} new users</span>
+        <span className="text-sm text-muted-foreground">{roundsText(battle, rounds)}</span>
         <p role="status" className="m-0 pt-2 text-center font-semibold">
           {battle.winner === 'challenger'
             ? `${rival} wins. Your agent now has its prompt and weights.`
@@ -331,6 +332,54 @@ function BattleResult({ battle }) {
         </ol>
       </details>
     </div>
+  )
+}
+
+const roundsText = (battle, rounds) =>
+  battle.opponent ? 'A challenge: no training rounds' : `Challenger trained for ${rounds} ${rounds === 1 ? 'round' : 'rounds'}`
+
+// Finished battles, newest first (refetched when the one on screen changes status); picking one shows its result.
+function PastBattles({ status, onOpen }) {
+  const [battles, setBattles] = useState([])
+  const [error, setError] = useState('')
+  const [run, busy, openError] = useAction()
+  useEffect(() => {
+    api.listTrainings().then((ts) => setBattles(ts.filter((t) => t.battle?.grades)), (e) => setError(e.message))
+  }, [status])
+  if (!battles.length && !error) return null
+  return (
+    <section aria-labelledby="past-battles" className="grid gap-3">
+      <h2 id="past-battles" className="m-0 text-xl">
+        Past battles
+      </h2>
+      <ErrorAlert>{error || openError}</ErrorAlert>
+      <ul className="m-0 grid list-none gap-2 p-0">
+        {battles.map(({ id, agent_name, created_at, battle, rounds }) => {
+          const rival = battle.opponent?.name ?? 'challenger'
+          return (
+            <li key={id}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => run(async () => onOpen(await api.getTraining(id)))}
+                className="grid w-full grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 rounded-lg border bg-card p-3 text-left hover:bg-accent"
+              >
+                <span className="font-medium wrap-anywhere">
+                  {agent_name ?? 'Your agent'} vs {rival}
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {score(battle.grades[0])} – {score(battle.grades[1])}
+                </span>
+                <span className="col-span-2 text-sm text-muted-foreground">
+                  {new Date(created_at).toLocaleDateString()} · {roundsText(battle, rounds)} ·{' '}
+                  {battle.winner === 'challenger' ? `${rival} won` : 'Your agent held'}
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 
@@ -777,11 +826,22 @@ function Dashboard({ battle, onReset }) {
             </Button>
           ) : (
             <Button type="button" disabled={!valid.every(Boolean) || starting} onClick={start}>
-              {starting ? <Spinner /> : battle ? <Gem /> : <Play />}
+              {starting ? <Spinner /> : battle ? <Swords /> : <Play />}
               {battle ? 'Start battle' : 'Start training'}
             </Button>
           )}
         </div>
+      )}
+
+      {/* Not over a run in progress or paused: opening a past battle replaces the one on screen. */}
+      {battle && (!training || completed) && (
+        <PastBattles
+          status={status}
+          onOpen={(t) => {
+            setTraining(t)
+            setStep(4)
+          }}
+        />
       )}
     </div>
   )

@@ -715,6 +715,30 @@ it('says the agent held when the champion wins, and starts a new battle', async 
   expect(sessionStorage.getItem('trainform_battle_draft')).not.toContain('champion')
 })
 
+it('lists past battles with their rounds, and opens one', async () => {
+  const user = userEvent.setup()
+  const battle = { winner: 'challenger', grades: [6, 8] }
+  api.listTrainings.mockResolvedValue([
+    { id: 8, status: 'completed', agent_name: 'Bike Repair Agent', created_at: '2026-10-02T10:00:00Z', rounds: 2, battle },
+    { id: 6, status: 'completed', battle: null }, // a training
+    { id: 5, status: 'completed', agent_name: 'Bike Repair Agent', created_at: '2026-10-01T10:00:00Z', rounds: 0,
+      battle: { opponent: { name: 'Rival Repair', author: 'bob' }, winner: 'champion', grades: [9, 7] } },
+  ])
+  render(<TrainPage battle />)
+  const past = within(await screen.findByRole('region', { name: 'Past battles' }))
+  const [trained, challenge] = past.getAllByRole('button')
+  expect(trained).toHaveTextContent('Bike Repair Agent vs challenger6.0 – 8.0')
+  expect(trained).toHaveTextContent('Challenger trained for 2 rounds · challenger won')
+  expect(challenge).toHaveTextContent('A challenge: no training rounds · Your agent held')
+
+  const bouts = [{ message: 'Hi', champion: 'Hello!', challenger: 'Hi.', grades: [6, 8] }]
+  api.getTraining.mockResolvedValue(detail({ id: 8, status: 'completed', rounds: 2, battle: { ...battle, bouts } }))
+  await user.click(trained)
+  expect(api.getTraining).toHaveBeenCalledWith(8)
+  expect(await screen.findByTestId('battle-score')).toHaveTextContent('6.0 – 8.0')
+  expect(screen.getByText('Challenger trained for 2 rounds')).toBeInTheDocument()
+})
+
 it('keeps trainings and battles apart', async () => {
   api.listTrainings.mockResolvedValue([{ id: 7, status: 'running', battle: true }])
   const { unmount } = render(<TrainPage />)
