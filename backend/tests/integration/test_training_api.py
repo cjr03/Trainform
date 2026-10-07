@@ -413,6 +413,15 @@ def test_startup_adds_the_resume_columns_to_an_existing_database(db):
     assert {"next_prompt", "personas", "adapter", "helper"} <= set(columns)
 
 
+def test_startup_makes_json_null_battles_sql_null(db, user):
+    add_training(db, user, "completed")
+    db.execute(text("UPDATE trainings SET battle = 'null'::json"))  # as trainings were saved before none_as_null
+    db.commit()
+    with TestClient(app):
+        pass
+    assert db.scalar(text("SELECT count(*) FROM trainings WHERE battle IS NULL")) == 1
+
+
 def test_startup_drops_tags_around_saved_prompts(db, user):
     tagged = ":\n<system_prompt>\n<prompt>:\nBe kind.\n</current_prompt>\n</system_prompt>"
     t = Training(user_id=user.id, base_model="tiny", initial_prompt="P", rubric=["a"], scenarios_per_round=1,

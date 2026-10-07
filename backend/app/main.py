@@ -27,6 +27,8 @@ async def lifespan(_app: FastAPI):
                           "ADD COLUMN IF NOT EXISTS agent_id integer REFERENCES agents(id) ON DELETE CASCADE, "
                           "ADD COLUMN IF NOT EXISTS battle json"))
         conn.execute(text("ALTER TABLE trained_models ALTER COLUMN mean_score DROP NOT NULL"))
+        # Trainings were saved with a JSON null battle before models.Training.battle stored None as SQL NULL.
+        conn.execute(text("UPDATE trainings SET battle = NULL WHERE battle::text = 'null'"))
         # Trainings from before agents existed belong to the seed agent, made for their user (on their latest
         # training's model) if they have no agent yet. No one else gets one.
         latest_model = "SELECT base_model FROM trainings t WHERE t.user_id = u.id ORDER BY t.id DESC LIMIT 1"

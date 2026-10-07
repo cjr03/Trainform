@@ -31,6 +31,13 @@ test('battle an agent against its optimised challenger; level grades keep the ag
   await expect(page.getByRole('region', { name: 'Past battles' }).getByRole('button')).toContainText(
     '3 battle rounds · challenger trained for 1 round · Your agent held')
 
+  // Inspect lists it under Battles, not Trainings, with its rounds and its head to head.
+  await page.goto(`/inspect?agent=${agent.id}`)
+  await expect(page.getByRole('region', { name: 'Trainings' })).toContainText('No trainings yet')
+  await page.getByRole('region', { name: 'Battles' }).getByRole('button', { name: /vs challenger/ }).click()
+  await expect(page.getByRole('button', { name: /Round 1/ })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Head to head' }).getByTestId('rounds-won')).toHaveText('Rounds won 0 – 0')
+
   // The Train page doesn't pick up the battle.
   await page.getByRole('link', { name: 'Train', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Train an agent' })).toBeVisible()

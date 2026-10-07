@@ -16,6 +16,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { BattleResult } from '@/components/battles'
 import { AgentImage, Overall } from '@/components/shared'
 import { cn } from '@/lib/utils'
 import { api, saveBlob } from '../api'
@@ -283,6 +284,7 @@ export default function InspectPage() {
   const scenario = scenarios.data?.find((s) => s.id === scenarioId)
   const selected = trainings.data?.find((t) => t.id === trainingId)
   const status = selected?.status
+  const kind = selected?.battle ? 'battle' : 'training'
 
   // While any training is in progress, reload everything 2 s after each trainings list arrives.
   const active = trainings.data?.some((t) => ACTIVE.includes(t.status))
@@ -377,35 +379,46 @@ export default function InspectPage() {
         </Column>
 
         {agentId != null && (
-          <Column
-            ref={trainingsRef}
-            title="Trainings"
-            state={trainings}
-            loadingText="Loading trainings…"
-            emptyText={
-              <>
-                No trainings yet — start one on the <Link to="/train">Train page</Link>
-              </>
-            }
-          >
-            {trainings.data?.map((t) => (
-              <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
-                <span className={OPTION_MAIN}>
-                  #{t.id} · {t.base_model}
-                </span>
-                <Badge variant="outline" className={`badge-${t.status} justify-self-start tracking-wider uppercase`}>
-                  {t.status}
-                </Badge>
-                <span className={OPTION_META}>
-                  {new Date(t.created_at).toLocaleDateString()}
-                  {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
-                </span>
-                <span className={OPTION_SCORE} title="Best score">
-                  {fmt(t.best_score)}
-                </span>
-              </Option>
+          <div className="grid gap-4">
+            {/* One list, split: Trainings shows its loading and errors, Battles just its share once it's loaded. */}
+            {[
+              ['Trainings', (t) => !t.battle, trainingsRef, trainings, <>No trainings yet — start one on the <Link to="/train">Train page</Link></>],
+              ['Battles', (t) => t.battle, null, {}, <>No battles yet — start one on the <Link to="/battle">Battle page</Link></>],
+            ].map(([title, holds, ref, state, emptyText]) => (
+              <Column
+                key={title}
+                ref={ref}
+                title={title}
+                state={{ ...state, data: trainings.data?.filter(holds) }}
+                loadingText={`Loading ${title.toLowerCase()}…`}
+                emptyText={emptyText}
+              >
+                {trainings.data?.filter(holds).map((t) => (
+                  <Option key={t.id} selected={t.id === trainingId} onSelect={() => pickTraining(t.id)}>
+                    <span className={OPTION_MAIN}>
+                      #{t.id} · {t.battle ? `vs ${t.battle.opponent?.name ?? 'challenger'}` : t.base_model}
+                    </span>
+                    <Badge variant="outline" className={`badge-${t.status} justify-self-start tracking-wider uppercase`}>
+                      {t.status}
+                    </Badge>
+                    <span className={OPTION_META}>
+                      {new Date(t.created_at).toLocaleDateString()}
+                      {t.helper && ` · ${t.helper === 'claude' ? 'Claude' : 'Local model'}`}
+                    </span>
+                    {t.battle?.grades ? (
+                      <span className={OPTION_SCORE} title="Your agent's grade – its opponent's">
+                        {fmt(t.battle.grades[0])}–{fmt(t.battle.grades[1])}
+                      </span>
+                    ) : (
+                      <span className={OPTION_SCORE} title="Best score">
+                        {fmt(t.best_score)}
+                      </span>
+                    )}
+                  </Option>
+                ))}
+              </Column>
             ))}
-          </Column>
+          </div>
         )}
 
         {trainingId != null && (
@@ -438,34 +451,40 @@ export default function InspectPage() {
       </div>
 
       {trainingId != null && <Prompts state={detail} />}
+      {selected?.battle && detail.data?.battle?.grades && (
+        <Card role="region" aria-label="Head to head" className="gap-3 p-4">
+          <h2 className={TITLE}>Head to head</h2>
+          <BattleResult battle={detail.data.battle} rounds={detail.data.rounds} />
+        </Card>
+      )}
 
       {status === 'failed' && detail.data && (
-        <ErrorAlert>{detail.data.error || 'Training stopped without an error message.'}</ErrorAlert>
+        <ErrorAlert>{detail.data.error || `The ${kind} stopped without an error message.`}</ErrorAlert>
       )}
       {selected && (
         <div className="flex flex-wrap items-center gap-3">
           {(status === 'pending' || status === 'running') && (
             <Button variant="outline" disabled={busy} onClick={pause}>
-              <Pause aria-hidden="true" /> Pause training
+              <Pause aria-hidden="true" /> Pause {kind}
             </Button>
           )}
           {status === 'paused' && (
             <Button disabled={busy} onClick={resume}>
-              <Play aria-hidden="true" /> Resume training
+              <Play aria-hidden="true" /> Resume {kind}
             </Button>
           )}
           {status === 'failed' && (
             <Button disabled={busy} onClick={resume}>
-              <RotateCcw aria-hidden="true" /> Retry training
+              <RotateCcw aria-hidden="true" /> Retry {kind}
             </Button>
           )}
           {status === 'completed' && (
             <>
-              <Button onClick={() => save(api.downloadPrompt, `training-${trainingId}-prompt.txt`)}>
+              <Button onClick={() => save(api.downloadPrompt, `${kind}-${trainingId}-prompt.txt`)}>
                 <Download aria-hidden="true" /> Download prompt
               </Button>
               {selected.base_model !== 'claude' && (
-                <Button onClick={() => save(api.downloadWeights, `training-${trainingId}-lora.zip`)}>
+                <Button onClick={() => save(api.downloadWeights, `${kind}-${trainingId}-lora.zip`)}>
                   <Download aria-hidden="true" /> Download weights
                 </Button>
               )}
@@ -475,12 +494,14 @@ export default function InspectPage() {
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" className="border-destructive/50 text-destructive" disabled={busy}>
-                  <Trash2 aria-hidden="true" /> Delete training
+                  <Trash2 aria-hidden="true" /> Delete {kind}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Delete training #{trainingId}?</AlertDialogTitle>
+                  <AlertDialogTitle>
+                    Delete {kind} #{trainingId}?
+                  </AlertDialogTitle>
                   <AlertDialogDescription>
                     This permanently deletes all its rounds and scenarios, its prompts and its trained weights.
                   </AlertDialogDescription>

@@ -89,6 +89,10 @@ def test_detail_lists_its_trainings_newest_first(authed_client, models, db, user
     first = add_training(db, a, scores=[6.0, 7.0])
     second = add_training(db, a, status="failed")
     add_training(db, add_agent(db, user, name="Other"), scores=[1.0, 9.0])
+    second.battle = None  # saved as SQL NULL, so it still counts as a training
+    add_training(db, a).battle = {"rounds": 1}  # a battle: listed apart, not as a training
+    db.commit()
+    assert {x["name"]: x["trainings"] for x in authed_client.get("/api/agents").json()} == {"Support": 2, "Other": 1}
     d = authed_client.get(f"/api/agents/{a.id}").json()
     assert (d["name"], d["overall"]) == ("Support", 70)
     assert d["trainings"] == [

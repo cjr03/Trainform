@@ -83,8 +83,9 @@ def overall(a: Agent, best: float | None) -> int | None:
 
 
 def _rows(db: Session, user: User, agent_id: int | None = None) -> list:
-    """(agent, best score, training count) for the user's agents (or just one), by name."""
-    q = (select(Agent, func.max(TrainedModel.mean_score), func.count(Training.id.distinct()))
+    """(agent, best score, training count, battles not counted) for the user's agents (or just one), by name."""
+    q = (select(Agent, func.max(TrainedModel.mean_score),
+                func.count(Training.id.distinct()).filter(Training.battle.is_(None)))
          .outerjoin(Training, Training.agent_id == Agent.id)
          .outerjoin(TrainedModel, (TrainedModel.training_id == Training.id) & (TrainedModel.round > 0))
          .where(Agent.user_id == user.id).group_by(Agent.id).order_by(Agent.name))
@@ -132,7 +133,8 @@ def get_agent(agent_id: int, user: User = Depends(current_user), db: Session = D
                best.mean_score.label("best_score"), baseline.mean_score.label("baseline_score"))
         .outerjoin(best, best.id == Training.best_model_id)
         .outerjoin(baseline, (baseline.training_id == Training.id) & (baseline.round == 0))
-        .where(Training.agent_id == agent_id).order_by(Training.id.desc())).mappings().all()
+        .where(Training.agent_id == agent_id, Training.battle.is_(None))  # battles are listed apart
+        .order_by(Training.id.desc())).mappings().all()
     return _out(available_models(user), *row) | {"trainings": [dict(t) for t in trainings]}
 
 
