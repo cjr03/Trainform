@@ -56,7 +56,6 @@ def test_no_key_is_400(authed_client, monkeypatch):
 @pytest.mark.parametrize("path, body", [
     ("/api/agents/prompt", {}),
     ("/api/agents/prompt", {"description": ""}),
-    ("/api/agents/prompt", {"description": "x" * 4001}),
     ("/api/agents/prompt", {"description": 5}),
     ("/api/agents/rubric", {}),
     ("/api/agents/rubric", {"agent_prompt": ""}),
@@ -67,9 +66,9 @@ def test_invalid_bodies_are_422(authed_client, path, body):
     assert fake.calls == []
 
 
-def test_limits_are_inclusive(authed_client):
+def test_long_inputs_are_accepted(authed_client):
     use_llm(FakeLLM({"prompt": "p", "criteria": ["c"]}))
-    assert authed_client.post("/api/agents/prompt", json={"description": "x" * 4000}).status_code == 200
+    assert authed_client.post("/api/agents/prompt", json={"description": "x" * 100_000}).status_code == 200
     assert authed_client.post("/api/agents/rubric", json={"agent_prompt": "x" * 100_000}).status_code == 200
 
 
