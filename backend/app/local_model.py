@@ -48,7 +48,8 @@ HUB_PATTERNS = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja"]
 PICKLE_SUFFIXES = (".bin", ".pt", ".pth", ".pkl", ".ckpt")
 # Room for a ~1000-word system prompt, a message and a reply; a longer example is dropped, not cut short.
 MAX_SFT_TOKENS = 4096
-GEN_BATCH = 8  # sequences generated at once
+GEN_BATCH = 8  # most sequences generated at once
+GEN_TOKENS = 16384  # most prompt + reply tokens a generation batch holds: its KV cache grows with both
 
 
 def _model_dir(name: str) -> Path:
@@ -288,20 +289,25 @@ class LocalModel:
 
     def generate_many(self, pairs: list[tuple[str, str]], max_new_tokens: int = 256, stop=None, options=None,
                       **kwargs) -> list[str]:
-        """Greedy replies to [(system prompt, conversation)], in input order, GEN_BATCH at a time: prompts of similar
-        length share a left-padded batch, so every row's prompt ends at the same index. `stop()` runs before each batch
-        and each token, and may raise to drop the call; `options(start)` adds model.generate kwargs for a batch whose
-        replies begin at `start`."""
+        """Greedy replies to [(system prompt, conversation)], in input order: prompts of similar length share a
+        left-padded batch (so every row's prompt ends at the same index) of up to GEN_BATCH rows and GEN_TOKENS tokens.
+        `stop()` runs before each batch and each token, and may raise to drop the call; `options(start)` adds
+        model.generate kwargs for a batch whose replies begin at `start`."""
         prompts = [self._prompt_ids(system, conversation) for system, conversation in pairs]
-        order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+        batches = []
+        for i in sorted(range(len(prompts)), key=lambda i: len(prompts[i])):  # longest last: it sets the batch's width
+            if (batches and len(batches[-1]) < GEN_BATCH
+                    and (len(batches[-1]) + 1) * (len(prompts[i]) + max_new_tokens) <= GEN_TOKENS):
+                batches[-1].append(i)
+            else:
+                batches.append([i])
         replies = [""] * len(prompts)
         if stop:  # a batch can take many seconds: a pause mustn't wait for it
             kwargs["stopping_criteria"] = StoppingCriteriaList([lambda *_, **__: stop() or False])
         self.model.eval()
-        for k in range(0, len(order), GEN_BATCH):
+        for batch in batches:
             if stop:
                 stop()
-            batch = order[k:k + GEN_BATCH]
             inputs = self.tokenizer.pad({"input_ids": [prompts[i] for i in batch]}, return_tensors="pt").to(self.device)
             start = inputs["input_ids"].shape[1]
             with torch.no_grad():
@@ -346,11 +352,11 @@ class LocalModel:
         return sorted(i for i in {self.tokenizer.eos_token_id, *(eos if isinstance(eos, list) else [eos])}
                       if i is not None)
 
-    def sft(self, examples: list[dict], epochs: int = 2, accum: int = 4, seed: int = 0, stop=None) -> float:
-        """Fine-tune on [{"prompt", "input", "output"}], learning only the outputs: `epochs` passes, in a seeded
-        shuffled order, over microbatches of up to `accum` examples of similar length (at most MAX_SFT_TOKENS padded
-        tokens), one forward pass and one clipped step each. `stop()` runs before each step and may raise to drop the
-        rest. Returns the mean training loss."""
+    def sft(self, examples: list[dict], epochs: int = 1, seed: int = 0, stop=None) -> float:
+        """Fine-tune on [{"prompt", "input", "output"}], learning only the outputs: `epochs` passes in a seeded shuffled
+        order, one forward pass and one clipped step per example. Two examples in a step took the same time as two
+        steps and 1.3 GiB more memory, and a second epoch doubled the time: the next rounds replay the best examples.
+        `stop()` runs before each step and may raise to drop the rest. Returns the mean training loss."""
         data = []
         for ex in examples:
             prompt = self._prompt_ids(ex["prompt"], ex["input"])
@@ -361,23 +367,17 @@ class LocalModel:
         if len(data) < len(examples):
             log.warning("SFT dropped %d of %d examples over %d tokens", len(examples) - len(data), len(examples),
                         MAX_SFT_TOKENS)
-        batches = []
-        for ex in sorted(data, key=lambda ex: len(ex[0])):  # longest last, so it sets its batch's padded width
-            if batches and len(batches[-1]) < accum and (len(batches[-1]) + 1) * len(ex[0]) <= MAX_SFT_TOKENS:
-                batches[-1].append(ex)
-            else:
-                batches.append([ex])
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=2e-4)
         rng, losses = random.Random(seed), []
         self.model.train()
         try:
             for _ in range(epochs):
-                rng.shuffle(batches)
-                for batch in batches:
+                rng.shuffle(data)
+                for ex in data:
                     if stop:
                         stop()
-                    loss = self._losses(batch)
+                    loss = self._losses([ex])
                     loss.mean().backward()
                     losses += loss.tolist()
                     torch.nn.utils.clip_grad_norm_(trainable, 1.0)

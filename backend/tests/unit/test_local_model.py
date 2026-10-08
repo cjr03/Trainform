@@ -383,6 +383,16 @@ def test_generate_many_matches_one_at_a_time_in_input_order(peaked, monkeypatch)
     assert tiny.complete_many(pairs[:5]) == [tiny.complete(*p) for p in pairs[:5]]
 
 
+def test_generate_many_caps_a_batchs_tokens(tiny, monkeypatch):
+    # Eight rows of a ~25k-token prompt asked MPS for 6 GiB at once and failed the training; one row at a time fits.
+    seen = []
+    monkeypatch.setattr(tiny.model, "generate", lambda input_ids, **kw: seen.append(input_ids.shape) or input_ids)
+    long = ("be helpful " * 20, "hi")
+    monkeypatch.setattr(local_model, "GEN_TOKENS", 2 * (len(tiny._prompt_ids(*long)) + 8))
+    assert tiny.generate_many([long] * 5, max_new_tokens=8) == [""] * 5
+    assert [s[0] for s in seen] == [2, 2, 1]
+
+
 def test_generate_many_batches_prompts_of_similar_length(tiny, monkeypatch):
     # Padding a short prompt to a long one's length costs as much compute as the long one.
     monkeypatch.setattr(local_model, "GEN_BATCH", 2)
@@ -428,7 +438,7 @@ def test_sft_masks_prompt_tokens(tiny, loss_spy):
     tiny.sft([{"prompt": "be helpful", "input": "hi", "output": "hello there"}])
     prompt = tiny._prompt_ids("be helpful", "hi")
     output = tiny.tokenizer("hello there", add_special_tokens=False)["input_ids"] + [tiny.tokenizer.eos_token_id]
-    assert loss_spy == [[(prompt + output, [-100] * len(prompt) + output)]] * 2  # one per epoch
+    assert loss_spy == [[(prompt + output, [-100] * len(prompt) + output)]]
 
 
 def test_a_microbatchs_losses_are_each_examples_own(tiny):
@@ -444,26 +454,13 @@ def test_a_microbatchs_losses_are_each_examples_own(tiny):
     assert torch.allclose(batched, torch.stack(alone), atol=1e-5)
 
 
-def test_sft_packs_examples_of_similar_length_into_capped_microbatches(tiny, loss_spy, monkeypatch):
-    # One forward per microbatch is the speed-up; a cap on padded tokens keeps a batch of long examples in memory.
-    monkeypatch.setattr(local_model, "MAX_SFT_TOKENS", 60)
-    examples = [{"prompt": "be helpful " * n, "input": "hi", "output": "hello"} for n in (1, 9, 2, 1, 1, 1, 9)]
-    tiny.sft(examples, epochs=1, accum=4)
-    size = {n: len(tiny._prompt_ids("be helpful " * n, "hi")) + 2 for n in (1, 2, 9)}  # + "hello" and EOS
-    assert size[9] * 3 > 60
-    # Shortest first: up to `accum` per batch, and no batch over 60 padded tokens.
-    assert sorted([len(ids) for ids, _ in batch] for batch in loss_spy) == sorted(
-        [[size[1]] * 4, [size[2], size[9]], [size[9]]])
-
-
 def test_a_stop_drops_the_rest_of_the_sft(tiny, loss_spy):
     def stop():
         if loss_spy:
             raise RuntimeError("paused")
 
     with pytest.raises(RuntimeError, match="paused"):
-        tiny.sft([{"prompt": "be helpful", "input": w, "output": "hello"} for w in ("hi", "hello", "there")], accum=1,
-                 stop=stop)
+        tiny.sft([{"prompt": "be helpful", "input": w, "output": "hello"} for w in ("hi", "hello", "there")], stop=stop)
     assert len(loss_spy) == 1 and not tiny.model.training
 
 
@@ -481,15 +478,15 @@ def test_sft_drops_an_example_over_the_cap_instead_of_truncating_its_reply(tiny,
     assert loss_spy == [] and "1 of 1" in caplog.text
 
 
-def test_sft_steps_on_accumulated_clipped_gradients_over_shuffled_epochs(tiny, monkeypatch):
+def test_sft_steps_once_per_example_on_clipped_gradients(tiny, monkeypatch):
     steps, clips = [], []
     real_clip = torch.nn.utils.clip_grad_norm_
     monkeypatch.setattr(torch.optim.AdamW, "step", lambda self, *a, **k: steps.append(1))
     monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", lambda params, max_norm: clips.append(max_norm) or
                         real_clip(params, max_norm))
     examples = [{"prompt": "be helpful", "input": w, "output": "hello there"} for w in ("hi", "hello", "there")] * 2
-    tiny.sft(examples, epochs=2, accum=4)
-    assert len(steps) == len(clips) == 4  # 6 examples per epoch: a microbatch of 4, then one of the last 2
+    tiny.sft(examples, epochs=2)
+    assert len(steps) == len(clips) == 12
     assert set(clips) == {1.0}
 
 
